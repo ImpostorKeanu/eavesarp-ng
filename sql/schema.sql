@@ -26,9 +26,9 @@ CREATE TABLE IF NOT EXISTS mac(
                  manually resolved, i.e., associated ip records
                  were targets in an arp request
      */
-    arp_disc_meth TEXT NOT NULL CHECK(
-        arp_disc_meth == 'passive' OR
-        arp_disc_meth == 'active'));
+    disc_meth TEXT NOT NULL CHECK(
+        disc_meth == 'passive_arp' OR
+        disc_meth == 'active_arp'));
 
 
 -- observed ipv4 addresses
@@ -89,7 +89,7 @@ CREATE TABLE IF NOT EXISTS ip(
 CREATE TABLE IF NOT EXISTS arp_count(
     sender_ip_id INTEGER NOT NULL REFERENCES ip(id) ON DELETE CASCADE,
     target_ip_id INTEGER NOT NULL REFERENCES ip(id) ON DELETE CASCADE,
-    count INTEGER NOT NULL DEFAULT 0 CHECK (count >= 0),
+    count INTEGER NOT NULL DEFAULT 1 CHECK (count >= 1),
     CONSTRAINT arp_cnt_comp_keys PRIMARY KEY (sender_ip_id, target_ip_id));
 
 /*

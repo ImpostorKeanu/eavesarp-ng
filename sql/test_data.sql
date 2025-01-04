@@ -1,9 +1,9 @@
 PRAGMA foreign_keys = 1;
-INSERT INTO mac (arp_disc_meth, value)
+INSERT INTO mac (disc_meth, value)
 VALUES
-    ('passive', '00:00:00:00:00:00'),
-    ('passive', '00:00:00:00:00:01'),
-    ('active', '00:00:00:00:00:02')
+    ('passive_arp', '00:00:00:00:00:00'),
+    ('passive_arp', '00:00:00:00:00:01'),
+    ('active_arp', '00:00:00:00:00:02')
 ON CONFLICT DO NOTHING;
 
 INSERT INTO ip (value, mac_id, disc_meth, arp_resolved, ptr_resolved)
