@@ -76,7 +76,6 @@ CREATE TABLE IF NOT EXISTS ip(
     */
     disc_meth TEXT NOT NULL CHECK (
         disc_meth == 'passive_arp' OR
-        disc_meth == 'reverse_dns' OR
         disc_meth == 'forward_dns'),
 
     -- determines if arp resolution has happened
@@ -84,6 +83,18 @@ CREATE TABLE IF NOT EXISTS ip(
 
     -- determines if reverse dns resolution has happened
     ptr_resolved BOOLEAN NOT NULL DEFAULT FALSE);
+
+/*
+track potential aitm opportunities
+
+these arise when a snac target ip (ip set to the misconfigured application client)
+has a ptr record that resolves to a distinct host that may be offering
+the same services desired by the client.
+ */
+CREATE TABLE IF NOT EXISTS aitm_opts(
+    snac_target_ip_id INTEGER NOT NULL REFERENCES ip(id) ON DELETE CASCADE,
+    upstream_ip_id INTEGER NOT NULL REFERENCES ip(id) ON DELETE CASCADE,
+    CONSTRAINT aitm_opt_comp_keys PRIMARY KEY (snac_target_ip_id, upstream_ip_id));
 
 -- number of times senders resolve targets
 CREATE TABLE IF NOT EXISTS arp_count(

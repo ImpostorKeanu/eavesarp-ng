@@ -19,7 +19,6 @@ var (
 const (
 	PassiveArpMeth = DiscMethod("passive_arp")
 	ActiveArpMeth  = DiscMethod("active_arp")
-	ReverseDnsMeth = DiscMethod("reverse_dns")
 	ForwardDnsMeth = DiscMethod("forward_dns")
 )
 
@@ -135,19 +134,22 @@ func GetOrCreateDnsName(db *sql.DB, name string) (dns DnsName, err error) {
 	return
 }
 
-func dnsQueries(tblName string) (getStmt, insStmt string) {
-	getStmt = strings.Replace(`SELECT TBLNAME.id
+func buildDnsQueries(tblName string) (getStmt, insStmt string) {
+	getStmt = strings.Replace(`
+SELECT TBLNAME.id
 FROM TBLNAME
 INNER JOIN ip ON ip.id=TBLNAME.ip_id
 INNER JOIN dns_name ON TBLNAME.dns_name_id=dns_name.id
-WHERE ip.id=? AND dns_name.id=?`, "TBLNAME", tblName, -1)
-	insStmt = strings.Replace(`INSERT INTO TBLNAME (ip_id, dns_name_id)
+WHERE ip.id=? AND dns_name.id=?
+LIMIT 1`, "TBLNAME", tblName, -1)
+	insStmt = strings.Replace(`
+INSERT INTO TBLNAME (ip_id, dns_name_id)
 VALUES (?,?) RETURNING id`, "TBLNAME", tblName, -1)
 	return
 }
 
 func GetOrCreateDnsPtrRecord(db *sql.DB, ip Ip, name DnsName) (ptrRec PtrRecord, err error) {
-	get, ins := dnsQueries("ptr_record")
+	get, ins := buildDnsQueries("ptr_record")
 	var created bool
 	created, err = GetOrCreate(db, get, ins,
 		map[string]any{"ip_id": ip.Id, "dns_name_id": name.Id},
@@ -157,11 +159,15 @@ func GetOrCreateDnsPtrRecord(db *sql.DB, ip Ip, name DnsName) (ptrRec PtrRecord,
 	ptrRec.IsNew = created
 	ptrRec.Ip = ip
 	ptrRec.Name = name
+
+	if _, err := db.Exec(`UPDATE OR IGNORE ip SET ptr_resolved=1 WHERE id=?`, ip.Id); err != nil {
+		// TODO failed to update ip record
+	}
 	return
 }
 
 func GetOrCreateDnsARecord(db *sql.DB, ip Ip, name DnsName) (aRec ARecord, err error) {
-	get, ins := dnsQueries("a_record")
+	get, ins := buildDnsQueries("a_record")
 	var created bool
 	created, err = GetOrCreate(db, get, ins,
 		map[string]any{"ip_id": ip.Id, "dns_name_id": name.Id},

@@ -16,12 +16,19 @@ import (
 )
 
 var (
-	activeArps          = ActiveArps{sync.RWMutex{}, make(map[string]*ActiveArp)}
+	activeArps     = ActiveArps{sync.RWMutex{}, make(map[string]*ActiveArp)}
+	arpSenderC     = make(chan ArpSenderArgs)
+	stopArpSenderC = make(chan bool)
+	stopSnifferC   = make(chan bool)
+	stopDnsSenderC = make(chan bool)
+	dnsSenderC     = make(chan DnsSenderArgs)
+	resolver       = net.Resolver{}
+
+	PtrDnsKind DnsKind = "ptr"
+	ADnsKind   DnsKind = "a"
+
 	activeArpAlreadySet = errors.New("already set")
-	arpSenderC          = make(chan ArpSenderArgs)
-	stopArpSenderC      = make(chan bool)
-	stopSnifferC        = make(chan any)
-	resolver            = net.Resolver{}
+	unsupportedDnsError = errors.New("unsupported dns record type")
 )
 
 type (
@@ -53,6 +60,14 @@ type (
 		addr         *net.IPNet
 		dstIp        []byte
 		addActiveArp func() error
+	}
+
+	DnsKind string
+
+	DnsSenderArgs struct {
+		kind   DnsKind
+		target string
+		after  func([]string)
 	}
 )
 
@@ -140,6 +155,13 @@ func Sniff(db *sql.DB) {
 		// TODO
 		println("killing arp sender process")
 		stopArpSenderC <- true
+	}()
+
+	go DnsSender()
+	defer func() {
+		// TODO
+		println("killing dns sender process")
+		stopDnsSenderC <- true
 	}()
 
 	//==========================
@@ -248,6 +270,24 @@ func Sniff(db *sql.DB) {
 					fmt.Printf("initiated active arp request for %v\n", dstIp.Value)
 				}
 
+				//===================
+				// DO NAME RESOLUTION
+				//===================
+
+				for _, ip := range []*Ip{srcIp, dstIp} {
+					if !ip.PtrResolved {
+						dnsSenderC <- DnsSenderArgs{
+							kind:   PtrDnsKind,
+							target: ip.Value,
+							after: func(names []string) {
+								for _, name := range names {
+									ptrCallback(db, ip, name, nil)
+								}
+							},
+						}
+					}
+				}
+
 				//====================
 				// INCREMENT ARP COUNT
 				//====================
@@ -321,6 +361,105 @@ func (u unpackedArp) GetOrCreateDbValues(db *sql.DB, arpMethod DiscMethod) (srcM
 	}
 
 	return
+}
+
+func DnsSender() {
+	println("starting dns sender process")
+	for {
+		select {
+		case <-stopDnsSenderC:
+			println("stopping dns sender process")
+			break
+		case dA := <-dnsSenderC:
+
+			var err error
+			var resolved []string
+
+			// Do resolution
+			ctx, cancel := context.WithTimeout(context.Background(), 7*time.Second)
+			switch dA.kind {
+			case PtrDnsKind:
+				resolved, err = resolver.LookupAddr(ctx, dA.target)
+			case ADnsKind:
+				resolved, err = resolver.LookupHost(ctx, dA.target)
+			default:
+				err = unsupportedDnsError
+			}
+			cancel()
+
+			// TODO handle name resolution error
+			if err != nil {
+				println("unsupported dns type specified")
+				os.Exit(1)
+				continue
+			}
+
+			// Handle the output
+			dA.after(resolved)
+
+		}
+	}
+}
+
+func ptrCallback(db *sql.DB, ip *Ip, name string, depth *int) {
+
+	if depth == nil {
+		buff := 10
+		depth = &buff
+	}
+
+	dnsName, err := GetOrCreateDnsName(db, name)
+	if err != nil {
+		// TODO
+		println("failed to create dns name", err.Error())
+		os.Exit(1)
+	}
+
+	if _, err = GetOrCreateDnsPtrRecord(db, *ip, dnsName); err != nil {
+		// TODO
+		println("failed to create dns ptr record", err.Error())
+		os.Exit(1)
+	}
+
+	// Do forward lookups for each newly discovered name
+	dnsSenderC <- DnsSenderArgs{
+		kind:   ADnsKind,
+		target: name,
+		after: func(newIpStrings []string) {
+			for _, newIpS := range newIpStrings {
+
+				newIp, err := GetOrCreateIp(db, newIpS, nil, ForwardDnsMeth,
+					false, false)
+
+				if err != nil {
+					// TODO
+					println("failed to create new ip", err.Error())
+					os.Exit(1)
+				}
+
+				if _, err = GetOrCreateDnsARecord(db, newIp, dnsName); err != nil {
+					// TODO
+					println("failed to create dns a record", err.Error())
+					os.Exit(1)
+				}
+
+				if *depth > 0 && !newIp.PtrResolved {
+
+					dnsSenderC <- DnsSenderArgs{
+						kind:   PtrDnsKind,
+						target: newIp.Value,
+						after: func(names []string) {
+							for _, name := range names {
+								d := *depth - 1
+								ptrCallback(db, ip, name, &d)
+							}
+						},
+					}
+
+				}
+			}
+		},
+	}
 }
 
 func ArpSender() {
