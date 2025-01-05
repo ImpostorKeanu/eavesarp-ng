@@ -6,6 +6,7 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 )
 
@@ -55,6 +56,26 @@ type (
 	}
 )
 
+func (i Ip) IsSnac() bool {
+	return i.ArpResolved && i.MacId != nil
+}
+
+func GetSnacs(db *sql.DB) (ips []Ip, err error) {
+	rows, err := db.Query(`SELECT * FROM ip WHERE arp_resolved=TRUE AND ip.mac_id IS NULL`)
+	if rows == nil {
+		return
+	}
+	for rows.Next() {
+		var ip Ip
+		if err = rows.Scan(&ip.Id, &ip.Value, &ip.MacId, &ip.DiscMethod, &ip.ArpResolved, &ip.PtrResolved); err != nil {
+			// TODO
+			break
+		}
+		ips = append(ips, ip)
+	}
+	return
+}
+
 func GetOrCreateMac(db *sql.DB, v string, arpDiscMethod DiscMethod) (mac Mac, created bool, err error) {
 	created, err = GetOrCreate(db,
 		"SELECT * FROM mac WHERE value=?",
@@ -89,6 +110,15 @@ func IncArpCount(db *sql.DB, senderIpId int, targetIpId int) (count int, err err
 		`INSERT INTO arp_count (sender_ip_id, target_ip_id) VALUES (?, ?)
 ON CONFLICT DO UPDATE SET count=count+1 RETURNING count`,
 		[]any{senderIpId, targetIpId}, &count)
+	return
+}
+
+func SetArpResolved(db *sql.DB, ipId int) (err error) {
+	if _, err = db.Exec(`UPDATE ip SET arp_resolved=1 WHERE id=?`, ipId); err != nil {
+		// TODO
+		println("failed to update arp_resolved attribute", err.Error())
+		os.Exit(1)
+	}
 	return
 }
 
