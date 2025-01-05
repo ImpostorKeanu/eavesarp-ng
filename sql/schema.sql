@@ -97,11 +97,24 @@ CREATE TABLE IF NOT EXISTS arp_count(
 
  - an ip can have multiple ptrs
  */
-CREATE TABLE IF NOT EXISTS ptr(
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+CREATE TABLE IF NOT EXISTS ptr_record(
     ip_id INTEGER REFERENCES ip(id) ON DELETE CASCADE,
-    fqdn TEXT NOT NULL,
-    UNIQUE (ip_id, fqdn) ON CONFLICT IGNORE);
+    dns_name_id INTEGER REFERENCES dns_name(id) ON DELETE CASCADE,
+    CONSTRAINT ptr_comp_keys PRIMARY KEY (ip_id, dns_name_id));
+
+/*
+ ptr -> new fqdn -> potentially new ip
+
+ New IP is a potential AITM opportunity.
+ */
+CREATE TABLE IF NOT EXISTS a_record(
+    ip_id INTEGER REFERENCES ip(id) ON DELETE CASCADE,
+    dns_name_id INTEGER REFERENCES dns_name(id) ON DELETE CASCADE,
+    CONSTRAINT a_comp_keys PRIMARY KEY (ip_id, dns_name_id));
+
+CREATE TABLE IF NOT EXISTS dns_name(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    fqdn TEXT NOT NULL UNIQUE);
 
 -- prevent orphaned mac addresses
 CREATE TRIGGER IF NOT EXISTS no_orphaned_macs
