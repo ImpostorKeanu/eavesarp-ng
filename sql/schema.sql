@@ -114,7 +114,7 @@ CREATE TABLE IF NOT EXISTS a_record(
 
 CREATE TABLE IF NOT EXISTS dns_name(
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    fqdn TEXT NOT NULL UNIQUE);
+    value TEXT NOT NULL UNIQUE);
 
 -- prevent orphaned mac addresses
 CREATE TRIGGER IF NOT EXISTS no_orphaned_macs

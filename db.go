@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -48,11 +49,25 @@ type (
 		Count      int
 	}
 
-	Ptr struct {
+	DnsRecordFields struct {
 		Id    int
 		IsNew bool
-		IpId  int
-		Fqdn  string
+		Ip    Ip
+		Name  DnsName
+	}
+
+	DnsName struct {
+		Id    int
+		IsNew bool
+		Value string
+	}
+
+	PtrRecord struct {
+		DnsRecordFields
+	}
+
+	ARecord struct {
+		DnsRecordFields
 	}
 )
 
@@ -76,7 +91,8 @@ func GetSnacs(db *sql.DB) (ips []Ip, err error) {
 	return
 }
 
-func GetOrCreateMac(db *sql.DB, v string, arpDiscMethod DiscMethod) (mac Mac, created bool, err error) {
+func GetOrCreateMac(db *sql.DB, v string, arpDiscMethod DiscMethod) (mac Mac, err error) {
+	var created bool
 	created, err = GetOrCreate(db,
 		"SELECT * FROM mac WHERE value=?",
 		"INSERT INTO mac (value,disc_meth) VALUES (?,?) RETURNING *",
@@ -84,10 +100,12 @@ func GetOrCreateMac(db *sql.DB, v string, arpDiscMethod DiscMethod) (mac Mac, cr
 		[]string{"value"},
 		[]string{"value", "disc_meth"},
 		&mac.Id, &mac.Value, &mac.DiscMethod)
+	mac.IsNew = created
 	return
 }
 
-func GetOrCreateIp(db *sql.DB, v string, macId *int, ipDiscMethod DiscMethod, arpRes, ptrRes bool) (ip Ip, created bool, err error) {
+func GetOrCreateIp(db *sql.DB, v string, macId *int, ipDiscMethod DiscMethod, arpRes, ptrRes bool) (ip Ip, err error) {
+	var created bool
 	created, err = GetOrCreate(db,
 		"SELECT * FROM ip WHERE value=?",
 		`INSERT INTO ip (value, mac_id, disc_meth, arp_resolved, ptr_resolved)
@@ -96,14 +114,65 @@ VALUES (?, ?, ?, ?, ?) RETURNING *`,
 		[]string{"value"},
 		[]string{"value", "mac_id", "disc_meth", "arp_resolved", "ptr_resolved"},
 		&ip.Id, &ip.Value, &ip.MacId, &ip.DiscMethod, &ip.ArpResolved, &ip.PtrResolved)
+	ip.IsNew = created
 	return
 }
 
-//func GetOrCreatePtr(db *sql.Conn, ipId int, fqdn string) (ptr Ptr, err error) {
+//func GetOrCreatePtr(db *sql.Conn, ipId int, fqdn string) (ptr PtrRecord, err error) {
 //	return ptr, GetOrCreate(db, gocPtrSql,
 //		[]any{ipId, fqdn},
-//		[]any{&ptr.Id, &ptr.IpId, &ptr.Fqdn})
+//		[]any{&ptr.Id, &ptr.IpId, &ptr.Name})
 //}
+
+func GetOrCreateDnsName(db *sql.DB, name string) (dns DnsName, err error) {
+	var created bool
+	created, err = GetOrCreate(db,
+		"SELECT * FROM dns_name WHERE value=?",
+		"INSERT INTO dns_name (value) VALUES (?) RETURNING *",
+		map[string]any{"value": name}, []string{"value"},
+		[]string{"value"}, &dns.Id, &dns.Value)
+	dns.IsNew = created
+	return
+}
+
+func dnsQueries(tblName string) (getStmt, insStmt string) {
+	getStmt = strings.Replace(`SELECT TBLNAME.id
+FROM TBLNAME
+INNER JOIN ip ON ip.id=TBLNAME.ip_id
+INNER JOIN dns_name ON TBLNAME.dns_name_id=dns_name.id
+WHERE ip.id=? AND dns_name.id=?`, "TBLNAME", tblName, -1)
+	insStmt = strings.Replace(`INSERT INTO TBLNAME (ip_id, dns_name_id)
+VALUES (?,?) RETURNING id`, "TBLNAME", tblName, -1)
+	return
+}
+
+func GetOrCreateDnsPtrRecord(db *sql.DB, ip Ip, name DnsName) (ptrRec PtrRecord, err error) {
+	get, ins := dnsQueries("ptr_record")
+	var created bool
+	created, err = GetOrCreate(db, get, ins,
+		map[string]any{"ip_id": ip.Id, "dns_name_id": name.Id},
+		[]string{"ip_id", "dns_name_id"},
+		[]string{"ip_id", "dns_name_id"},
+		&ptrRec.Id)
+	ptrRec.IsNew = created
+	ptrRec.Ip = ip
+	ptrRec.Name = name
+	return
+}
+
+func GetOrCreateDnsARecord(db *sql.DB, ip Ip, name DnsName) (aRec ARecord, err error) {
+	get, ins := dnsQueries("a_record")
+	var created bool
+	created, err = GetOrCreate(db, get, ins,
+		map[string]any{"ip_id": ip.Id, "dns_name_id": name.Id},
+		[]string{"ip_id", "dns_name_id"},
+		[]string{"ip_id", "dns_name_id"},
+		&aRec.Id)
+	aRec.IsNew = created
+	aRec.Ip = ip
+	aRec.Name = name
+	return
+}
 
 func IncArpCount(db *sql.DB, senderIpId int, targetIpId int) (count int, err error) {
 	err = GetRow(db,

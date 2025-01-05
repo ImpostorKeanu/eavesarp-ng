@@ -21,6 +21,7 @@ var (
 	arpSenderC          = make(chan ArpSenderArgs)
 	stopArpSenderC      = make(chan bool)
 	stopSnifferC        = make(chan any)
+	resolver            = net.Resolver{}
 )
 
 type (
@@ -284,20 +285,17 @@ func Sniff(db *sql.DB) {
 func (u unpackedArp) GetOrCreateDbValues(db *sql.DB, arpMethod DiscMethod) (srcMac *Mac, srcIp *Ip,
   dstIp *Ip, err error) {
 
-	var created bool
-
 	// goc src mac
-	srcMacBuff, created, err := GetOrCreateMac(db, u.SrcHw, arpMethod)
+	srcMacBuff, err := GetOrCreateMac(db, u.SrcHw, arpMethod)
 	if err != nil {
 		// TODO
 		println("failed to create mac: ", err.Error())
 		os.Exit(1)
 	}
-	srcMacBuff.IsNew = created
 	srcMac = &srcMacBuff
 
 	// goc src ip
-	srcIpBuff, created, err := GetOrCreateIp(db, u.SrcIp, &srcMacBuff.Id, arpMethod, true, false)
+	srcIpBuff, err := GetOrCreateIp(db, u.SrcIp, &srcMacBuff.Id, arpMethod, true, false)
 	if err != nil {
 		// TODO
 		println("failed to create mac: ", err.Error())
@@ -309,18 +307,16 @@ func (u unpackedArp) GetOrCreateDbValues(db *sql.DB, arpMethod DiscMethod) (srcM
 		}
 		srcIpBuff.MacId = &srcMac.Id
 	}
-	srcIpBuff.IsNew = created
 	srcIp = &srcIpBuff
 
 	if arpMethod == PassiveArpMeth {
 		// goc dst ip
-		dstIpBuff, created, err := GetOrCreateIp(db, u.DstIp, nil, arpMethod, false, false)
+		dstIpBuff, err := GetOrCreateIp(db, u.DstIp, nil, arpMethod, false, false)
 		if err != nil {
 			// TODO
 			println("failed to create mac: ", err.Error())
 			os.Exit(1)
 		}
-		dstIpBuff.IsNew = created
 		dstIp = &dstIpBuff
 	}
 
