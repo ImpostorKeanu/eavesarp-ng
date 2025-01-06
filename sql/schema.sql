@@ -91,7 +91,7 @@ these arise when a snac target ip (ip set to the misconfigured application clien
 has a ptr record that resolves to a distinct host that may be offering
 the same services desired by the client.
  */
-CREATE TABLE IF NOT EXISTS aitm_opts(
+CREATE TABLE IF NOT EXISTS aitm_opt(
     snac_target_ip_id INTEGER NOT NULL REFERENCES ip(id) ON DELETE CASCADE,
     upstream_ip_id INTEGER NOT NULL REFERENCES ip(id) ON DELETE CASCADE,
     CONSTRAINT aitm_opt_comp_keys PRIMARY KEY (snac_target_ip_id, upstream_ip_id));

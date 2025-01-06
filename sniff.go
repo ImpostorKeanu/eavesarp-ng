@@ -2,7 +2,6 @@ package eavesarp_ng
 
 import (
 	"bytes"
-	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -11,140 +10,11 @@ import (
 	"github.com/google/gopacket/pcap"
 	"net"
 	"os"
-	"sync"
-	"time"
 )
 
 var (
-	activeArps     = ActiveArps{sync.RWMutex{}, make(map[string]*ActiveArp)}
-	arpSenderC     = make(chan ArpSenderArgs)
-	stopArpSenderC = make(chan bool)
-	stopSnifferC   = make(chan bool)
-	stopDnsSenderC = make(chan bool)
-	dnsSenderC     = make(chan DnsSenderArgs)
-	resolver       = net.Resolver{}
-
-	PtrDnsKind DnsKind = "ptr"
-	ADnsKind   DnsKind = "a"
-
-	activeArpAlreadySet = errors.New("already set")
-	unsupportedDnsError = errors.New("unsupported dns record type")
+	stopSnifferC = make(chan bool)
 )
-
-type (
-	// ActiveArp represents an ARP request.
-	ActiveArp struct {
-		DstIp  *Ip
-		ctx    context.Context
-		cancel context.CancelFunc
-	}
-
-	// ActiveArps map string IPv4 addresses to ActiveArp records.
-	//
-	// ActiveArp instances are
-	ActiveArps struct {
-		mu sync.RWMutex
-		v  map[string]*ActiveArp
-	}
-
-	// unpackedArp consists of network addresses in string format that
-	// were extracted from an ARP packet.
-	unpackedArp struct {
-		SrcIp, SrcHw, DstIp, DstHw string
-	}
-
-	// ArpSenderArgs represent values needed to send an ARP request.
-	ArpSenderArgs struct {
-		handle       *pcap.Handle
-		srcIface     *net.Interface
-		addr         *net.IPNet
-		dstIp        []byte
-		addActiveArp func() error
-	}
-
-	DnsKind string
-
-	DnsSenderArgs struct {
-		kind   DnsKind
-		target string
-		after  func([]string)
-	}
-)
-
-// Get the IP for an active arp.
-//
-// Note: This method has side effects! It removes the requested
-//       ip, cancels the context, and removes it from the container.
-func (a *ActiveArps) Get(ip string) *Ip {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if v, ok := a.v[ip]; ok {
-		v.cancel()
-		delete(a.v, ip)
-		return v.DstIp
-	}
-	return nil
-}
-
-// Has determines if ActiveArps has a job for the ip.
-func (a *ActiveArps) Has(ip string) bool {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	_, ok := a.v[ip]
-	return ok
-}
-
-// Add a new active ARP job for the ip.
-//
-// afterFuncs are executed after the active ARP instance
-// times out.
-func (a *ActiveArps) Add(i *Ip, afterFuncs ...func() error) (err error) {
-	if !a.Has(i.Value) {
-		a.mu.Lock()
-		defer a.mu.Unlock()
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		context.AfterFunc(ctx, func() {
-
-			for _, f := range afterFuncs {
-				if err := f(); err != nil {
-					// TODO logging
-					println("failed to execute afterfunc", err.Error())
-				}
-			}
-
-			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				// TODO logging
-				fmt.Printf("never received active arp response for %v\n", i.Value)
-				cancel()
-				a.Del(i.Value)
-			}
-		})
-		a.v[i.Value] = &ActiveArp{DstIp: i, ctx: ctx, cancel: cancel}
-		return
-	}
-
-	return activeArpAlreadySet
-}
-
-// Del removes an active ARP job for the ip.
-func (a *ActiveArps) Del(ip string) (v *Ip) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	v = a.v[ip].DstIp
-	delete(a.v, ip)
-	return
-}
-
-// newUnpackedArp converts binary address values to string and
-// returns an unpackedArp instance.
-func newUnpackedArp(arp *layers.ARP) unpackedArp {
-	return unpackedArp{
-		SrcIp: net.IP(arp.SourceProtAddress).String(),
-		SrcHw: net.HardwareAddr(arp.SourceHwAddress).String(),
-		DstIp: net.IP(arp.DstProtAddress).String(),
-		DstHw: net.HardwareAddr(arp.DstHwAddress).String(),
-	}
-}
 
 func Sniff(db *sql.DB) {
 	// SOURCE: https://github.com/google/gopacket/blob/master/examples/arpscan/arpscan.go
@@ -240,7 +110,7 @@ func Sniff(db *sql.DB) {
 
 				fmt.Printf("ARP Request: %s (%s) -> %s\n", u.SrcIp, u.SrcHw, u.DstIp)
 
-				_, srcIp, dstIp, err := u.GetOrCreateDbValues(db, PassiveArpMeth)
+				_, srcIp, dstIp, err := u.getOrCreateSnifferDbValues(db, PassiveArpMeth)
 
 				if dstIp.MacId == nil && !activeArps.Has(dstIp.Value) && !dstIp.ArpResolved {
 
@@ -248,7 +118,6 @@ func Sniff(db *sql.DB) {
 					// SEND ARP REQUEST
 					//=================
 
-					// Initiate ARP request
 					arpSenderC <- ArpSenderArgs{
 						handle:   handle,
 						srcIface: iface,
@@ -270,24 +139,6 @@ func Sniff(db *sql.DB) {
 					fmt.Printf("initiated active arp request for %v\n", dstIp.Value)
 				}
 
-				//===================
-				// DO NAME RESOLUTION
-				//===================
-
-				for _, ip := range []*Ip{srcIp, dstIp} {
-					if !ip.PtrResolved {
-						dnsSenderC <- DnsSenderArgs{
-							kind:   PtrDnsKind,
-							target: ip.Value,
-							after: func(names []string) {
-								for _, name := range names {
-									ptrCallback(db, ip, name, nil)
-								}
-							},
-						}
-					}
-				}
-
 				//====================
 				// INCREMENT ARP COUNT
 				//====================
@@ -300,6 +151,24 @@ func Sniff(db *sql.DB) {
 				}
 				fmt.Printf("Incremented arp count: %s -> %s -> %d\n", srcIp.Value, dstIp.Value, count)
 
+				//===================
+				// DO NAME RESOLUTION
+				//===================
+
+				for _, ip := range []*Ip{srcIp, dstIp} {
+					if !ip.PtrResolved {
+						dnsSenderC <- DnsSenderArgs{
+							kind:   PtrDnsKind,
+							target: ip.Value,
+							after: func(names []string) {
+								for _, name := range names {
+									handlePtrName(db, ip, name, nil)
+								}
+							},
+						}
+					}
+				}
+
 			case layers.ARPReply:
 
 				//===================
@@ -309,7 +178,7 @@ func Sniff(db *sql.DB) {
 				fmt.Printf("ARP Response: %s (%s) -> %s (%s)\n", u.SrcIp, u.SrcHw, u.DstIp, u.DstHw)
 
 				if ip := activeArps.Get(u.SrcIp); ip != nil {
-					srcMac, srcIp, _, err := u.GetOrCreateDbValues(db, ActiveArpMeth)
+					srcMac, srcIp, _, err := u.getOrCreateSnifferDbValues(db, ActiveArpMeth)
 					if err != nil {
 						// TODO
 						println("failed to handle arp reply: ", err.Error())
@@ -322,10 +191,13 @@ func Sniff(db *sql.DB) {
 	}
 }
 
-func (u unpackedArp) GetOrCreateDbValues(db *sql.DB, arpMethod DiscMethod) (srcMac *Mac, srcIp *Ip,
+func (u unpackedArp) getOrCreateSnifferDbValues(db *sql.DB, arpMethod DiscMethod) (srcMac *Mac, srcIp *Ip,
   dstIp *Ip, err error) {
 
-	// goc src mac
+	//===============
+	// HANDLE SRC MAC
+	//===============
+
 	srcMacBuff, err := GetOrCreateMac(db, u.SrcHw, arpMethod)
 	if err != nil {
 		// TODO
@@ -334,13 +206,23 @@ func (u unpackedArp) GetOrCreateDbValues(db *sql.DB, arpMethod DiscMethod) (srcM
 	}
 	srcMac = &srcMacBuff
 
-	// goc src ip
+	//==============
+	// HANDLE SRC IP
+	//==============
+
 	srcIpBuff, err := GetOrCreateIp(db, u.SrcIp, &srcMacBuff.Id, arpMethod, true, false)
 	if err != nil {
 		// TODO
 		println("failed to create mac: ", err.Error())
 		os.Exit(1)
 	} else if srcIpBuff.MacId == nil {
+
+		//============
+		// SET SRC MAC
+		//============
+		// - the mac is unavailable when a _target_ IP address was discovered via ARP request
+		// - since goc doesn't update records, this means we'll need to update it manually
+
 		if _, err = db.Exec(`UPDATE ip SET mac_id=? WHERE id=?`, srcMac.Id, srcIpBuff.Id); err != nil {
 			println("failed to update ip with mac address: ", err.Error())
 			os.Exit(1)
@@ -350,7 +232,6 @@ func (u unpackedArp) GetOrCreateDbValues(db *sql.DB, arpMethod DiscMethod) (srcM
 	srcIp = &srcIpBuff
 
 	if arpMethod == PassiveArpMeth {
-		// goc dst ip
 		dstIpBuff, err := GetOrCreateIp(db, u.DstIp, nil, arpMethod, false, false)
 		if err != nil {
 			// TODO
@@ -361,169 +242,4 @@ func (u unpackedArp) GetOrCreateDbValues(db *sql.DB, arpMethod DiscMethod) (srcM
 	}
 
 	return
-}
-
-func DnsSender() {
-	println("starting dns sender process")
-	for {
-		select {
-		case <-stopDnsSenderC:
-			println("stopping dns sender process")
-			break
-		case dA := <-dnsSenderC:
-
-			var err error
-			var resolved []string
-
-			// Do resolution
-			ctx, cancel := context.WithTimeout(context.Background(), 7*time.Second)
-			switch dA.kind {
-			case PtrDnsKind:
-				resolved, err = resolver.LookupAddr(ctx, dA.target)
-			case ADnsKind:
-				resolved, err = resolver.LookupHost(ctx, dA.target)
-			default:
-				err = unsupportedDnsError
-			}
-			cancel()
-
-			// TODO handle name resolution error
-			if err != nil {
-				println("unsupported dns type specified")
-				os.Exit(1)
-				continue
-			}
-
-			// Handle the output
-			dA.after(resolved)
-
-		}
-	}
-}
-
-func ptrCallback(db *sql.DB, ip *Ip, name string, depth *int) {
-
-	if depth == nil {
-		buff := 10
-		depth = &buff
-	}
-
-	dnsName, err := GetOrCreateDnsName(db, name)
-	if err != nil {
-		// TODO
-		println("failed to create dns name", err.Error())
-		os.Exit(1)
-	}
-
-	if _, err = GetOrCreateDnsPtrRecord(db, *ip, dnsName); err != nil {
-		// TODO
-		println("failed to create dns ptr record", err.Error())
-		os.Exit(1)
-	}
-
-	// Do forward lookups for each newly discovered name
-	dnsSenderC <- DnsSenderArgs{
-		kind:   ADnsKind,
-		target: name,
-		after: func(newIpStrings []string) {
-			for _, newIpS := range newIpStrings {
-
-				newIp, err := GetOrCreateIp(db, newIpS, nil, ForwardDnsMeth,
-					false, false)
-
-				if err != nil {
-					// TODO
-					println("failed to create new ip", err.Error())
-					os.Exit(1)
-				}
-
-				if _, err = GetOrCreateDnsARecord(db, newIp, dnsName); err != nil {
-					// TODO
-					println("failed to create dns a record", err.Error())
-					os.Exit(1)
-				}
-
-				if *depth > 0 && !newIp.PtrResolved {
-
-					dnsSenderC <- DnsSenderArgs{
-						kind:   PtrDnsKind,
-						target: newIp.Value,
-						after: func(names []string) {
-							for _, name := range names {
-								d := *depth - 1
-								ptrCallback(db, ip, name, &d)
-							}
-						},
-					}
-
-				}
-			}
-		},
-	}
-}
-
-func ArpSender() {
-	// TODO
-	println("starting arp sender process")
-	for {
-		// TODO implement jitter logic here
-		// SOURCE: https://github.com/google/gopacket/blob/master/examples/arpscan/arpscan.go
-		select {
-		case <-stopArpSenderC:
-			break
-		case sA := <-arpSenderC:
-
-			//========================
-			// CONSTRUCT AN ARP PACKET
-			//========================
-
-			eth := layers.Ethernet{
-				SrcMAC:       sA.srcIface.HardwareAddr,
-				DstMAC:       net.HardwareAddr{0xff, 0xff, 0xff, 0xff, 0xff, 0xff},
-				EthernetType: layers.EthernetTypeARP,
-			}
-			arp := layers.ARP{
-				AddrType:          layers.LinkTypeEthernet,
-				Protocol:          layers.EthernetTypeIPv4,
-				HwAddressSize:     6,
-				ProtAddressSize:   4,
-				Operation:         layers.ARPRequest,
-				SourceHwAddress:   []byte(sA.srcIface.HardwareAddr),
-				SourceProtAddress: []byte(sA.addr.IP),
-				DstHwAddress:      []byte{0, 0, 0, 0, 0, 0},
-				DstProtAddress:    sA.dstIp,
-			}
-			buf := gopacket.NewSerializeBuffer()
-			opts := gopacket.SerializeOptions{
-				FixLengths:       true,
-				ComputeChecksums: true,
-			}
-
-			var err error
-			if err = gopacket.SerializeLayers(buf, opts, &eth, &arp); err != nil {
-				// TODO logging
-				println("failed to serialize arp packet", err.Error())
-				os.Exit(1)
-			}
-
-			//=====================
-			// SEND THE ARP REQUEST
-			//=====================
-
-			// Add an active ARP record _before_ sending the request to
-			// avoid a race condition
-			if err := sA.addActiveArp(); err != nil {
-				// TODO logging
-				println("failed to add active arp", err.Error())
-				os.Exit(1)
-			}
-
-			// Write the ARP request to the wire
-			if err := sA.handle.WritePacketData(buf.Bytes()); err != nil {
-				// TODO
-				println("failed to send arp request", err.Error())
-				os.Exit(1)
-			}
-		}
-	}
 }
