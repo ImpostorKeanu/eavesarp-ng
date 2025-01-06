@@ -187,7 +187,7 @@ func GetOrCreateDnsName(db *sql.DB, name string) (dns DnsName, err error) {
 
 func buildDnsQueries(tblName string) (getStmt, insStmt string) {
 	getStmt = strings.Replace(`
-SELECT TBLNAME.id
+SELECT ip_id, dns_name_id
 FROM TBLNAME
 INNER JOIN ip ON ip.id=TBLNAME.ip_id
 INNER JOIN dns_name ON TBLNAME.dns_name_id=dns_name.id
@@ -206,14 +206,17 @@ func GetOrCreateDnsPtrRecord(db *sql.DB, ip Ip, name DnsName) (ptrRec PtrRecord,
 		map[string]any{"ip_id": ip.Id, "dns_name_id": name.Id},
 		[]string{"ip_id", "dns_name_id"},
 		[]string{"ip_id", "dns_name_id"},
-		[]any{&ptrRec.Id}})
+		[]any{&ip.Id, &name.Id}})
 	ptrRec.IsNew = created
 	ptrRec.Ip = ip
 	ptrRec.Name = name
 
-	if _, err := db.Exec(`UPDATE OR IGNORE ip SET ptr_resolved=1 WHERE id=?`, ip.Id); err != nil {
-		// TODO failed to update ip record
-	}
+	err = SetPtrResolved(db, ip)
+	return
+}
+
+func SetPtrResolved(db *sql.DB, ip Ip) (err error) {
+	_, err = db.Exec(`UPDATE OR IGNORE ip SET ptr_resolved=1 WHERE id=?`, ip.Id)
 	return
 }
 
@@ -224,7 +227,7 @@ func GetOrCreateDnsARecord(db *sql.DB, ip Ip, name DnsName) (aRec ARecord, err e
 		map[string]any{"ip_id": ip.Id, "dns_name_id": name.Id},
 		[]string{"ip_id", "dns_name_id"},
 		[]string{"ip_id", "dns_name_id"},
-		[]any{&aRec.Id}})
+		[]any{&ip.Id, &name.Id}})
 	aRec.IsNew = created
 	aRec.Ip = ip
 	aRec.Name = name

@@ -111,6 +111,7 @@ func Sniff(db *sql.DB) {
 				fmt.Printf("ARP Request: %s (%s) -> %s\n", u.SrcIp, u.SrcHw, u.DstIp)
 
 				_, srcIp, dstIp, err := u.getOrCreateSnifferDbValues(db, PassiveArpMeth)
+				// TODO log new IP discoveries
 
 				if dstIp.MacId == nil && !activeArps.Has(dstIp.Value) && !dstIp.ArpResolved {
 
@@ -155,16 +156,25 @@ func Sniff(db *sql.DB) {
 				// DO NAME RESOLUTION
 				//===================
 
-				for _, ip := range []*Ip{srcIp, dstIp} {
-					if !ip.PtrResolved {
-						dnsSenderC <- DnsSenderArgs{
-							kind:   PtrDnsKind,
-							target: ip.Value,
-							after: func(names []string) {
-								for _, name := range names {
-									handlePtrName(db, ip, name, nil)
-								}
-							},
+				if !dnsFailCounter.Exceeded() {
+					for _, ip := range []*Ip{srcIp, dstIp} {
+						if !ip.PtrResolved {
+							dnsSenderC <- DnsSenderArgs{
+								kind:   PtrDnsKind,
+								target: ip.Value,
+								failure: func(e error) {
+									if err := SetPtrResolved(db, *ip); err != nil {
+										// TODO
+										println("failed to set ptr to resolved: ", err.Error())
+										os.Exit(1)
+									}
+								},
+								after: func(names []string) {
+									for _, name := range names {
+										handlePtrName(db, ip, name, nil)
+									}
+								},
+							}
 						}
 					}
 				}

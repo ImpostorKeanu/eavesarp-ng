@@ -9,9 +9,14 @@ import (
 	"time"
 )
 
+func init() {
+	dnsFailCounter = NewFailCounter(DnsMaxFailures)
+}
+
 const (
-	PtrDnsKind DnsKind = "ptr"
-	ADnsKind   DnsKind = "a"
+	PtrDnsKind     DnsKind = "ptr"
+	ADnsKind       DnsKind = "a"
+	DnsMaxFailures         = 10
 )
 
 var (
@@ -30,6 +35,7 @@ var (
 	// unsupportedDnsError is returned when an unsupported DnsKind
 	// is supplied to DnsSender via DnsSenderArgs.
 	unsupportedDnsError = errors.New("unsupported dns record type")
+	dnsFailCounter      *FailCounter
 )
 
 type (
@@ -40,9 +46,10 @@ type (
 	//
 	// These are passed to DnsSender via dnsSenderC.
 	DnsSenderArgs struct {
-		kind   DnsKind
-		target string
-		after  func([]string)
+		kind    DnsKind
+		target  string
+		failure func(error)
+		after   func([]string)
 	}
 )
 
@@ -57,6 +64,12 @@ func DnsSender() {
 			println("stopping dns sender process")
 			break
 		case dA := <-dnsSenderC:
+
+			if dnsFailCounter.Exceeded() {
+				// TODO log dns fail count exceeded event
+				println("dns failure count exceeded; skipping name resolution")
+				continue
+			}
 
 			//===================
 			// DO NAME RESOLUTION
@@ -76,16 +89,27 @@ func DnsSender() {
 			}
 			cancel()
 
+			if e, ok := err.(*net.DNSError); ok && e.IsNotFound {
+				dA.failure(err)
+				// TODO log not found
+				println("dns record not found:", dA.target)
+				continue
+			} else if ok {
+				// TODO log DNS failure
+				print("dns failure:", e.Error())
+				// Increment the maximum fail counter
+				dnsFailCounter.Inc()
+			}
+
 			// TODO handle name resolution error
 			if err != nil {
-				println("error while performing name resolution")
+				println("error while performing name resolution", err.Error())
 				os.Exit(1)
 				continue
 			}
 
 			// Handle the output
 			dA.after(resolved)
-
 		}
 	}
 }
@@ -123,7 +147,7 @@ func handlePtrName(db *sql.DB, ip *Ip, name string, depth *int) {
 	}
 
 	// Avoid duplicate forward name resolution
-	if !dnsName.IsNew {
+	if !dnsName.IsNew || dnsFailCounter.Exceeded() {
 		return
 	}
 
@@ -161,6 +185,13 @@ func handlePtrName(db *sql.DB, ip *Ip, name string, depth *int) {
 					dnsSenderC <- DnsSenderArgs{
 						kind:   PtrDnsKind,
 						target: newIp.Value,
+						failure: func(e error) {
+							if err := SetPtrResolved(db, *ip); err != nil {
+								// TODO
+								println("failed to set ptr to resolved: ", err.Error())
+								os.Exit(1)
+							}
+						},
 						after: func(names []string) {
 							for _, name := range names {
 								d := *depth - 1
