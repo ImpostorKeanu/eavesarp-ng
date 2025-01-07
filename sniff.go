@@ -20,7 +20,7 @@ func Sniff(db *sql.DB) {
 	// SOURCE: https://github.com/google/gopacket/blob/master/examples/arpscan/arpscan.go
 
 	defer db.Close()
-	go ArpSender()
+	go ArpReqSender()
 	defer func() {
 		// TODO
 		println("killing arp sender process")
@@ -120,10 +120,11 @@ func Sniff(db *sql.DB) {
 					//=================
 
 					arpSenderC <- ArpSenderArgs{
-						handle:   handle,
-						srcIface: iface,
-						addr:     addr,
-						dstIp:    arp.DstProtAddress,
+						operation: ReqArpOperation,
+						handle:    handle,
+						srcHw:     iface.HardwareAddr,
+						srcIp:     addr.IP,
+						dstIp:     arp.DstProtAddress,
 						addActiveArp: func() (err error) {
 							err = activeArps.Add(dstIp, func() error { return SetArpResolved(db, dstIp.Id) })
 							if err != nil && !errors.Is(err, activeArpAlreadySet) {

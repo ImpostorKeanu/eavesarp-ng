@@ -36,6 +36,7 @@ var (
 	// is supplied to DnsSender via DnsSenderArgs.
 	unsupportedDnsError = errors.New("unsupported dns record type")
 	dnsFailCounter      *FailCounter
+	dnsSleeper          = NewSleeper(1, 4, 30)
 )
 
 type (
@@ -58,7 +59,7 @@ type (
 func DnsSender() {
 	println("starting dns sender process")
 	for {
-		// TODO jitter here
+		dnsSleeper.Sleep()
 		select {
 		case <-stopDnsSenderC:
 			println("stopping dns sender process")

@@ -9,10 +9,6 @@ import (
 )
 
 func main() {
-	eavesarp_ng.Sniff(dbTest())
-}
-
-func dbTest() (db *sql.DB) {
 	// Configure connection db
 	db, err := sql.Open("sqlite", "/home/archangel/git/eavesarp-ng/junk.sqlite")
 	if err != nil {

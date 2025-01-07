@@ -21,12 +21,19 @@ var (
 	// arpSenderC is used to initiate ARP requests when an ARP target is
 	// passively detected.
 	arpSenderC = make(chan ArpSenderArgs)
-	// stopArpSenderC is used to stop ArpSender process.
+	// stopArpSenderC is used to stop ArpReqSender process.
 	stopArpSenderC      = make(chan bool)
 	activeArpAlreadySet = errors.New("already set")
+	arpSleeper          = NewSleeper(1, 5, 30)
+)
+
+const (
+	ReqArpOperation ArpOperation = layers.ARPRequest
+	RepArpOperation ArpOperation = layers.ARPReply
 )
 
 type (
+	ArpOperation uint16
 	// ActiveArp represents an ARP request.
 	ActiveArp struct {
 		DstIp  *Ip
@@ -50,10 +57,12 @@ type (
 
 	// ArpSenderArgs represent values needed to send an ARP request.
 	ArpSenderArgs struct {
-		handle   *pcap.Handle
-		srcIface *net.Interface
-		addr     *net.IPNet
-		dstIp    []byte
+		handle    *pcap.Handle
+		operation ArpOperation
+		srcHw     net.HardwareAddr
+		srcIp     net.IP
+		dstHw     net.HardwareAddr
+		dstIp     net.IP
 		// addActiveArp allows the caller to define a function that
 		// adds the request to activeArps, which is used to monitor for
 		// expected ARP responses.
@@ -61,7 +70,7 @@ type (
 		// The function should call ActiveArps.Add, the afterFuncs argument
 		// for which should have a function that calls SetArpResolved.
 		//
-		// We do this to avoid database queries in ArpSender.
+		// We do this to avoid database queries in ArpReqSender.
 		addActiveArp func() error
 	}
 )
@@ -144,26 +153,31 @@ func newUnpackedArp(arp *layers.ARP) unpackedArp {
 	}
 }
 
-// ArpSender runs as a background process and receives ARP request
+// ArpReqSender runs as a background process and receives ARP request
 // tasks via arpSenderC.
-func ArpSender() {
+func ArpReqSender() {
 	// TODO
 	println("starting arp sender process")
 	for {
-		// TODO implement jitter logic here
 		// SOURCE: https://github.com/google/gopacket/blob/master/examples/arpscan/arpscan.go
+		arpSleeper.Sleep()
 		select {
 		case <-stopArpSenderC:
 			break
 		case sA := <-arpSenderC:
 
-			//========================
-			// CONSTRUCT AN ARP PACKET
-			//========================
+			if sA.dstHw == nil {
+				if sA.operation == RepArpOperation {
+					// TODO
+					println("arp replies require a dstHw value")
+					os.Exit(1)
+				}
+				sA.dstHw = net.HardwareAddr{0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
+			}
 
 			eth := layers.Ethernet{
-				SrcMAC:       sA.srcIface.HardwareAddr,
-				DstMAC:       net.HardwareAddr{0xff, 0xff, 0xff, 0xff, 0xff, 0xff},
+				SrcMAC:       sA.srcHw,
+				DstMAC:       sA.dstHw,
 				EthernetType: layers.EthernetTypeARP,
 			}
 			arp := layers.ARP{
@@ -171,22 +185,22 @@ func ArpSender() {
 				Protocol:          layers.EthernetTypeIPv4,
 				HwAddressSize:     6,
 				ProtAddressSize:   4,
-				Operation:         layers.ARPRequest,
-				SourceHwAddress:   []byte(sA.srcIface.HardwareAddr),
-				SourceProtAddress: []byte(sA.addr.IP),
-				DstHwAddress:      []byte{0, 0, 0, 0, 0, 0},
+				Operation:         uint16(sA.operation),
+				SourceHwAddress:   sA.srcHw,
+				SourceProtAddress: sA.srcIp,
+				DstHwAddress:      sA.dstHw,
 				DstProtAddress:    sA.dstIp,
 			}
-			buf := gopacket.NewSerializeBuffer()
 			opts := gopacket.SerializeOptions{
 				FixLengths:       true,
 				ComputeChecksums: true,
 			}
 
-			var err error
-			if err = gopacket.SerializeLayers(buf, opts, &eth, &arp); err != nil {
+			buff := gopacket.NewSerializeBuffer()
+			err := gopacket.SerializeLayers(buff, opts, &eth, &arp)
+			if err != nil {
 				// TODO logging
-				println("failed to serialize arp packet", err.Error())
+				println("build arp request packet", err.Error())
 				os.Exit(1)
 			}
 
@@ -196,14 +210,16 @@ func ArpSender() {
 
 			// Add an active ARP record _before_ sending the request to
 			// avoid a race condition
-			if err := sA.addActiveArp(); err != nil {
-				// TODO logging
-				println("failed to add active arp", err.Error())
-				os.Exit(1)
+			if sA.addActiveArp != nil {
+				if err = sA.addActiveArp(); err != nil {
+					// TODO logging
+					println("failed to add active arp", err.Error())
+					os.Exit(1)
+				}
 			}
 
 			// Write the ARP request to the wire
-			if err := sA.handle.WritePacketData(buf.Bytes()); err != nil {
+			if err = sA.handle.WritePacketData(buff.Bytes()); err != nil {
 				// TODO
 				println("failed to send arp request", err.Error())
 				os.Exit(1)
