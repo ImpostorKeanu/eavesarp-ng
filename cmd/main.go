@@ -15,6 +15,8 @@ func main() {
 		println("error", err.Error())
 		os.Exit(1)
 	}
+
+	// TODO test the connection by pinging the database
 	db.SetMaxOpenConns(3)
 	db.SetConnMaxLifetime(0)
 
@@ -57,6 +59,8 @@ func main() {
 	//if err = conn.Close(); err != nil {
 	//	// TODO
 	//}
+
+	eavesarp_ng.MainSniff(db, "enp13s0")
 
 	return
 }

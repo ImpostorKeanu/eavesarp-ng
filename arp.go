@@ -21,15 +21,15 @@ var (
 	// arpSenderC is used to initiate ARP requests when an ARP target is
 	// passively detected.
 	arpSenderC = make(chan ArpSenderArgs)
-	// stopArpSenderC is used to stop ArpReqSender process.
+	// stopArpSenderC is used to stop ArpSender process.
 	stopArpSenderC      = make(chan bool)
 	activeArpAlreadySet = errors.New("already set")
 	arpSleeper          = NewSleeper(1, 5, 30)
 )
 
 const (
-	ReqArpOperation ArpOperation = layers.ARPRequest
-	RepArpOperation ArpOperation = layers.ARPReply
+	ArpReqOperation ArpOperation = layers.ARPRequest
+	ArpRepOperation ArpOperation = layers.ARPReply
 )
 
 type (
@@ -70,7 +70,7 @@ type (
 		// The function should call ActiveArps.Add, the afterFuncs argument
 		// for which should have a function that calls SetArpResolved.
 		//
-		// We do this to avoid database queries in ArpReqSender.
+		// We do this to avoid database queries in ArpSender.
 		addActiveArp func() error
 	}
 )
@@ -153,9 +153,9 @@ func newUnpackedArp(arp *layers.ARP) unpackedArp {
 	}
 }
 
-// ArpReqSender runs as a background process and receives ARP request
+// ArpSender runs as a background process and receives ARP request
 // tasks via arpSenderC.
-func ArpReqSender() {
+func ArpSender() {
 	// TODO
 	println("starting arp sender process")
 	for {
@@ -167,7 +167,7 @@ func ArpReqSender() {
 		case sA := <-arpSenderC:
 
 			if sA.dstHw == nil {
-				if sA.operation == RepArpOperation {
+				if sA.operation == ArpRepOperation {
 					// TODO
 					println("arp replies require a dstHw value")
 					os.Exit(1)

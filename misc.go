@@ -55,7 +55,8 @@ func (s Sleeper) Sleep() {
 	} else {
 		t = s.window - jitter
 	}
-	time.Sleep(time.Second * time.Duration(int(math.Round(t))))
+	v := time.Second * time.Duration(int(math.Round(t)))
+	time.Sleep(v)
 }
 
 func NewSleeper(minWin, maxWin, jitterMaxPercentage int) Sleeper {
