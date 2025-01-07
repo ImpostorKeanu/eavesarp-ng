@@ -288,44 +288,6 @@ func GetOrCreate(db *sql.DB, args GoCArgs) (created bool, err error) {
 
 }
 
-// GetOrCreate is used to manage a single database record.
-//func GetOrCreate(db *sql.DB, getStmt, createStmt string, params map[string]any, getParams []string,
-//  createParams []string, outFields ...any) (created bool, err error) {
-//
-//	var getValues, createValues []any
-//
-//	// unpack params for the get query
-//	for _, name := range getParams {
-//		if v, ok := params[name]; ok {
-//			getValues = append(getValues, v)
-//		} else {
-//			err = fmt.Errorf("missing get param: %s", name)
-//			return
-//		}
-//	}
-//
-//	// unpack params for the create query
-//	for _, name := range createParams {
-//		if v, ok := params[name]; ok {
-//			createValues = append(createValues, v)
-//		} else {
-//			err = fmt.Errorf("missing create param: %s", name)
-//			return
-//		}
-//	}
-//
-//	// try the get query first
-//	if err = GetRow(db, getStmt, getValues, outFields...); errors.Is(err, sql.ErrNoRows) {
-//		// looks like it needs to be created
-//		if err = GetRow(db, createStmt, createValues, outFields...); err != nil {
-//			return
-//		}
-//		created = true
-//	}
-//	return
-//
-//}
-
 func GetRow(db *sql.DB, stmt string, queryArgs []any, scanDest ...any) error {
 	// TODO context time
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
