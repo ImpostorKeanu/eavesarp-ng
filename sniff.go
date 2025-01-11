@@ -104,11 +104,12 @@ func MainSniff(db *sql.DB, ifaceName string) {
 	src := gopacket.NewPacketSource(handle, layers.LayerTypeEthernet)
 	in := src.Packets()
 
+outer:
 	for {
 		var packet gopacket.Packet
 		select {
 		case <-stopSnifferC:
-			break
+			break outer
 		case packet = <-in:
 
 			arp := GetArpLayer(packet)
@@ -210,9 +211,8 @@ func MainSniff(db *sql.DB, ifaceName string) {
 				// HANDLE ARP REPLIES
 				//===================
 
-				fmt.Printf("ARP Response: %s (%s) -> %s (%s)\n", u.SrcIp, u.SrcHw, u.DstIp, u.DstHw)
-
 				if ip := activeArps.Get(u.SrcIp); ip != nil {
+					fmt.Printf("ARP Response: %s (%s) -> %s (%s)\n", u.SrcIp, u.SrcHw, u.DstIp, u.DstHw)
 					srcMac, srcIp, _, err := u.getOrCreateSnifferDbValues(db, ActiveArpMeth)
 					if err != nil {
 						// TODO
@@ -224,6 +224,9 @@ func MainSniff(db *sql.DB, ifaceName string) {
 			}
 		}
 	}
+
+	// TODO
+	println("exiting main sniffer thread")
 }
 
 func (u unpackedArp) getOrCreateSnifferDbValues(db *sql.DB, arpMethod DiscMethod) (srcMac *Mac, srcIp *Ip,

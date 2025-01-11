@@ -8,7 +8,7 @@ import (
 	"os"
 )
 
-func _main() {
+func main() {
 	// Configure connection db
 	db, err := sql.Open("sqlite", "/home/archangel/git/eavesarp-ng/junk.sqlite")
 	if err != nil {

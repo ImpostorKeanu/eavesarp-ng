@@ -103,25 +103,33 @@ CREATE TABLE IF NOT EXISTS arp_count(
     count INTEGER NOT NULL DEFAULT 1 CHECK (count >= 1),
     CONSTRAINT arp_cnt_comp_keys PRIMARY KEY (sender_ip_id, target_ip_id));
 
+CREATE TABLE IF NOT EXISTS dns_record(
+    ip_id INTEGER REFERENCES ip(id) ON DELETE CASCADE,
+    dns_name_id INTEGER REFERENCES dns_name(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK (
+        kind == 'ptr' OR
+        kind == 'a'),
+    CONSTRAINT dns_record_comp_keys PRIMARY KEY (ip_id, dns_name_id, kind));
+
 /*
  ptr records obtained through reverse name resolution
 
  - an ip can have multiple ptrs
  */
-CREATE TABLE IF NOT EXISTS ptr_record(
-    ip_id INTEGER REFERENCES ip(id) ON DELETE CASCADE,
-    dns_name_id INTEGER REFERENCES dns_name(id) ON DELETE CASCADE,
-    CONSTRAINT ptr_comp_keys PRIMARY KEY (ip_id, dns_name_id));
+-- CREATE TABLE IF NOT EXISTS ptr_record(
+--     ip_id INTEGER REFERENCES ip(id) ON DELETE CASCADE,
+--     dns_name_id INTEGER REFERENCES dns_name(id) ON DELETE CASCADE,
+--     CONSTRAINT ptr_comp_keys PRIMARY KEY (ip_id, dns_name_id));
 
 /*
  ptr -> new fqdn -> potentially new ip
 
  New IP is a potential AITM opportunity.
  */
-CREATE TABLE IF NOT EXISTS a_record(
-    ip_id INTEGER REFERENCES ip(id) ON DELETE CASCADE,
-    dns_name_id INTEGER REFERENCES dns_name(id) ON DELETE CASCADE,
-    CONSTRAINT a_comp_keys PRIMARY KEY (ip_id, dns_name_id));
+-- CREATE TABLE IF NOT EXISTS a_record(
+--     ip_id INTEGER REFERENCES ip(id) ON DELETE CASCADE,
+--     dns_name_id INTEGER REFERENCES dns_name(id) ON DELETE CASCADE,
+--     CONSTRAINT a_comp_keys PRIMARY KEY (ip_id, dns_name_id));
 
 CREATE TABLE IF NOT EXISTS dns_name(
     id INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -44,6 +44,7 @@ type (
 		// - PassiveArpMeth (passive_arp)
 		// - ActiveArpMeth (active_arp)
 		DiscMethod DiscMethod
+		Ip         *Ip
 	}
 
 	// Ip represents an IPv4 address.
@@ -68,6 +69,9 @@ type (
 		// PtrResolved indicates if reverse name resolution has been
 		// performed for the Ip.
 		PtrResolved bool
+		Mac         *Mac
+		ARecords    []ARecord
+		PtrRecords  []PtrRecord
 	}
 
 	// ArpCount is the number of times that a sender has been
@@ -103,6 +107,12 @@ type (
 	// via forward name resolution.
 	ARecord struct {
 		DnsRecordFields
+	}
+
+	AitmOpt struct {
+		SnacTargetIpId           int
+		UpstreamIpId             int
+		SnacTargetIp, UpstreamIp *Ip
 	}
 
 	// GoCArgs defines arguments for "get or create" functions that manage
@@ -185,22 +195,22 @@ func GetOrCreateDnsName(db *sql.DB, name string) (dns DnsName, err error) {
 	return
 }
 
-func buildDnsQueries(tblName string) (getStmt, insStmt string) {
+func buildDnsQueries(kind string) (getStmt, insStmt string) {
 	getStmt = strings.Replace(`
 SELECT ip_id, dns_name_id
-FROM TBLNAME
-INNER JOIN ip ON ip.id=TBLNAME.ip_id
-INNER JOIN dns_name ON TBLNAME.dns_name_id=dns_name.id
-WHERE ip.id=? AND dns_name.id=?
-LIMIT 1`, "TBLNAME", tblName, -1)
+FROM dns_record
+INNER JOIN ip ON ip.id=dns_record.ip_id
+INNER JOIN dns_name ON dns_record.dns_name_id=dns_name.id
+WHERE ip.id=? AND dns_name.id=? AND kind=RECORD_KIND
+LIMIT 1`, "RECORD_KIND", kind, -1)
 	insStmt = strings.Replace(`
-INSERT INTO TBLNAME (ip_id, dns_name_id)
-VALUES (?,?) RETURNING id`, "TBLNAME", tblName, -1)
+INSERT INTO dns_record (ip_id, dns_name_id, RECORD_KIND)
+VALUES (?,?,?) RETURNING id`, "RECORD_KIND", kind, -1)
 	return
 }
 
 func GetOrCreateDnsPtrRecord(db *sql.DB, ip Ip, name DnsName) (ptrRec PtrRecord, err error) {
-	get, ins := buildDnsQueries("ptr_record")
+	get, ins := buildDnsQueries("ptr")
 	var created bool
 	created, err = GetOrCreate(db, GoCArgs{get, ins,
 		map[string]any{"ip_id": ip.Id, "dns_name_id": name.Id},
@@ -221,7 +231,7 @@ func SetPtrResolved(db *sql.DB, ip Ip) (err error) {
 }
 
 func GetOrCreateDnsARecord(db *sql.DB, ip Ip, name DnsName) (aRec ARecord, err error) {
-	get, ins := buildDnsQueries("a_record")
+	get, ins := buildDnsQueries("a")
 	var created bool
 	created, err = GetOrCreate(db, GoCArgs{get, ins,
 		map[string]any{"ip_id": ip.Id, "dns_name_id": name.Id},
