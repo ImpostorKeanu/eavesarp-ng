@@ -58,6 +58,7 @@ type (
 		rows []table.Row
 		err  error
 	}
+
 	selectedArpTableContent struct {
 		cols []table.Column
 		rows []table.Row
@@ -65,9 +66,9 @@ type (
 	}
 )
 
-func getSelectedArpTableContent(db *sql.DB, selectedRow arpTableRow) (content selectedArpTableContent) {
+func getSelectedArpTableContent(db *sql.DB, m *model) (content selectedArpTableContent) {
 
-	rows, err := db.Query(arpTableSelectionQuery, selectedRow.senderIp, selectedRow.targetIp)
+	rows, err := db.Query(arpTableSelectionQuery, m.curArpRow.senderIp, m.curArpRow.targetIp)
 	if err != nil {
 		// TODO
 		panic(err)
@@ -93,7 +94,7 @@ func getSelectedArpTableContent(db *sql.DB, selectedRow arpTableRow) (content se
 		}
 
 		var ipObj *eavesarp_ng.Ip
-		if ip == selectedRow.senderIp {
+		if ip == m.curArpRow.senderIp {
 
 			if sender == nil {
 
@@ -116,7 +117,7 @@ func getSelectedArpTableContent(db *sql.DB, selectedRow arpTableRow) (content se
 				ipObj = sender
 			}
 
-		} else if ip == selectedRow.targetIp {
+		} else if ip == m.curArpRow.targetIp {
 
 			if target == nil {
 
@@ -158,6 +159,8 @@ func getSelectedArpTableContent(db *sql.DB, selectedRow arpTableRow) (content se
 			}
 		}
 	}
+
+	// TODO
 	rows.Close()
 
 	// TODO
@@ -183,24 +186,12 @@ func getSelectedArpTableContent(db *sql.DB, selectedRow arpTableRow) (content se
 	}
 	aitmValue = strings.TrimSpace(aitmValue)
 
+	// TODO
 	rows.Close()
 
 	//===================
 	// PREPARE TABLE ROWS
 	//===================
-
-	// Track max length for each column
-	var senderMaxWidth, targetMaxWidth int
-
-	// IP row
-	ipRow := table.Row{"IP", sender.Value, target.Value}
-
-	// MAC row
-	macRow := table.Row{"MAC", sender.Mac.Value, "---"}
-	if target.Mac != nil {
-		macRow = table.Row{"MAC", sender.Mac.Value, target.Mac.Value}
-	}
-	content.rows = append(content.rows, ipRow, macRow)
 
 	// Cells for DNS values
 	var senderDnsCell, targetDnsCell string
@@ -221,23 +212,27 @@ func getSelectedArpTableContent(db *sql.DB, selectedRow arpTableRow) (content se
 		targetDnsCell += fmt.Sprintf("%s (%s)", r.Name, "a")
 	}
 
-	if senderDnsCell == "" {
-		senderDnsCell = "---"
-	}
-	if targetDnsCell == "" {
-		targetDnsCell = "---"
-	}
-	content.rows = append(content.rows, table.Row{"DNS", senderDnsCell, targetDnsCell})
+	emptyOrDefault(&senderDnsCell, "---")
+	emptyOrDefault(&targetDnsCell, "---")
+	emptyOrDefault(&aitmValue, "---")
 
-	if aitmValue == "" {
-		aitmValue = "---"
-	}
-	content.rows = append(content.rows, table.Row{"AITM", "---", aitmValue})
+	content.rows = append(content.rows,
+		table.Row{"IP", sender.Value, target.Value},
+		table.Row{"MAC", sender.Mac.Value, "---"},
+		table.Row{"DNS", senderDnsCell, targetDnsCell},
+		table.Row{"AITM", "---", aitmValue})
 
+	if target.Mac != nil {
+		content.rows[len(content.rows)-1][2] = target.Mac.Value
+	}
+
+	// TODO Why is this math for the sender and target columns so wonky?
+	//  Just can't seem to get the table to align correctly! wtf!?
+	w := (m.rightWidth - (5 + 6)) / 2
 	content.cols = append(content.cols,
 		table.Column{Title: "", Width: 5},
-		table.Column{Title: "Sender", Width: senderMaxWidth},
-		table.Column{Title: "Target", Width: targetMaxWidth})
+		table.Column{Title: "Sender", Width: w},
+		table.Column{Title: "Target", Width: w})
 
 	return
 }
@@ -256,7 +251,6 @@ func getArpTableContent(db *sql.DB, limit, offset int) (content arpTableContent)
 	var snacsSeen bool
 	arpCountHeader := "ARP #"
 	arpCountWidth := len(arpCountHeader)
-	//var lastSenderIp string
 
 	defer rows.Close()
 
@@ -286,27 +280,15 @@ func getArpTableContent(db *sql.DB, limit, offset int) (content arpTableContent)
 			snacsSeen = true
 		}
 
-		//===================
-		// PREPARE ROW VALUES
-		//===================
-
-		// Maximum sender and target IP column widths
-		if len(sender.Value) > senderIpWidth {
-			senderIpWidth = len(sender.Value)
-		}
-		//if lastSenderIp != sender.Value {
-		//	senderChanged = true
-		//	lastSenderIp = sender.Value
-		//}
-		if len(target.Value) > targetIpWidth {
-			targetIpWidth = len(target.Value)
-		}
-
-		// ARP count column width
 		arpCountValue := fmt.Sprintf("%d", arpCount)
-		if len(arpCountValue) > arpCountWidth {
-			arpCountWidth = len(arpCountValue)
-		}
+
+		//=====================
+		// ADJUST WIDTH OFFSETS
+		//=====================
+
+		greaterLength(sender.Value, &senderIpWidth)
+		greaterLength(target.Value, &targetIpWidth)
+		greaterLength(arpCountValue, &arpCountWidth)
 
 		//======================================
 		// CONSTRUCT AND CAPTURE THE CURRENT ROW
@@ -324,13 +306,7 @@ func getArpTableContent(db *sql.DB, limit, offset int) (content arpTableContent)
 			}
 		}
 
-		//if senderChanged {
-		//	tRow = append(tRow, sender.Value)
-		//} else {
-		//	tRow = append(tRow, "")
-		//}
 		tRow = append(tRow, sender.Value)
-
 		content.rows = append(content.rows, append(tRow, target.Value, arpCountValue))
 	}
 
@@ -354,17 +330,21 @@ func getArpTableContent(db *sql.DB, limit, offset int) (content arpTableContent)
 
 }
 
-func getLonger(s string, c int) int {
-	if len(s) > c {
-		return len(s)
-	}
-	return c
-}
-
-func longestLine(s string, i *int) {
+// greaterLength will split a string on newlines and set i
+// to the longest length line so long as it is greater than
+// the supplied value.
+func greaterLength(s string, i *int) {
 	for _, x := range strings.Split(s, "\n") {
 		if len(x) > *i {
 			*i = len(x)
 		}
+	}
+}
+
+// emptyOrDefault sets the value of s to d if it's currently
+// empty.
+func emptyOrDefault(s *string, d string) {
+	if *s == "" {
+		*s = d
 	}
 }
