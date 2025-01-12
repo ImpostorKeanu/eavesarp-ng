@@ -33,7 +33,6 @@ func init() {
 		Foreground(lipgloss.Color("229")).
 		Background(lipgloss.Color("57")).
 		Bold(false)
-
 }
 
 const (
@@ -53,12 +52,13 @@ type (
 		logsPane                           pane
 		arpTable                           arpTable
 		selectedArpTable                   table.Model
+		selectedArpContent                 *selectedArpTableContent
 		selectedTargetId, selectedSenderId int
 		height, width                      int
 		focusedId                          string
-	}
 
-	arpTableRowOffset int
+		rightPaneHeight, rightPaneWidth int
+	}
 
 	arpTableRow struct {
 		index    int
@@ -135,7 +135,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		if tbl != nil {
-			if m, cmd := m.doTableKey(msg.String()); cmd != nil && m != nil {
+			if m, cmd := m.doArpTableKey(msg.String()); cmd != nil && m != nil {
 				return m, cmd
 			}
 		}
@@ -146,10 +146,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) View() string {
-	m.arpTable.SetHeight(m.height)
+	m.selectedArpTable.SetWidth(m.rightPaneWidth)
+	m.selectedArpTable.SetHeight(m.rightPaneHeight)
+
+	s := panelStyle
+	s = s.Width(m.rightPaneWidth).Height(m.rightPaneHeight)
+
+	if m.selectedArpContent != nil {
+		// TODO why is our math so off here???
+		//  We shouldn't be hardcoding "6" like this....
+		w := (m.rightPaneWidth - (m.selectedArpContent.cols[0].Width + 6)) / 2
+		for n := 1; n < len(m.selectedArpContent.cols); n++ {
+			m.selectedArpContent.cols[n].Width = w
+		}
+		m.selectedArpTable.SetColumns(m.selectedArpContent.cols)
+	}
+
 	return zone.Scan(lipgloss.JoinHorizontal(lipgloss.Left,
 		panelStyle.Render(m.arpTable.View()),
-		lipgloss.JoinVertical(lipgloss.Left, m.selectedArpPane.View(), m.attacksPane.View(), m.logsPane.View())))
+		lipgloss.JoinVertical(lipgloss.Left,
+			s.Render(m.selectedArpTable.View()),
+			m.attacksPane.View(),
+			m.logsPane.View())))
 }
 
 func (m *model) doResize(msg tea.WindowSizeMsg) {
@@ -157,17 +175,20 @@ func (m *model) doResize(msg tea.WindowSizeMsg) {
 	m.width = int(math.Round(float64(msg.Width) * .90))
 	m.arpTable.SetHeight(m.height)
 
-	w := m.width / 2
-	h := m.height / 3
+	m.rightPaneWidth = m.width / 2
+	m.rightPaneHeight = m.height / 3
+
+	m.selectedArpTable.SetWidth(m.rightPaneWidth)
+	m.selectedArpTable.SetHeight(m.rightPaneHeight)
 
 	rightStyle := panelStyle
-	rightStyle = rightStyle.Width(w).Height(h)
+	rightStyle = rightStyle.Width(m.rightPaneWidth).Height(m.rightPaneHeight)
 
 	m.selectedArpPane.style = rightStyle
 	m.attacksPane.style = rightStyle
 
 	// Logging pane will be shorter than the other two right-hand panes
-	_, h = lipgloss.Size(m.selectedArpPane.View())
+	_, h := lipgloss.Size(m.selectedArpPane.View())
 	m.logsPane.style = rightStyle.Height(m.height - (h * 2))
 }
 
@@ -177,12 +198,24 @@ func (m *model) doArpTableContent(c arpTableContent) {
 		panic(c.err)
 	}
 	m.arpTable.SetColumns(c.cols)
+
+	//for n := 0; n < 90; n++ {
+	//	c.rows = append(c.rows, table.Row{"x", "x", "x", "x", "x"})
+	//}
+
 	m.arpTable.SetRows(c.rows)
 	// TODO handle this error
 	m.arpTable.selectedArpRow, _ = newArpTableRow(m.arpTable.SelectedRow())
+	buff := getSelectedArpTableContent(m.db, m.arpTable.selectedArpRow)
+	m.selectedArpContent = &buff
+	m.selectedArpTable.SetColumns(buff.cols)
+	m.selectedArpTable.SetRows(buff.rows)
+	// TODO handle sC error
+	m.selectedArpTable.SetHeight(m.rightPaneHeight)
+	m.selectedArpTable.SetWidth(m.rightPaneWidth)
 }
 
-func (m *model) doTableKey(k string) (tea.Model, tea.Cmd) {
+func (m *model) doArpTableKey(k string) (tea.Model, tea.Cmd) {
 	switch k {
 	case "up", "k":
 		if m.arpTable.Cursor() == 0 {
@@ -192,6 +225,10 @@ func (m *model) doTableKey(k string) (tea.Model, tea.Cmd) {
 		}
 		// TODO handle this error
 		m.arpTable.selectedArpRow, _ = newArpTableRow(m.arpTable.SelectedRow())
+		buff := getSelectedArpTableContent(m.db, m.arpTable.selectedArpRow)
+		m.selectedArpContent = &buff
+		m.selectedArpTable.SetColumns(buff.cols)
+		m.selectedArpTable.SetRows(buff.rows)
 	case "down", "j":
 		if m.arpTable.Cursor() == len(m.arpTable.Rows())-1 {
 			m.arpTable.GotoTop()
@@ -200,6 +237,10 @@ func (m *model) doTableKey(k string) (tea.Model, tea.Cmd) {
 		}
 		// TODO handle this error
 		m.arpTable.selectedArpRow, _ = newArpTableRow(m.arpTable.SelectedRow())
+		buff := getSelectedArpTableContent(m.db, m.arpTable.selectedArpRow)
+		m.selectedArpContent = &buff
+		m.selectedArpTable.SetColumns(buff.cols)
+		m.selectedArpTable.SetRows(buff.rows)
 	case "q", "ctrl+c":
 		return m, tea.Quit
 	}
@@ -232,13 +273,17 @@ func main() {
 	//	panic(c.err)
 	//}
 
+	selectedArpStyles := arpTableStyles
+	selectedArpStyles.Selected = lipgloss.NewStyle()
+
 	ui := model{
-		db:              db,
-		selectedArpPane: pane{title: "Host Information"},
-		attacksPane:     pane{title: "Attacks"},
-		logsPane:        pane{title: "Logs"},
-		arpTable:        arpTable{Model: table.New(table.WithStyles(arpTableStyles))},
-		focusedId:       arpTableId,
+		db:               db,
+		selectedArpPane:  pane{title: "Host Information"},
+		attacksPane:      pane{title: "Attacks"},
+		logsPane:         pane{title: "Logs"},
+		arpTable:         arpTable{Model: table.New(table.WithStyles(arpTableStyles))},
+		selectedArpTable: table.New(table.WithStyles(selectedArpStyles)),
+		focusedId:        arpTableId,
 	}
 
 	if _, err := tea.NewProgram(ui, tea.WithAltScreen(), tea.WithMouseCellMotion()).Run(); err != nil {

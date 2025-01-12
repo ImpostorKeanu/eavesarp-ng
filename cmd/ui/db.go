@@ -21,8 +21,8 @@ FROM arp_count
 INNER JOIN ip AS sender ON arp_count.sender_ip_id = sender.id
 INNER JOIN ip AS target ON arp_count.target_ip_id = target.id
 ORDER BY
-    sender.value,
 	snac DESC,
+    sender.value,
     arp_count.count DESC
 LIMIT ? OFFSET ?`
 
@@ -30,10 +30,10 @@ LIMIT ? OFFSET ?`
 SELECT ip.value AS ip,
        ip.disc_meth AS ip_disc_meth,
        ip.ptr_resolved AS ip_ptr_resolved,
-       mac.value AS mac,
-       mac.disc_meth AS mac_disc_meth,
-       dns_record.kind AS dns_record_kind,
-       dns_name.value AS dns_name
+       COALESCE(mac.value, '') AS mac,
+       COALESCE(mac.disc_meth, '') AS mac_disc_meth,
+       COALESCE(dns_record.kind, '') AS dns_record_kind,
+       COALESCE(dns_name.value, '') AS dns_name
 FROM ip
 LEFT JOIN mac ON mac.id = ip.mac_id
 LEFT JOIN dns_record ON dns_record.ip_id = ip.id
@@ -67,10 +67,6 @@ type (
 
 func getSelectedArpTableContent(db *sql.DB, selectedRow arpTableRow) (content selectedArpTableContent) {
 
-	content.cols = append(content.cols,
-		table.Column{Title: "Sender"},
-		table.Column{Title: "Target"})
-
 	rows, err := db.Query(arpTableSelectionQuery, selectedRow.senderIp, selectedRow.targetIp)
 	if err != nil {
 		// TODO
@@ -82,22 +78,22 @@ func getSelectedArpTableContent(db *sql.DB, selectedRow arpTableRow) (content se
 	//=====================================
 
 	var sender, target *eavesarp_ng.Ip
-	defer rows.Close()
 
 	for rows.Next() {
-		var ip, ipDiscMeth, mac, macDiscMeth, dnsRecordKind, dnsName *string
+
+		var ip, ipDiscMeth, mac, macDiscMeth, dnsRecordKind, dnsName string
 		var ptrResolved bool
-		if err = rows.Scan(ip, ipDiscMeth, &ptrResolved, mac, macDiscMeth, dnsRecordKind, dnsName); err != nil {
+		if err = rows.Scan(&ip, &ipDiscMeth, &ptrResolved, &mac, &macDiscMeth, &dnsRecordKind, &dnsName); err != nil {
 			// TODO
 			panic(err)
 		}
 
-		if ip == nil {
+		if ip == "" {
 			continue
 		}
 
 		var ipObj *eavesarp_ng.Ip
-		if *ip == selectedRow.senderIp {
+		if ip == selectedRow.senderIp {
 
 			if sender == nil {
 
@@ -106,13 +102,13 @@ func getSelectedArpTableContent(db *sql.DB, selectedRow arpTableRow) (content se
 				//======================
 
 				ipObj = &eavesarp_ng.Ip{
-					Value: *ip,
+					Value: ip,
 					Mac: &eavesarp_ng.Mac{
-						Value:      *mac,
-						DiscMethod: eavesarp_ng.DiscMethod(*macDiscMeth),
+						Value:      mac,
+						DiscMethod: eavesarp_ng.DiscMethod(macDiscMeth),
 					},
 					PtrResolved: ptrResolved,
-					DiscMethod:  eavesarp_ng.DiscMethod(*ipDiscMeth),
+					DiscMethod:  eavesarp_ng.DiscMethod(ipDiscMeth),
 				}
 				sender = ipObj
 
@@ -120,7 +116,7 @@ func getSelectedArpTableContent(db *sql.DB, selectedRow arpTableRow) (content se
 				ipObj = sender
 			}
 
-		} else if *ip == selectedRow.targetIp {
+		} else if ip == selectedRow.targetIp {
 
 			if target == nil {
 
@@ -129,16 +125,16 @@ func getSelectedArpTableContent(db *sql.DB, selectedRow arpTableRow) (content se
 				//======================
 
 				var m *eavesarp_ng.Mac
-				if mac != nil {
+				if mac != "" {
 					m = &eavesarp_ng.Mac{
-						Value:      *mac,
-						DiscMethod: eavesarp_ng.DiscMethod(*macDiscMeth),
+						Value:      mac,
+						DiscMethod: eavesarp_ng.DiscMethod(macDiscMeth),
 					}
 				}
 				ipObj = &eavesarp_ng.Ip{
-					Value:       *ip,
+					Value:       ip,
 					Mac:         m,
-					DiscMethod:  eavesarp_ng.DiscMethod(*ipDiscMeth),
+					DiscMethod:  eavesarp_ng.DiscMethod(ipDiscMeth),
 					PtrResolved: ptrResolved,
 				}
 				target = ipObj
@@ -149,12 +145,12 @@ func getSelectedArpTableContent(db *sql.DB, selectedRow arpTableRow) (content se
 
 		}
 
-		if dnsRecordKind != nil {
+		if dnsRecordKind != "" {
 			dnsFields := eavesarp_ng.DnsRecordFields{
 				Ip:   *ipObj,
-				Name: eavesarp_ng.DnsName{Id: 0, IsNew: false, Value: *dnsName},
+				Name: eavesarp_ng.DnsName{Id: 0, IsNew: false, Value: dnsName},
 			}
-			switch *dnsRecordKind {
+			switch dnsRecordKind {
 			case "a":
 				target.ARecords = append(target.ARecords, eavesarp_ng.ARecord{DnsRecordFields: dnsFields})
 			case "ptr":
@@ -189,10 +185,27 @@ func getSelectedArpTableContent(db *sql.DB, selectedRow arpTableRow) (content se
 
 	rows.Close()
 
-	senderIpCell := fmt.Sprintf("%s (%s)", sender.Value, sender.Mac.Value)
-	ipRow := table.Row{senderIpCell, target.Value}
+	//===================
+	// PREPARE TABLE ROWS
+	//===================
 
+	// Track max length for each column
+	var senderMaxWidth, targetMaxWidth int
+
+	// IP row
+	ipRow := table.Row{"IP", sender.Value, target.Value}
+
+	// MAC row
+	macRow := table.Row{"MAC", sender.Mac.Value, "---"}
+	if target.Mac != nil {
+		macRow = table.Row{"MAC", sender.Mac.Value, target.Mac.Value}
+	}
+	content.rows = append(content.rows, ipRow, macRow)
+
+	// Cells for DNS values
 	var senderDnsCell, targetDnsCell string
+
+	// sender DNS values
 	for _, r := range sender.PtrRecords {
 		senderDnsCell += fmt.Sprintf("%s (%s)", r.Name, "ptr")
 	}
@@ -200,20 +213,31 @@ func getSelectedArpTableContent(db *sql.DB, selectedRow arpTableRow) (content se
 		senderDnsCell += fmt.Sprintf("%s (%s)", r.Name, "a")
 	}
 
+	// target DNS values
 	for _, r := range target.PtrRecords {
 		targetDnsCell += fmt.Sprintf("%s (%s)", r.Name, "ptr")
 	}
 	for _, r := range target.ARecords {
 		targetDnsCell += fmt.Sprintf("%s (%s)", r.Name, "a")
 	}
-	dnsRow := table.Row{senderDnsCell, targetDnsCell}
 
-	var aitmRow table.Row
-	if aitmValue != "" {
-		aitmRow = table.Row{"", aitmValue}
+	if senderDnsCell == "" {
+		senderDnsCell = "---"
 	}
+	if targetDnsCell == "" {
+		targetDnsCell = "---"
+	}
+	content.rows = append(content.rows, table.Row{"DNS", senderDnsCell, targetDnsCell})
 
-	content.rows = append(content.rows, ipRow, dnsRow, aitmRow)
+	if aitmValue == "" {
+		aitmValue = "---"
+	}
+	content.rows = append(content.rows, table.Row{"AITM", "---", aitmValue})
+
+	content.cols = append(content.cols,
+		table.Column{Title: "", Width: 5},
+		table.Column{Title: "Sender", Width: senderMaxWidth},
+		table.Column{Title: "Target", Width: targetMaxWidth})
 
 	return
 }
@@ -328,4 +352,19 @@ func getArpTableContent(db *sql.DB, limit, offset int) (content arpTableContent)
 
 	return
 
+}
+
+func getLonger(s string, c int) int {
+	if len(s) > c {
+		return len(s)
+	}
+	return c
+}
+
+func longestLine(s string, i *int) {
+	for _, x := range strings.Split(s, "\n") {
+		if len(x) > *i {
+			*i = len(x)
+		}
+	}
 }
