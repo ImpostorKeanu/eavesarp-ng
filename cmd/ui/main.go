@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"github.com/charmbracelet/bubbles/table"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	eavesarp_ng "github.com/impostorkeanu/eavesarp-ng"
@@ -12,12 +14,19 @@ import (
 	_ "modernc.org/sqlite"
 	"os"
 	"strconv"
+	"strings"
+	"time"
 )
 
 var (
 	panelStyle = lipgloss.NewStyle().
-		Border(lipgloss.NormalBorder(), true, true, true, true)
-	arpTableStyles table.Styles
+		Border(lipgloss.NormalBorder(), true, true, true, true).
+		BorderForeground(lipgloss.Color("240"))
+	centerStyle             = lipgloss.NewStyle().AlignHorizontal(lipgloss.Center)
+	selectedPaneBorderColor = lipgloss.Color("248")
+	arpTableStyles          table.Styles
+
+	eventsC = make(chan string)
 )
 
 func init() {
@@ -36,22 +45,78 @@ func init() {
 }
 
 const (
-	arpTableId = "arpTable"
+	arpTableId         panelId = "arpTable"
+	selectedArpTableId panelId = "selectedArpTable"
+	logPaneId          panelId = "logViewPort"
+	attacksPaneId      panelId = "attacksViewPort"
 )
 
-type (
-	model struct {
-		db        *sql.DB
-		arpTable  table.Model
-		curArpRow arpRow
+func (p panelId) String() string {
+	return string(p)
+}
 
+func (p panelId) Int() int {
+	switch p {
+	case arpTableId:
+		return 0
+	case selectedArpTableId:
+		return 1
+	case logPaneId:
+		return 2
+	case attacksPaneId:
+		return 3
+	default:
+		panic("invalid panelId")
+	}
+}
+
+func panelIdFromInt(i int, direction string) (p panelId) {
+	if direction == "forward" {
+		if i == 3 {
+			i = 0
+		} else {
+			i++
+		}
+	} else if direction == "backward" {
+		if i == 0 {
+			i = 3
+		} else {
+			i--
+		}
+	} else {
+		panic("invalid integer for direction")
+	}
+
+	switch i {
+	case 0:
+		return arpTableId
+	case 1:
+		return selectedArpTableId
+	case 2:
+		return logPaneId
+	case 3:
+		return attacksPaneId
+	default:
+		panic("invalid panelId integer")
+	}
+}
+
+type (
+	panelId string
+
+	model struct {
+		db            *sql.DB
+		arpTable      table.Model
+		curArpRow     arpRow
 		curArpTable   table.Model
 		curArpContent *selectedArpTableContent
 
+		logViewPort viewport.Model
+
 		uiHeight, uiWidth       int
 		rightHeight, rightWidth int
-
-		focusedId string
+		focusedId               panelId
+		events                  []string
 	}
 
 	arpRow struct {
@@ -61,6 +126,8 @@ type (
 		targetIp string
 		arpCount int
 	}
+
+	logEvent string
 )
 
 func newArpTableRow(r table.Row) (_ arpRow, err error) {
@@ -74,14 +141,23 @@ func newArpTableRow(r table.Row) (_ arpRow, err error) {
 }
 
 func (m model) Init() tea.Cmd {
-	c := getArpTableContent(m.db, 100, 0)
-	if c.err != nil {
-		// TODO
-		panic(c.err)
+	return tea.Batch(
+		emitEvent,
+		emitTestEvents,
+	)
+}
+
+func emitEvent() tea.Msg {
+	return logEvent(<-eventsC)
+}
+
+func emitTestEvents() tea.Msg {
+	time.Sleep(2 * time.Second)
+	for x := 0; x < 10; x++ {
+		eventsC <- fmt.Sprintf("event %d", x)
+		time.Sleep(500 * time.Millisecond)
 	}
-	return func() tea.Msg {
-		return c
-	}
+	return ""
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -103,20 +179,87 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		m.doArpTableContent(msg)
 
-	case tea.KeyMsg:
+	case logEvent:
 
-		// TODO derive method of tracking which pane has focus so that we can handle
-		//  events for them
-		var tbl *table.Model
-		switch m.focusedId {
-		case arpTableId:
-			tbl = &m.arpTable
+		m.events = append(m.events, string(msg))
+		m.logViewPort.SetContent(strings.Join(m.events, "\n"))
+		return m, emitEvent
+
+	case tea.MouseMsg:
+
+		if msg.Action != tea.MouseActionRelease || msg.Button != tea.MouseButtonLeft {
+			return m, nil
 		}
 
-		if tbl != nil {
-			if m, cmd := m.doArpTableKeyPress(msg.String()); cmd != nil && m != nil {
-				return m, cmd
+		//===========================================
+		// CHANGE FOCUSED PANES BASED ON HEADER CLICK
+		//===========================================
+
+		if m.focusedId != logPaneId && zone.Get(logPaneId.String()).InBounds(msg) {
+			m.focusedId = logPaneId
+		} else if m.focusedId != arpTableId && zone.Get(arpTableId.String()).InBounds(msg) {
+			m.focusedId = arpTableId
+		} else if m.focusedId != attacksPaneId && zone.Get(attacksPaneId.String()).InBounds(msg) {
+			m.focusedId = attacksPaneId
+		} else if m.focusedId != selectedArpTableId && zone.Get(selectedArpTableId.String()).InBounds(msg) {
+			m.focusedId = selectedArpTableId
+		}
+
+	case tea.KeyMsg:
+
+		//====================
+		// STANDARD KEYSTROKES
+		//====================
+
+		switch msg.String() {
+		case "ctrl+shift+right":
+			// Move forward a panel
+			m.focusedId = panelIdFromInt(m.focusedId.Int(), "forward")
+		case "ctrl+shift+left":
+			// Move back a panel
+			m.focusedId = panelIdFromInt(m.focusedId.Int(), "backward")
+		}
+
+		switch m.focusedId {
+		case arpTableId:
+
+			//=====================
+			// ARP TABLE KEYSTROKES
+			//=====================
+
+			switch msg.String() {
+			case "up", "k":
+				if m.arpTable.Cursor() == 0 {
+					m.arpTable.GotoBottom()
+				} else {
+					m.arpTable.MoveUp(1)
+				}
+				m.doCurrentArpTableRow()
+			case "down", "j":
+				if m.arpTable.Cursor() == len(m.arpTable.Rows())-1 {
+					m.arpTable.GotoTop()
+				} else {
+					m.arpTable.MoveDown(1)
+				}
+				m.doCurrentArpTableRow()
+			case "q", "ctrl+c":
+				return m, tea.Quit
 			}
+			return m, nil
+
+		case logPaneId:
+
+			//====================
+			// LOG PANE KEYSTROKES
+			//====================
+
+			switch msg.String() {
+			case "down":
+				m.logViewPort.LineDown(1)
+			case "up":
+				m.logViewPort.LineUp(1)
+			}
+
 		}
 
 	}
@@ -130,7 +273,7 @@ func (m model) View() string {
 	// ARP TABLE PANE
 	//===============
 
-	m.arpTable.SetHeight(m.uiHeight)
+	m.arpTable.SetHeight(m.uiHeight - 1)
 
 	//===========================
 	// CURRENT ARP TABLE ROW PANE
@@ -146,20 +289,60 @@ func (m model) View() string {
 	rightPaneStyle := panelStyle
 	rightPaneStyle = rightPaneStyle.Width(m.rightWidth).Height(m.rightHeight)
 
-	//m.selectedArpPane.style = rightPaneStyle
-	//m.attacksPane.style = rightPaneStyle
-
 	// Logging pane will be shorter than the other two right-hand panes
-	_, h := lipgloss.Size(rightPaneStyle.Render())
-	logsPaneStyle := rightPaneStyle
-	logsPaneStyle = logsPaneStyle.Height(m.uiHeight - (h * 2))
+	w, h := lipgloss.Size(rightPaneStyle.Render())
 
-	return zone.Scan(lipgloss.JoinHorizontal(lipgloss.Left,
-		panelStyle.Render(m.arpTable.View()),
-		lipgloss.JoinVertical(lipgloss.Left,
-			panelStyle.Render(m.curArpTable.View()),
-			rightPaneStyle.Render("Attacks"),
-			logsPaneStyle.Render("Logs"))))
+	logsHeight := m.uiHeight - (h * 2)
+	logsPaneStyle := rightPaneStyle
+	logsPaneStyle = logsPaneStyle.Height(logsHeight)
+
+	m.logViewPort.Height = (m.uiHeight - (h * 2)) - 1
+	m.logViewPort.Width = w
+
+	if m.logViewPort.YOffset == 0 {
+		// Scroll to the bottom of the logs viewport
+		m.logViewPort.GotoBottom()
+	}
+
+	centerRightHeadingStyle := centerStyle
+	centerRightHeadingStyle = centerRightHeadingStyle.Width(m.rightWidth)
+
+	arpTableStyle := panelStyle
+	selectedArpTableStyle := panelStyle
+	attacksPanelStyle := panelStyle
+	logViewPortStyle := panelStyle
+
+	//==================================
+	// BRIGHTEN BORDER FOR SELECTED PANE
+	//==================================
+
+	switch m.focusedId {
+	case arpTableId:
+		arpTableStyle = arpTableStyle.BorderForeground(selectedPaneBorderColor)
+	case selectedArpTableId:
+		selectedArpTableStyle = selectedArpTableStyle.BorderForeground(selectedPaneBorderColor)
+	case attacksPaneId:
+		attacksPanelStyle = attacksPanelStyle.BorderForeground(selectedPaneBorderColor)
+	case logPaneId:
+		logViewPortStyle = logViewPortStyle.BorderForeground(selectedPaneBorderColor)
+	}
+
+	m.logViewPort.Style = logViewPortStyle
+	attacksPanelStyle = attacksPanelStyle.Width(m.rightWidth).Height(m.rightHeight)
+
+	leftPane := lipgloss.JoinVertical(lipgloss.Center,
+		zone.Mark(arpTableId.String(), centerStyle.Render("ARP Table")),
+		arpTableStyle.Render(lipgloss.JoinHorizontal(lipgloss.Center, m.arpTable.View())))
+
+	rightPane := lipgloss.JoinVertical(lipgloss.Left,
+		zone.Mark(selectedArpTableId.String(), centerRightHeadingStyle.Render("Selected ARP Row")),
+		selectedArpTableStyle.Render(m.curArpTable.View()),
+		zone.Mark(attacksPaneId.String(), centerRightHeadingStyle.Render("Attacks")),
+		attacksPanelStyle.Render("stuff and things"),
+		zone.Mark(logPaneId.String(), centerRightHeadingStyle.Render("Logs")),
+		m.logViewPort.View())
+
+	return zone.Scan(lipgloss.JoinHorizontal(lipgloss.Left, leftPane, rightPane))
 }
 
 func (m *model) doResize(msg tea.WindowSizeMsg) {
@@ -185,11 +368,6 @@ func (m *model) doArpTableContent(c arpTableContent) {
 		panic(c.err)
 	}
 	m.arpTable.SetColumns(c.cols)
-
-	//for n := 0; n < 90; n++ {
-	//	c.rows = append(c.rows, table.Row{"x", "x", "x", "x", "x"})
-	//}
-
 	m.arpTable.SetRows(c.rows)
 	m.doCurrentArpTableRow()
 }
@@ -243,8 +421,17 @@ func main() {
 		db:          db,
 		arpTable:    table.New(table.WithStyles(arpTableStyles)),
 		curArpTable: table.New(table.WithStyles(selectedArpStyles)),
+		logViewPort: viewport.New(0, 0),
 		focusedId:   arpTableId,
 	}
+	ui.logViewPort.Style = panelStyle
+
+	c := getArpTableContent(ui.db, 100, 0)
+	if c.err != nil {
+		// TODO
+		panic(c.err)
+	}
+	ui.doArpTableContent(c)
 
 	if _, err := tea.NewProgram(ui, tea.WithAltScreen(), tea.WithMouseCellMotion()).Run(); err != nil {
 		panic(err)
