@@ -13,6 +13,7 @@ import (
 	"math"
 	_ "modernc.org/sqlite"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -25,8 +26,12 @@ var (
 	centerStyle             = lipgloss.NewStyle().AlignHorizontal(lipgloss.Center)
 	selectedPaneBorderColor = lipgloss.Color("248")
 	arpTableStyles          table.Styles
+	eventsC                 = make(chan string)
+)
 
-	eventsC = make(chan string)
+const (
+	maxLogCount  = 1000
+	maxLogLength = 2000
 )
 
 func init() {
@@ -44,66 +49,7 @@ func init() {
 		Bold(false)
 }
 
-const (
-	arpTableId         panelId = "arpTable"
-	selectedArpTableId panelId = "selectedArpTable"
-	logPaneId          panelId = "logViewPort"
-	attacksPaneId      panelId = "attacksViewPort"
-)
-
-func (p panelId) String() string {
-	return string(p)
-}
-
-func (p panelId) Int() int {
-	switch p {
-	case arpTableId:
-		return 0
-	case selectedArpTableId:
-		return 1
-	case logPaneId:
-		return 2
-	case attacksPaneId:
-		return 3
-	default:
-		panic("invalid panelId")
-	}
-}
-
-func panelIdFromInt(i int, direction string) (p panelId) {
-	if direction == "forward" {
-		if i == 3 {
-			i = 0
-		} else {
-			i++
-		}
-	} else if direction == "backward" {
-		if i == 0 {
-			i = 3
-		} else {
-			i--
-		}
-	} else {
-		panic("invalid integer for direction")
-	}
-
-	switch i {
-	case 0:
-		return arpTableId
-	case 1:
-		return selectedArpTableId
-	case 2:
-		return logPaneId
-	case 3:
-		return attacksPaneId
-	default:
-		panic("invalid panelId integer")
-	}
-}
-
 type (
-	panelId string
-
 	model struct {
 		db            *sql.DB
 		arpTable      table.Model
@@ -115,7 +61,7 @@ type (
 
 		uiHeight, uiWidth       int
 		rightHeight, rightWidth int
-		focusedId               panelId
+		focusedId               paneId
 		events                  []string
 	}
 
@@ -157,7 +103,7 @@ func emitTestEvents() tea.Msg {
 		eventsC <- fmt.Sprintf("event %d", x)
 		time.Sleep(500 * time.Millisecond)
 	}
-	return ""
+	return nil
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -181,8 +127,27 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case logEvent:
 
-		m.events = append(m.events, string(msg))
+		s := string(msg)
+
+		// Trim length of the log event
+		if len(s) > maxLogLength {
+			s = strings.Join(strings.SplitN(s, "", maxLogLength), "")
+		}
+
+		// Remove 10% of logs when the max count is met
+		if len(m.events) >= maxLogCount {
+			l := len(m.events)
+			m.events = slices.Delete(m.events, l-(l/10), l-1)
+		}
+
+		// Capture the event and write to the viewport
+		m.events = append(m.events, s)
 		m.logViewPort.SetContent(strings.Join(m.events, "\n"))
+
+		// Return the model and start a new process to catch the
+		// next event, which is handled by the event loop managed
+		// by charmbracelet.
+
 		return m, emitEvent
 
 	case tea.MouseMsg:
@@ -195,14 +160,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// CHANGE FOCUSED PANES BASED ON HEADER CLICK
 		//===========================================
 
-		if m.focusedId != logPaneId && zone.Get(logPaneId.String()).InBounds(msg) {
-			m.focusedId = logPaneId
+		if m.focusedId != logViewPortId && zone.Get(logViewPortId.String()).InBounds(msg) {
+			m.focusedId = logViewPortId
 		} else if m.focusedId != arpTableId && zone.Get(arpTableId.String()).InBounds(msg) {
 			m.focusedId = arpTableId
-		} else if m.focusedId != attacksPaneId && zone.Get(attacksPaneId.String()).InBounds(msg) {
-			m.focusedId = attacksPaneId
-		} else if m.focusedId != selectedArpTableId && zone.Get(selectedArpTableId.String()).InBounds(msg) {
-			m.focusedId = selectedArpTableId
+		} else if m.focusedId != attacksViewPortId && zone.Get(attacksViewPortId.String()).InBounds(msg) {
+			m.focusedId = attacksViewPortId
+		} else if m.focusedId != curArpTableId && zone.Get(curArpTableId.String()).InBounds(msg) {
+			m.focusedId = curArpTableId
 		}
 
 	case tea.KeyMsg:
@@ -214,10 +179,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "ctrl+shift+right":
 			// Move forward a panel
-			m.focusedId = panelIdFromInt(m.focusedId.Int(), "forward")
+			m.focusedId = m.focusedId.nextPane("forward")
 		case "ctrl+shift+left":
 			// Move back a panel
-			m.focusedId = panelIdFromInt(m.focusedId.Int(), "backward")
+			m.focusedId = m.focusedId.nextPane("backward")
 		}
 
 		switch m.focusedId {
@@ -247,7 +212,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 
-		case logPaneId:
+		case logViewPortId:
 
 			//====================
 			// LOG PANE KEYSTROKES
@@ -319,11 +284,11 @@ func (m model) View() string {
 	switch m.focusedId {
 	case arpTableId:
 		arpTableStyle = arpTableStyle.BorderForeground(selectedPaneBorderColor)
-	case selectedArpTableId:
+	case curArpTableId:
 		selectedArpTableStyle = selectedArpTableStyle.BorderForeground(selectedPaneBorderColor)
-	case attacksPaneId:
+	case attacksViewPortId:
 		attacksPanelStyle = attacksPanelStyle.BorderForeground(selectedPaneBorderColor)
-	case logPaneId:
+	case logViewPortId:
 		logViewPortStyle = logViewPortStyle.BorderForeground(selectedPaneBorderColor)
 	}
 
@@ -335,11 +300,11 @@ func (m model) View() string {
 		arpTableStyle.Render(lipgloss.JoinHorizontal(lipgloss.Center, m.arpTable.View())))
 
 	rightPane := lipgloss.JoinVertical(lipgloss.Left,
-		zone.Mark(selectedArpTableId.String(), centerRightHeadingStyle.Render("Selected ARP Row")),
+		zone.Mark(curArpTableId.String(), centerRightHeadingStyle.Render("Selected ARP Row")),
 		selectedArpTableStyle.Render(m.curArpTable.View()),
-		zone.Mark(attacksPaneId.String(), centerRightHeadingStyle.Render("Attacks")),
+		zone.Mark(attacksViewPortId.String(), centerRightHeadingStyle.Render("Attacks")),
 		attacksPanelStyle.Render("stuff and things"),
-		zone.Mark(logPaneId.String(), centerRightHeadingStyle.Render("Logs")),
+		zone.Mark(logViewPortId.String(), centerRightHeadingStyle.Render("Logs")),
 		m.logViewPort.View())
 
 	return zone.Scan(lipgloss.JoinHorizontal(lipgloss.Left, leftPane, rightPane))
@@ -426,6 +391,7 @@ func main() {
 	}
 	ui.logViewPort.Style = panelStyle
 
+	// Initialize the ARP table
 	c := getArpTableContent(ui.db, 100, 0)
 	if c.err != nil {
 		// TODO
