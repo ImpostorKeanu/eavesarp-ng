@@ -131,10 +131,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Trim length of the log event
 		if len(s) > maxLogLength {
-			s = strings.Join(strings.SplitN(s, "", maxLogLength), "")
+			s = s[:maxLogLength-1]
 		}
 
-		// Remove 10% of logs when the max count is met
+		// Trim 10% of logs when the maximum has been met to
+		// make room for new events
 		if len(m.events) >= maxLogCount {
 			l := len(m.events)
 			m.events = slices.Delete(m.events, l-(l/10), l-1)
@@ -147,7 +148,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Return the model and start a new process to catch the
 		// next event, which is handled by the event loop managed
 		// by charmbracelet.
-
 		return m, emitEvent
 
 	case tea.MouseMsg:
