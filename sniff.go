@@ -9,6 +9,7 @@ import (
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
+	"io"
 	"net"
 	"os"
 )
@@ -21,22 +22,18 @@ var (
 	stopSnifferC = make(chan bool)
 )
 
-func getInterface(name string) (iface *net.Interface, ipnet *net.IPNet, err error) {
+func getInterface(name string, eWriters *EventWriters) (iface *net.Interface, ipnet *net.IPNet, err error) {
 
 	iface, err = net.InterfaceByName(name)
 	if err != nil {
-		// TODO
-		//println("error looking up network interface: ", err.Error())
-		//os.Exit(1)
+		eWriters.Writef("error looking up network interface: %v", err.Error())
 		return
 	}
 
 	var addrs []net.Addr
 	addrs, err = iface.Addrs()
 	if err != nil {
-		// TODO
-		//println("failed to obtain ip address from network interface: ", err.Error())
-		//os.Exit(1)
+		eWriters.Writef("failed to obtain ip address from network interface: %v", err.Error())
 		return
 	} else {
 		for _, a := range addrs {
@@ -54,31 +51,36 @@ func getInterface(name string) (iface *net.Interface, ipnet *net.IPNet, err erro
 	return
 }
 
-func MainSniff(db *sql.DB, ifaceName string) {
+// MainSniff starts sniffer subprocesses.
+//
+// - ifaceName is the name of the network interface to sniff on.
+// - eventWriters is any number of writers that will receive general
+//   event emitted by Eavesarp.
+func MainSniff(db *sql.DB, ifaceName string, eventWriters ...io.StringWriter) {
 	// SOURCE: https://github.com/google/gopacket/blob/master/examples/arpscan/arpscan.go
 
+	eWriters := EventWriters{writers: eventWriters}
+
 	defer db.Close()
-	go ArpSender()
+	go ArpSender(&eWriters)
 	defer func() {
-		// TODO
-		println("killing arp sender process")
+		eWriters.Write("killing arp sender routine")
 		stopArpSenderC <- true
 	}()
 
-	go DnsSender()
+	go DnsSender(&eWriters)
 	defer func() {
-		// TODO
-		println("killing dns sender process")
+		eWriters.Write("killing dns sender routine")
 		stopDnsSenderC <- true
 	}()
 
 	//==========================
 	// PREPARE NETWORK INTERFACE
 	//==========================
-	iface, addr, err := getInterface(ifaceName)
+
+	iface, addr, err := getInterface(ifaceName, &eWriters)
 	if err != nil {
-		// TODO
-		println("failed to obtain interface and addr", err.Error())
+		eWriters.Writef("failed to obtain interface and addr: %s", err.Error())
 		os.Exit(1)
 	}
 
@@ -86,18 +88,18 @@ func MainSniff(db *sql.DB, ifaceName string) {
 	// PERPETUALLY CAPTURE PACKETS
 	//============================
 
-	println("starting packet capture")
+	eWriters.Write("starting packet capture")
 
 	handle, err := pcap.OpenLive(iface.Name, 65536, true, pcap.BlockForever)
 	if err != nil {
 		// TODO
-		println("error opening packet capture: ", err.Error())
+		eWriters.Writef("error opening packet capture: %v", err.Error())
 		os.Exit(1)
 	}
 	defer handle.Close()
 	if err = handle.SetBPFFilter("arp"); err != nil {
 		// TODO
-		println("failed to set bpf filter: ", err.Error())
+		eWriters.Writef("failed to set bpf filter: %v", err.Error())
 		os.Exit(1)
 	}
 
@@ -133,10 +135,14 @@ outer:
 				// HANDLE PASSIVELY CAPTURED ARP REQUEST
 				//======================================
 
-				fmt.Printf("ARP Request: %s (%s) -> %s\n", u.SrcIp, u.SrcHw, u.DstIp)
+				_, srcIp, dstIp, err := u.getOrCreateSnifferDbValues(db, PassiveArpMeth, &eWriters)
 
-				_, srcIp, dstIp, err := u.getOrCreateSnifferDbValues(db, PassiveArpMeth)
-				// TODO log new IP discoveries
+				if srcIp.IsNew {
+					eWriters.Writef("new ip passively discovered: %v", srcIp.Value)
+				}
+				if dstIp.IsNew {
+					eWriters.Writef("new ip passively discovered: %v", dstIp.Value)
+				}
 
 				if dstIp.MacId == nil && !activeArps.Has(dstIp.Value) && !dstIp.ArpResolved {
 
@@ -151,11 +157,10 @@ outer:
 						srcIp:     addr.IP,
 						dstIp:     arp.DstProtAddress,
 						addActiveArp: func() (err error) {
-							err = activeArps.Add(dstIp, func() error { return SetArpResolved(db, dstIp.Id) })
+							err = activeArps.Add(dstIp, &eWriters, func() error { return SetArpResolved(db, dstIp.Id) })
 							if err != nil && !errors.Is(err, activeArpAlreadySet) {
-								// TODO logging
-								println("failed to watch for active arp response", err.Error())
-								os.Exit(1)
+								eWriters.Writef("error: failed to watch for active arp response: %v", err.Error())
+								return
 							} else if err != nil {
 								err = nil
 							}
@@ -163,20 +168,18 @@ outer:
 						},
 					}
 
-					fmt.Printf("initiated active arp request for %v\n", dstIp.Value)
+					eWriters.Writef("initiated active arp request for %v", dstIp.Value)
 				}
 
 				//====================
 				// INCREMENT ARP COUNT
 				//====================
 
-				count, err := IncArpCount(db, srcIp.Id, dstIp.Id)
+				_, err = IncArpCount(db, srcIp.Id, dstIp.Id)
 				if err != nil {
-					// TODO
-					println("failed to increment arp count: ", err.Error())
-					os.Exit(1)
+					eWriters.Writef("failed to increment arp count: %v", err.Error())
+					continue
 				}
-				fmt.Printf("Incremented arp count: %s -> %s -> %d\n", srcIp.Value, dstIp.Value, count)
 
 				//===================
 				// DO NAME RESOLUTION
@@ -190,14 +193,13 @@ outer:
 								target: ip.Value,
 								failure: func(e error) {
 									if err := SetPtrResolved(db, *ip); err != nil {
-										// TODO
-										println("failed to set ptr to resolved: ", err.Error())
-										os.Exit(1)
+										eWriters.Writef("failed to set ptr to resolved: %v", err.Error())
+										return
 									}
 								},
 								after: func(names []string) {
 									for _, name := range names {
-										handlePtrName(db, ip, name, nil)
+										handlePtrName(db, &eWriters, ip, name, nil)
 									}
 								},
 							}
@@ -212,24 +214,21 @@ outer:
 				//===================
 
 				if ip := activeArps.Get(u.SrcIp); ip != nil {
-					fmt.Printf("ARP Response: %s (%s) -> %s (%s)\n", u.SrcIp, u.SrcHw, u.DstIp, u.DstHw)
-					srcMac, srcIp, _, err := u.getOrCreateSnifferDbValues(db, ActiveArpMeth)
+					srcMac, srcIp, _, err := u.getOrCreateSnifferDbValues(db, ActiveArpMeth, &eWriters)
 					if err != nil {
-						// TODO
-						println("failed to handle arp reply: ", err.Error())
-						os.Exit(1)
+						eWriters.Writef("failed to handle arp reply: %v", err.Error())
+						return
 					}
-					fmt.Printf("received arp reply: %s (%s)\n", srcIp.Value, srcMac.Value)
+					eWriters.Writef("received arp reply: %s (%s)", srcIp.Value, srcMac.Value)
 				}
 			}
 		}
 	}
 
-	// TODO
-	println("exiting main sniffer thread")
+	eWriters.Write("exiting main sniffer thread")
 }
 
-func (u unpackedArp) getOrCreateSnifferDbValues(db *sql.DB, arpMethod DiscMethod) (srcMac *Mac, srcIp *Ip,
+func (u unpackedArp) getOrCreateSnifferDbValues(db *sql.DB, arpMethod DiscMethod, eWriters *EventWriters) (srcMac *Mac, srcIp *Ip,
   dstIp *Ip, err error) {
 
 	//===============
@@ -238,9 +237,8 @@ func (u unpackedArp) getOrCreateSnifferDbValues(db *sql.DB, arpMethod DiscMethod
 
 	srcMacBuff, err := GetOrCreateMac(db, u.SrcHw, arpMethod)
 	if err != nil {
-		// TODO
-		println("failed to create mac: ", err.Error())
-		os.Exit(1)
+		eWriters.Writef("failed to create mac: %v", err.Error())
+		return
 	}
 	srcMac = &srcMacBuff
 
@@ -250,9 +248,8 @@ func (u unpackedArp) getOrCreateSnifferDbValues(db *sql.DB, arpMethod DiscMethod
 
 	srcIpBuff, err := GetOrCreateIp(db, u.SrcIp, &srcMacBuff.Id, arpMethod, true, false)
 	if err != nil {
-		// TODO
-		println("failed to create mac: ", err.Error())
-		os.Exit(1)
+		eWriters.Writef("failed to create mac: %v", err.Error())
+		return
 	} else if srcIpBuff.MacId == nil {
 
 		//============
@@ -262,19 +259,19 @@ func (u unpackedArp) getOrCreateSnifferDbValues(db *sql.DB, arpMethod DiscMethod
 		// - since goc doesn't update records, this means we'll need to update it manually
 
 		if _, err = db.Exec(`UPDATE ip SET mac_id=? WHERE id=?`, srcMac.Id, srcIpBuff.Id); err != nil {
-			println("failed to update ip with mac address: ", err.Error())
-			os.Exit(1)
+			eWriters.Writef("failed to update ip with mac address: %v", err.Error())
+			return
 		}
 		srcIpBuff.MacId = &srcMac.Id
 	}
 	srcIp = &srcIpBuff
 
 	if arpMethod == PassiveArpMeth {
-		dstIpBuff, err := GetOrCreateIp(db, u.DstIp, nil, arpMethod, false, false)
+		var dstIpBuff Ip
+		dstIpBuff, err = GetOrCreateIp(db, u.DstIp, nil, arpMethod, false, false)
 		if err != nil {
-			// TODO
-			println("failed to create mac: ", err.Error())
-			os.Exit(1)
+			eWriters.Writef("failed to create mac: %v", err.Error())
+			return
 		}
 		dstIp = &dstIpBuff
 	}
@@ -282,7 +279,7 @@ func (u unpackedArp) getOrCreateSnifferDbValues(db *sql.DB, arpMethod DiscMethod
 	return
 }
 
-func GetPacketTransportLayerInfo(packet gopacket.Packet) (proto string, dstPort int, err error) {
+func GetPacketTransportLayerInfo(packet gopacket.Packet, eWriters *EventWriters) (proto string, dstPort int, err error) {
 	transLayer := packet.TransportLayer()
 	switch lT := transLayer.LayerType(); lT {
 	case layers.LayerTypeTCP:
@@ -298,8 +295,8 @@ func GetPacketTransportLayerInfo(packet gopacket.Packet) (proto string, dstPort 
 		proto = "sctp"
 		dstPort = int(layer.DstPort)
 	default:
-		// TODO
 		err = errors.New("unknown transport layer type captured")
+		eWriters.Write(err.Error())
 	}
 	return
 }
@@ -336,38 +333,37 @@ outer:
 // SnacSniff is used to initiate a standalone packet capture for a
 // specific source IP (srcIp) while passing each captured packet to
 //a series of handlers.
-func SnacSniff(ctx context.Context, ifaceName string, srcIp net.IP, handlers ...SnacSniffHandler) (err error) {
+func SnacSniff(ctx context.Context, ifaceName string, srcIp net.IP, eWriters *EventWriters, handlers ...SnacSniffHandler) (err error) {
 
-	iface, _, err := getInterface(ifaceName)
+	iface, _, err := getInterface(ifaceName, eWriters)
 	if err != nil {
-		println("failed to retrive interface and addr", err.Error())
-		os.Exit(1)
+		eWriters.Writef("failed to retrive interface and addr: %v", err.Error())
+		return
 	}
 
-	println("starting snac packet capture")
+	eWriters.Write("starting snac packet capture")
 
 	var handle *pcap.Handle
 	handle, err = pcap.OpenLive(iface.Name, 655536, true, pcap.BlockForever)
 	if err != nil {
-		// TODO
-		println("failed to start packet capture", err.Error())
-		os.Exit(1)
+		eWriters.Writef("failed to start packet capture: %v", err.Error())
+		return
 	}
 	defer handle.Close()
 
 	if err = handle.SetBPFFilter(fmt.Sprintf("src host %s", srcIp.String())); err != nil {
-		// TODO
-		println("failed to set bpf filter", err.Error())
-		os.Exit(1)
+		eWriters.Writef("failed to set bpf filter: %v", err.Error())
+		return
 	}
 
 	src := gopacket.NewPacketSource(handle, layers.LayerTypeEthernet)
 	in := src.Packets()
 
+outer:
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			break outer
 		case packet := <-in:
 
 			if arp := GetArpLayer(packet); arp != nil && arp.Operation == layers.ARPRequest {

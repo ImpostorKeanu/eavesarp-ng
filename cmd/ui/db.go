@@ -54,9 +54,10 @@ WHERE aitm_opt.snac_target_ip_id = ?;
 
 type (
 	arpTableContent struct {
-		cols []table.Column
-		rows []table.Row
-		err  error
+		cols       []table.Column
+		rows       []table.Row
+		rowSenders map[int]string
+		err        error
 	}
 
 	selectedArpTableContent struct {
@@ -66,12 +67,12 @@ type (
 	}
 )
 
-func getSelectedArpTableContent(db *sql.DB, m *model) (content selectedArpTableContent) {
+func getSelectedArpTableContent(m *model) (content selectedArpTableContent) {
 
-	rows, err := db.Query(arpTableSelectionQuery, m.curArpRow.senderIp, m.curArpRow.targetIp)
+	rows, err := m.db.Query(arpTableSelectionQuery, m.curArpRow.senderIp, m.curArpRow.targetIp)
 	if err != nil {
-		// TODO
-		panic(err)
+		content.err = fmt.Errorf("failed to get selected arp row content: %w", err)
+		return
 	}
 
 	//=====================================
@@ -85,8 +86,8 @@ func getSelectedArpTableContent(db *sql.DB, m *model) (content selectedArpTableC
 		var ip, ipDiscMeth, mac, macDiscMeth, dnsRecordKind, dnsName string
 		var ptrResolved bool
 		if err = rows.Scan(&ip, &ipDiscMeth, &ptrResolved, &mac, &macDiscMeth, &dnsRecordKind, &dnsName); err != nil {
-			// TODO
-			panic(err)
+			content.err = fmt.Errorf("failed to read row: %w", err)
+			return
 		}
 
 		if ip == "" {
@@ -144,6 +145,8 @@ func getSelectedArpTableContent(db *sql.DB, m *model) (content selectedArpTableC
 				ipObj = target
 			}
 
+		} else {
+			continue
 		}
 
 		if dnsRecordKind != "" {
@@ -156,18 +159,24 @@ func getSelectedArpTableContent(db *sql.DB, m *model) (content selectedArpTableC
 				target.ARecords = append(target.ARecords, eavesarp_ng.ARecord{DnsRecordFields: dnsFields})
 			case "ptr":
 				target.PtrRecords = append(target.PtrRecords, eavesarp_ng.PtrRecord{DnsRecordFields: dnsFields})
+			default:
+				content.err = fmt.Errorf("unsupported dns record kind: %s", dnsRecordKind)
+				return
 			}
 		}
 	}
 
-	// TODO
-	rows.Close()
+	if err = rows.Close(); err != nil {
+		content.err = fmt.Errorf("failed to close rows after querying for selected arp row content: %w", err)
+		return
+	}
 
-	// TODO
+	// TODO this should probably be handled more gracefully but it's technically
+	//   a fatal error that the user can't influence
 	if sender == nil {
-		panic("no sender for row found")
+		panic("no sender for selected arp row found")
 	} else if target == nil {
-		panic("no target for row found")
+		panic("no target for selected row found")
 	}
 
 	//===================================
@@ -175,19 +184,26 @@ func getSelectedArpTableContent(db *sql.DB, m *model) (content selectedArpTableC
 	//===================================
 
 	var aitmValue string
-	rows, err = db.Query(snacAitmQuery, sender.Value)
+	rows, err = m.db.Query(snacAitmQuery, sender.Value)
+	if err != nil {
+		content.err = fmt.Errorf("failed to query aitm row content for selected arp: %w", err)
+		return
+	}
+
 	for rows.Next() {
 		var snacIp, upstreamIp, forwardDnsName string
 		if err = rows.Scan(&snacIp, &upstreamIp, &forwardDnsName); err != nil {
-			// TODO
-			panic("failed to scan row")
+			content.err = fmt.Errorf("failed to read aitm row: %w", err)
+			return
 		}
 		aitmValue += fmt.Sprintf("%s (%s)\n", upstreamIp, forwardDnsName)
 	}
 	aitmValue = strings.TrimSpace(aitmValue)
 
-	// TODO
-	rows.Close()
+	if err = rows.Close(); err != nil {
+		content.err = fmt.Errorf("failed to close rows after querying aitmValue for selected arp row: %w", err)
+		return
+	}
 
 	//===================
 	// PREPARE TABLE ROWS
@@ -223,7 +239,7 @@ func getSelectedArpTableContent(db *sql.DB, m *model) (content selectedArpTableC
 		table.Row{"AITM", "---", aitmValue})
 
 	if target.Mac != nil {
-		content.rows[len(content.rows)-1][2] = target.Mac.Value
+		content.rows[len(content.rows)-3][2] = target.Mac.Value
 	}
 
 	// TODO Why is this math for the sender and target columns so wonky?
@@ -241,7 +257,7 @@ func getArpTableContent(db *sql.DB, limit, offset int) (content arpTableContent)
 
 	rows, err := db.Query(arpTableQuery, limit, offset)
 	if err != nil {
-		content.err = err
+		content.err = fmt.Errorf("failed to query arp table content: %w", err)
 		return
 	}
 
@@ -271,7 +287,7 @@ func getArpTableContent(db *sql.DB, limit, offset int) (content arpTableContent)
 			&target.Id, &target.Value,
 			&arpCount, &hasSnac)
 		if err != nil {
-			content.err = err
+			content.err = fmt.Errorf("failed to scan arp table row: %w", err)
 			return
 		}
 
@@ -310,14 +326,25 @@ func getArpTableContent(db *sql.DB, limit, offset int) (content arpTableContent)
 		content.rows = append(content.rows, append(tRow, target.Value, arpCountValue))
 	}
 
+	content.rowSenders = make(map[int]string)
+	var lastSender string
+	for i, r := range content.rows {
+		content.rowSenders[i] = content.rows[i][2]
+		if r[2] == lastSender {
+			content.rows[i][2] = strings.Repeat(" ", len(lastSender)-1) + "↖"
+		} else {
+			lastSender = r[2]
+		}
+	}
+
 	//======================
 	// PREPARE TABLE COLUMNS
 	//======================
 
 	// Include the snacs column if snacs were seen
-	content.cols = append(content.cols, table.Column{"#", 1})
+	content.cols = append(content.cols, table.Column{"#", len(fmt.Sprintf("%d", len(content.rows)))})
 	if snacsSeen {
-		content.cols = append(content.cols, table.Column{"", 2})
+		content.cols = append(content.cols, table.Column{"SNAC", 4})
 	}
 
 	// Add remaining arpTable columns

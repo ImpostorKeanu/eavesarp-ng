@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"net"
-	"os"
 	"time"
 )
 
@@ -56,19 +55,18 @@ type (
 
 // DnsSender is a background process that receives DNS resolution
 // jobs via dnsSenderC.
-func DnsSender() {
-	println("starting dns sender process")
+func DnsSender(eWriters *EventWriters) {
+	eWriters.Write("starting dns sender routine")
 	for {
 		dnsSleeper.Sleep()
 		select {
 		case <-stopDnsSenderC:
-			println("stopping dns sender process")
+			eWriters.Write("stopping dns sender routine")
 			break
 		case dA := <-dnsSenderC:
 
 			if dnsFailCounter.Exceeded() {
-				// TODO log dns fail count exceeded event
-				println("dns failure count exceeded; skipping name resolution")
+				eWriters.Write("dns failure count exceeded; skipping name resolution")
 				continue
 			}
 
@@ -80,6 +78,7 @@ func DnsSender() {
 			var resolved []string
 
 			ctx, cancel := context.WithTimeout(context.Background(), 7*time.Second)
+			dnsKind := string(dA.kind)
 			switch dA.kind {
 			case PtrDnsKind:
 				resolved, err = dnsResolver.LookupAddr(ctx, dA.target)
@@ -92,20 +91,15 @@ func DnsSender() {
 
 			if e, ok := err.(*net.DNSError); ok && e.IsNotFound {
 				dA.failure(err)
-				// TODO log not found
-				println("dns record not found:", dA.target)
+				eWriters.Writef("no %v record found for %v", dnsKind, dA.target)
 				continue
 			} else if ok {
-				// TODO log DNS failure
-				print("dns failure:", e.Error())
-				// Increment the maximum fail counter
-				dnsFailCounter.Inc()
+				eWriters.Writef("dns failure: %v", e.Error())
+				dnsFailCounter.Inc() // Increment the maximum fail counter
 			}
 
-			// TODO handle name resolution error
 			if err != nil {
-				println("error while performing name resolution", err.Error())
-				os.Exit(1)
+				eWriters.Writef("error while performing name resolution: %v", err.Error())
 				continue
 			}
 
@@ -124,7 +118,7 @@ func DnsSender() {
 //   is performed.
 // - To a maximum depth of 10, each newly discovered Ip will be subjected
 //   to reverse name resolution.
-func handlePtrName(db *sql.DB, ip *Ip, name string, depth *int) {
+func handlePtrName(db *sql.DB, eWriters *EventWriters, ip *Ip, name string, depth *int) {
 
 	if depth == nil {
 		buff := 10
@@ -136,15 +130,13 @@ func handlePtrName(db *sql.DB, ip *Ip, name string, depth *int) {
 
 	dnsName, err := GetOrCreateDnsName(db, name)
 	if err != nil {
-		// TODO
-		println("failed to create dns name", err.Error())
-		os.Exit(1)
+		eWriters.Writef("failed to create dns name: %v", err.Error())
+		return
 	}
 
 	if _, err = GetOrCreateDnsPtrRecord(db, *ip, dnsName); err != nil {
-		// TODO
-		println("failed to create dns ptr record", err.Error())
-		os.Exit(1)
+		eWriters.Writef("failed to create dns ptr record: %v", err.Error())
+		return
 	}
 
 	// Avoid duplicate forward name resolution
@@ -163,22 +155,19 @@ func handlePtrName(db *sql.DB, ip *Ip, name string, depth *int) {
 					false, false)
 
 				if err != nil {
-					// TODO
-					println("failed to create new ip", err.Error())
-					os.Exit(1)
+					eWriters.Writef("failed to create new ip: %v", err.Error())
+					return
 				}
 
 				if _, err = GetOrCreateDnsARecord(db, newIp, dnsName); err != nil {
-					// TODO
-					println("failed to create dns a record", err.Error())
-					os.Exit(1)
+					eWriters.Writef("failed to create dns a record: %v", err.Error())
+					return
 				}
 
 				if _, err := db.Exec(`INSERT OR IGNORE INTO aitm_opt (snac_target_ip_id, upstream_ip_id) VALUES (?,?)`,
 					ip.Id, newIp.Id); err != nil {
-					// TODO
-					println("failed to create aitm_opt record", err.Error())
-					os.Exit(1)
+					eWriters.Writef("failed to create aitm_opt record: ", err.Error())
+					return
 				}
 
 				if *depth > 0 && !newIp.PtrResolved {
@@ -188,15 +177,14 @@ func handlePtrName(db *sql.DB, ip *Ip, name string, depth *int) {
 						target: newIp.Value,
 						failure: func(e error) {
 							if err := SetPtrResolved(db, *ip); err != nil {
-								// TODO
-								println("failed to set ptr to resolved: ", err.Error())
-								os.Exit(1)
+								eWriters.Writef("failed to set ptr to resolved: %v", err.Error())
+								return
 							}
 						},
 						after: func(names []string) {
 							for _, name := range names {
 								d := *depth - 1
-								handlePtrName(db, &newIp, name, &d)
+								handlePtrName(db, eWriters, &newIp, name, &d)
 							}
 						},
 					}

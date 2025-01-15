@@ -6,7 +6,6 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 )
@@ -254,9 +253,7 @@ ON CONFLICT DO UPDATE SET count=count+1 RETURNING count`,
 
 func SetArpResolved(db *sql.DB, ipId int) (err error) {
 	if _, err = db.Exec(`UPDATE ip SET arp_resolved=1 WHERE id=?`, ipId); err != nil {
-		// TODO
-		println("failed to update arp_resolved attribute", err.Error())
-		os.Exit(1)
+		return fmt.Errorf("failed to update arp_resolved attribute: %v", err.Error())
 	}
 	return
 }

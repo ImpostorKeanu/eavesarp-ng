@@ -3,12 +3,10 @@ package eavesarp_ng
 import (
 	"context"
 	"errors"
-	"fmt"
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
 	"net"
-	"os"
 	"sync"
 	"time"
 )
@@ -105,23 +103,20 @@ func (a *ActiveArps) Has(ip string) bool {
 //
 // activeArpAlreadySet is returned when an outstanding request
 // is already in activeArps.
-func (a *ActiveArps) Add(i *Ip, afterFuncs ...func() error) (err error) {
+func (a *ActiveArps) Add(i *Ip, eWriters *EventWriters, afterFuncs ...func() error) (err error) {
 	if !a.Has(i.Value) {
+		eWriters.Writef("making active arp request for %v", i.Value)
 		a.mu.Lock()
 		defer a.mu.Unlock()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		context.AfterFunc(ctx, func() {
-
 			for _, f := range afterFuncs {
 				if err := f(); err != nil {
-					// TODO logging
-					println("failed to execute afterfunc", err.Error())
+					eWriters.Writef("failed to execute afterfunc: %v", err.Error())
 				}
 			}
-
 			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				// TODO logging
-				fmt.Printf("never received active arp response for %v\n", i.Value)
+				eWriters.Writef("never received active arp response for %v", i.Value)
 				cancel()
 				a.Del(i.Value)
 			}
@@ -155,9 +150,9 @@ func newUnpackedArp(arp *layers.ARP) unpackedArp {
 
 // ArpSender runs as a background process and receives ARP request
 // tasks via arpSenderC.
-func ArpSender() {
-	// TODO
-	println("starting arp sender process")
+func ArpSender(eWriters *EventWriters) {
+
+	eWriters.Write("starting arp sender routine")
 	for {
 		// SOURCE: https://github.com/google/gopacket/blob/master/examples/arpscan/arpscan.go
 		arpSleeper.Sleep()
@@ -168,9 +163,8 @@ func ArpSender() {
 
 			if sA.dstHw == nil {
 				if sA.operation == ArpRepOperation {
-					// TODO
-					println("arp replies require a dstHw value")
-					os.Exit(1)
+					eWriters.Write("arp replies require a dstHw value")
+					continue
 				}
 				sA.dstHw = net.HardwareAddr{0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
 			}
@@ -199,9 +193,8 @@ func ArpSender() {
 			buff := gopacket.NewSerializeBuffer()
 			err := gopacket.SerializeLayers(buff, opts, &eth, &arp)
 			if err != nil {
-				// TODO logging
-				println("build arp request packet", err.Error())
-				os.Exit(1)
+				eWriters.Writef("build arp request packet: %v", err.Error())
+				continue
 			}
 
 			//=====================
@@ -212,17 +205,15 @@ func ArpSender() {
 			// avoid a race condition
 			if sA.addActiveArp != nil {
 				if err = sA.addActiveArp(); err != nil {
-					// TODO logging
-					println("failed to add active arp", err.Error())
-					os.Exit(1)
+					eWriters.Writef("failed to add active arp: %v", err.Error())
+					continue
 				}
 			}
 
 			// Write the ARP request to the wire
 			if err = sA.handle.WritePacketData(buff.Bytes()); err != nil {
-				// TODO
-				println("failed to send arp request", err.Error())
-				os.Exit(1)
+				eWriters.Writef("failed to send arp request: %v", err.Error())
+				continue
 			}
 		}
 	}
