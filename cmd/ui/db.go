@@ -12,7 +12,7 @@ import (
 const (
 	// TODO we may need to add a limit & offset to this
 	//    unknown how large these queries are going to become
-	arpTableQuery = `
+	convosTableQuery = `
 SELECT sender.id AS sender_ip_id,
        sender.value AS sender_ip_value,
        target.id AS target_ip_id,
@@ -27,9 +27,7 @@ ORDER BY
     sender.value,
     arp_count.count DESC`
 
-	arpTableCountQuery = "SELECT COUNT(*) FROM (" + arpTableQuery + ")"
-
-	arpTableSelectionQuery = `
+	convoTableSelectionQuery = `
 SELECT ip.value AS ip,
        ip.disc_meth AS ip_disc_meth,
        ip.ptr_resolved AS ip_ptr_resolved,
@@ -70,18 +68,9 @@ type (
 	}
 )
 
-func getArpTableCount(m *model) (count int, err error) {
-	if row := m.db.QueryRow(arpTableCountQuery); row.Err() != nil {
-		err = row.Scan(&count)
-	} else {
-		err = row.Err()
-	}
-	return
-}
-
 func getSelectedArpTableContent(m *model) (content curConvoTableData) {
 
-	rows, err := m.db.Query(arpTableSelectionQuery, m.curConvoRow.senderIp, m.curConvoRow.targetIp)
+	rows, err := m.db.Query(convoTableSelectionQuery, m.curConvoRow.senderIp, m.curConvoRow.targetIp)
 	if err != nil {
 		content.err = fmt.Errorf("failed to get selected arp row content: %w", err)
 		return
@@ -268,7 +257,7 @@ func getSelectedArpTableContent(m *model) (content curConvoTableData) {
 
 func getArpTableContent(db *sql.DB) (content arpTableContent) {
 
-	rows, err := db.Query(arpTableQuery)
+	rows, err := db.Query(convosTableQuery)
 	if err != nil {
 		content.err = fmt.Errorf("failed to query conversations content: %w", err)
 		return

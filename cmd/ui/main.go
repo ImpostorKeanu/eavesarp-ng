@@ -73,16 +73,17 @@ func runUi(db *sql.DB, startMainSniffer bool) (err error) {
 		db:            db,
 		convosTable:   table.New(table.WithStyles(convosStyle)),
 		curConvoTable: table.New(table.WithStyles(selectedArpStyles)),
-		logViewPort:   viewport.New(0, 0),
+		logsViewPort:  viewport.New(0, 0),
 		focusedId:     convosTableId,
 		eWriter:       eventWriter{wC: eventsC},
 		mainSniff:     startMainSniffer,
+		activeAttacks: &ActiveAttacks{},
 		convosSpinner: spinner.Model{
 			Spinner: spinner.Dot,
 			Style:   spinnerStyle,
 		},
 	}
-	ui.logViewPort.Style = panelStyle
+	ui.logsViewPort.Style = panelStyle
 
 	// Initialize the ARP table
 	//c := getArpTableContent(ui.db, 100, 0)

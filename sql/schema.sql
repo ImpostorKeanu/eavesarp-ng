@@ -135,6 +135,24 @@ CREATE TABLE IF NOT EXISTS dns_name(
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     value TEXT NOT NULL UNIQUE);
 
+CREATE TABLE IF NOT EXISTS attack(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sender_ip_id INTEGER NOT NULL REFERENCES ip ON DELETE CASCADE,
+    target_ip_id INTEGER NOT NULL REFERENCES ip ON DELETE CASCADE);
+
+CREATE TABLE IF NOT EXISTS port(
+    number INTEGER NOT NULL CHECK(proto >= 0 AND proto <= 65535),
+    proto TEXT NOT NULL CHECK (
+        proto == 'tcp' OR
+        proto == 'udp' OR
+        proto == 'sctp'),
+    CONSTRAINT port_comp_key PRIMARY KEY (number, proto));
+
+CREATE TABLE IF NOT EXISTS attack_port(
+    attack_id INTEGER NOT NULL REFERENCES attack ON DELETE CASCADE,
+    port_id INTEGER NOT NULL REFERENCES port,
+    CONSTRAINT attack_port_comp_key PRIMARY KEY (attack_id, port_id));
+
 -- prevent orphaned mac addresses
 CREATE TRIGGER IF NOT EXISTS no_orphaned_macs
     BEFORE DELETE ON ip

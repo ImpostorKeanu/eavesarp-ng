@@ -114,6 +114,27 @@ type (
 		SnacTargetIp, UpstreamIp *Ip
 	}
 
+	Port struct {
+		IsNew    bool
+		Number   int
+		Protocol string
+	}
+
+	Attack struct {
+		Id         int
+		IsNew      bool
+		SenderIpId int
+		TargetIpId int
+		SenderIp   *Ip
+		TargetIp   *Ip
+		Ports      []Port
+	}
+
+	AttackPort struct {
+		AttackId, PortId int
+		IsNew            bool
+	}
+
 	// GoCArgs defines arguments for "get or create" functions that manage
 	// database records using GetOrCreate.
 	GoCArgs struct {
@@ -158,39 +179,73 @@ func GetSnacs(db *sql.DB) (ips []Ip, err error) {
 	return
 }
 
+func GetOrCreateAttack(db *sql.DB, id *int, senderIpId int, targetIpId int) (attack Attack, err error) {
+	if id == nil {
+		buff := 0
+		id = &buff
+	}
+	attack.IsNew, err = GetOrCreate(db, GoCArgs{
+		GetStmt:      "SELECT * FROM attack WHERE id=?",
+		CreateStmt:   "INSERT INTO attack (sender_ip_id, target_ip_id) VALUES (?, ?) RETURNING *",
+		Params:       map[string]any{"id": *id, "sender_ip_id": senderIpId, "target_ip_id": targetIpId},
+		GetParams:    []string{"id"},
+		CreateParams: []string{"sender_ip_id", "target_ip_id"},
+		Outputs:      []any{&attack.Id, &attack.SenderIpId, &attack.TargetIp},
+	})
+	return
+}
+
+func GetOrCreatePort(db *sql.DB, number int, proto string) (port Port, err error) {
+	port.IsNew, err = GetOrCreate(db, GoCArgs{
+		GetStmt:      "SELECT * FROM port WHERE number=?",
+		CreateStmt:   "INSERT INTO port (number, protocol) VALUES (?, ?) RETURNING *",
+		Params:       map[string]any{"number": number, "protocol": proto},
+		GetParams:    []string{"number"},
+		CreateParams: []string{"number", "protocol"},
+		Outputs:      []any{&port.Number, &port.Protocol},
+	})
+	return
+}
+
+func GetOrCreateAttackPort(db *sql.DB, attackId, portId int) (aP AttackPort, err error) {
+	aP.IsNew, err = GetOrCreate(db, GoCArgs{
+		GetStmt:      "SELECT * FROM attack_port WHERE attack_id=? AND port_id=?",
+		CreateStmt:   "INSERT INTO attack_port (attack_id, port_id) VALUES (?, ?)",
+		Params:       map[string]any{"attack_id": attackId, "port_id": portId},
+		GetParams:    []string{"attack_id", "port_id"},
+		CreateParams: []string{"attack_id", "port_id"},
+		Outputs:      []any{&aP.AttackId, &aP.PortId},
+	})
+	return
+}
+
 func GetOrCreateMac(db *sql.DB, v string, arpDiscMethod DiscMethod) (mac Mac, err error) {
-	var created bool
-	created, err = GetOrCreate(db, GoCArgs{"SELECT * FROM mac WHERE value=?",
+	mac.IsNew, err = GetOrCreate(db, GoCArgs{"SELECT * FROM mac WHERE value=?",
 		"INSERT INTO mac (value,disc_meth) VALUES (?,?) RETURNING *",
 		map[string]any{"value": v, "disc_meth": arpDiscMethod},
 		[]string{"value"},
 		[]string{"value", "disc_meth"},
 		[]any{&mac.Id, &mac.Value, &mac.DiscMethod}})
-	mac.IsNew = created
 	return
 }
 
 func GetOrCreateIp(db *sql.DB, v string, macId *int, ipDiscMethod DiscMethod, arpRes, ptrRes bool) (ip Ip, err error) {
-	var created bool
-	created, err = GetOrCreate(db, GoCArgs{"SELECT * FROM ip WHERE value=?",
+	ip.IsNew, err = GetOrCreate(db, GoCArgs{"SELECT * FROM ip WHERE value=?",
 		`INSERT INTO ip (value, mac_id, disc_meth, arp_resolved, ptr_resolved)
 VALUES (?, ?, ?, ?, ?) RETURNING *`,
 		map[string]any{"value": v, "mac_id": macId, "disc_meth": ipDiscMethod, "arp_resolved": arpRes, "ptr_resolved": ptrRes},
 		[]string{"value"},
 		[]string{"value", "mac_id", "disc_meth", "arp_resolved", "ptr_resolved"},
 		[]any{&ip.Id, &ip.Value, &ip.MacId, &ip.DiscMethod, &ip.ArpResolved, &ip.PtrResolved}})
-	ip.IsNew = created
 	return
 }
 
 func GetOrCreateDnsName(db *sql.DB, name string) (dns DnsName, err error) {
-	var created bool
-	created, err = GetOrCreate(db, GoCArgs{"SELECT * FROM dns_name WHERE value=?",
+	dns.IsNew, err = GetOrCreate(db, GoCArgs{"SELECT * FROM dns_name WHERE value=?",
 		"INSERT INTO dns_name (value) VALUES (?) RETURNING *",
 		map[string]any{"value": name}, []string{"value"},
 		[]string{"value"},
 		[]any{&dns.Id, &dns.Value}})
-	dns.IsNew = created
 	return
 }
 
@@ -210,13 +265,11 @@ VALUES (?,?,?) RETURNING id`, "RECORD_KIND", kind, -1)
 
 func GetOrCreateDnsPtrRecord(db *sql.DB, ip Ip, name DnsName) (ptrRec PtrRecord, err error) {
 	get, ins := buildDnsQueries("ptr")
-	var created bool
-	created, err = GetOrCreate(db, GoCArgs{get, ins,
+	ptrRec.IsNew, err = GetOrCreate(db, GoCArgs{get, ins,
 		map[string]any{"ip_id": ip.Id, "dns_name_id": name.Id},
 		[]string{"ip_id", "dns_name_id"},
 		[]string{"ip_id", "dns_name_id"},
 		[]any{&ip.Id, &name.Id}})
-	ptrRec.IsNew = created
 	ptrRec.Ip = ip
 	ptrRec.Name = name
 
@@ -231,13 +284,11 @@ func SetPtrResolved(db *sql.DB, ip Ip) (err error) {
 
 func GetOrCreateDnsARecord(db *sql.DB, ip Ip, name DnsName) (aRec ARecord, err error) {
 	get, ins := buildDnsQueries("a")
-	var created bool
-	created, err = GetOrCreate(db, GoCArgs{get, ins,
+	aRec.IsNew, err = GetOrCreate(db, GoCArgs{get, ins,
 		map[string]any{"ip_id": ip.Id, "dns_name_id": name.Id},
 		[]string{"ip_id", "dns_name_id"},
 		[]string{"ip_id", "dns_name_id"},
 		[]any{&ip.Id, &name.Id}})
-	aRec.IsNew = created
 	aRec.Ip = ip
 	aRec.Name = name
 	return

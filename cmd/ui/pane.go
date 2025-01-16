@@ -7,7 +7,7 @@ type paneId string
 const (
 	convosTableId     paneId = "convosTable"
 	curConvoTableId   paneId = "selectedArpTable"
-	logViewPortId     paneId = "logViewPort"
+	logsViewPortId    paneId = "logsViewPort"
 	attacksViewPortId paneId = "attacksViewPort"
 )
 
@@ -25,7 +25,7 @@ func (p paneId) Int() int {
 		return 1
 	case attacksViewPortId:
 		return 2
-	case logViewPortId:
+	case logsViewPortId:
 		return 3
 	default:
 		panic("invalid paneId")
@@ -63,7 +63,7 @@ func (p paneId) nextPane(direction string) (next paneId) {
 	case 2:
 		next = attacksViewPortId
 	case 3:
-		next = logViewPortId
+		next = logsViewPortId
 	}
 
 	return

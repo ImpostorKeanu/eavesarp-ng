@@ -2,11 +2,19 @@ package main
 
 import (
 	"fmt"
+	"slices"
+	"sync"
 )
 
-type eventWriter struct {
-	wC chan string
-}
+type (
+	eventWriter struct {
+		wC chan string
+	}
+	ActiveAttacks struct {
+		attacks []string
+		mu      sync.RWMutex
+	}
+)
 
 func (e eventWriter) WriteString(s string) (n int, err error) {
 	l := len(s)
@@ -22,4 +30,46 @@ func (e eventWriter) WriteString(s string) (n int, err error) {
 
 func (e eventWriter) WriteStringf(f string, args ...any) (n int, err error) {
 	return e.WriteString(fmt.Sprintf(f, args...))
+}
+
+func (a *ActiveAttacks) Exists(senderIp, targetIp string) bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return slices.Contains(a.attacks, a.Fmt(senderIp, targetIp))
+}
+
+func (a *ActiveAttacks) Remove(senderIp, targetIp string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	s := a.Fmt(senderIp, targetIp)
+	if ind := slices.Index(a.attacks, s); ind != -1 {
+		var n []string
+		if len(a.attacks) == 1 {
+			a.attacks = make([]string, 0)
+			return
+		} else {
+			n = make([]string, len(a.attacks)-1)
+		}
+		copy(n, a.attacks[:ind-1])
+		if len(a.attacks)-1 >= ind+1 {
+			copy(n, a.attacks[ind+1:])
+		}
+		a.attacks = n
+	}
+}
+
+func (a *ActiveAttacks) Add(senderIp, targetIp string) (err error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	s := a.Fmt(senderIp, targetIp)
+	if !slices.Contains(a.attacks, s) {
+		a.attacks = append(a.attacks, s)
+	} else {
+		err = fmt.Errorf("%s already exists", s)
+	}
+	return
+}
+
+func (a *ActiveAttacks) Fmt(senderIp, targetIp string) string {
+	return fmt.Sprintf("%s:%s", senderIp, targetIp)
 }
