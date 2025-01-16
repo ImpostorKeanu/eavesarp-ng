@@ -5,8 +5,8 @@ package main
 type paneId string
 
 const (
-	arpTableId        paneId = "arpTable"
-	curArpTableId     paneId = "selectedArpTable"
+	convosTableId     paneId = "convosTable"
+	curConvoTableId   paneId = "selectedArpTable"
 	logViewPortId     paneId = "logViewPort"
 	attacksViewPortId paneId = "attacksViewPort"
 )
@@ -19,9 +19,9 @@ func (p paneId) String() string {
 // that the pane resides.
 func (p paneId) Int() int {
 	switch p {
-	case arpTableId:
+	case convosTableId:
 		return 0
-	case curArpTableId:
+	case curConvoTableId:
 		return 1
 	case attacksViewPortId:
 		return 2
@@ -57,9 +57,9 @@ func (p paneId) nextPane(direction string) (next paneId) {
 
 	switch i {
 	case 0:
-		next = arpTableId
+		next = convosTableId
 	case 1:
-		next = curArpTableId
+		next = curConvoTableId
 	case 2:
 		next = attacksViewPortId
 	case 3:

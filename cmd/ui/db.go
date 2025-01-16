@@ -10,6 +10,8 @@ import (
 )
 
 const (
+	// TODO we may need to add a limit & offset to this
+	//    unknown how large these queries are going to become
 	arpTableQuery = `
 SELECT sender.id AS sender_ip_id,
        sender.value AS sender_ip_value,
@@ -23,8 +25,9 @@ INNER JOIN ip AS target ON arp_count.target_ip_id = target.id
 ORDER BY
 	snac DESC,
     sender.value,
-    arp_count.count DESC
-LIMIT ? OFFSET ?`
+    arp_count.count DESC`
+
+	arpTableCountQuery = "SELECT COUNT(*) FROM (" + arpTableQuery + ")"
 
 	arpTableSelectionQuery = `
 SELECT ip.value AS ip,
@@ -60,16 +63,25 @@ type (
 		err        error
 	}
 
-	selectedArpTableContent struct {
+	curConvoTableData struct {
 		cols []table.Column
 		rows []table.Row
 		err  error
 	}
 )
 
-func getSelectedArpTableContent(m *model) (content selectedArpTableContent) {
+func getArpTableCount(m *model) (count int, err error) {
+	if row := m.db.QueryRow(arpTableCountQuery); row.Err() != nil {
+		err = row.Scan(&count)
+	} else {
+		err = row.Err()
+	}
+	return
+}
 
-	rows, err := m.db.Query(arpTableSelectionQuery, m.curArpRow.senderIp, m.curArpRow.targetIp)
+func getSelectedArpTableContent(m *model) (content curConvoTableData) {
+
+	rows, err := m.db.Query(arpTableSelectionQuery, m.curConvoRow.senderIp, m.curConvoRow.targetIp)
 	if err != nil {
 		content.err = fmt.Errorf("failed to get selected arp row content: %w", err)
 		return
@@ -95,7 +107,7 @@ func getSelectedArpTableContent(m *model) (content selectedArpTableContent) {
 		}
 
 		var ipObj *eavesarp_ng.Ip
-		if ip == m.curArpRow.senderIp {
+		if ip == m.curConvoRow.senderIp {
 
 			if sender == nil {
 
@@ -118,7 +130,7 @@ func getSelectedArpTableContent(m *model) (content selectedArpTableContent) {
 				ipObj = sender
 			}
 
-		} else if ip == m.curArpRow.targetIp {
+		} else if ip == m.curConvoRow.targetIp {
 
 			if target == nil {
 
@@ -214,18 +226,18 @@ func getSelectedArpTableContent(m *model) (content selectedArpTableContent) {
 
 	// sender DNS values
 	for _, r := range sender.PtrRecords {
-		senderDnsCell += fmt.Sprintf("%s (%s)", r.Name, "ptr")
+		senderDnsCell += fmt.Sprintf("%s (%s)", r.Name.Value, "ptr")
 	}
 	for _, r := range sender.ARecords {
-		senderDnsCell += fmt.Sprintf("%s (%s)", r.Name, "a")
+		senderDnsCell += fmt.Sprintf("%s (%s)", r.Name.Value, "a")
 	}
 
 	// target DNS values
 	for _, r := range target.PtrRecords {
-		targetDnsCell += fmt.Sprintf("%s (%s)", r.Name, "ptr")
+		targetDnsCell += fmt.Sprintf("%s (%s)", r.Name.Value, "ptr")
 	}
 	for _, r := range target.ARecords {
-		targetDnsCell += fmt.Sprintf("%s (%s)", r.Name, "a")
+		targetDnsCell += fmt.Sprintf("%s (%s)", r.Name.Value, "a")
 	}
 
 	emptyOrDefault(&senderDnsCell, "---")
@@ -236,7 +248,8 @@ func getSelectedArpTableContent(m *model) (content selectedArpTableContent) {
 		table.Row{"IP", sender.Value, target.Value},
 		table.Row{"MAC", sender.Mac.Value, "---"},
 		table.Row{"DNS", senderDnsCell, targetDnsCell},
-		table.Row{"AITM", "---", aitmValue})
+		table.Row{"AITM", "---", aitmValue},
+		table.Row{"Ports", "---", "---"})
 
 	if target.Mac != nil {
 		content.rows[len(content.rows)-3][2] = target.Mac.Value
@@ -253,16 +266,16 @@ func getSelectedArpTableContent(m *model) (content selectedArpTableContent) {
 	return
 }
 
-func getArpTableContent(db *sql.DB, limit, offset int) (content arpTableContent) {
+func getArpTableContent(db *sql.DB) (content arpTableContent) {
 
-	rows, err := db.Query(arpTableQuery, limit, offset)
+	rows, err := db.Query(arpTableQuery)
 	if err != nil {
-		content.err = fmt.Errorf("failed to query arp table content: %w", err)
+		content.err = fmt.Errorf("failed to query conversations content: %w", err)
 		return
 	}
 
 	// Variables to track information about row content
-	// - these are used to format arpTable columns later
+	// - these are used to format convosTable columns later
 	var senderIpWidth, targetIpWidth int
 	var snacsSeen bool
 	arpCountHeader := "ARP #"
@@ -287,7 +300,7 @@ func getArpTableContent(db *sql.DB, limit, offset int) (content arpTableContent)
 			&target.Id, &target.Value,
 			&arpCount, &hasSnac)
 		if err != nil {
-			content.err = fmt.Errorf("failed to scan arp table row: %w", err)
+			content.err = fmt.Errorf("failed to scan conversations row: %w", err)
 			return
 		}
 
@@ -314,12 +327,18 @@ func getArpTableContent(db *sql.DB, limit, offset int) (content arpTableContent)
 
 		// Include the snacs column if they've been seen regardless
 		// if the row represents a snac
-		if snacsSeen {
-			if hasSnac {
-				tRow = append(tRow, string(emoji.DirectHit))
-			} else {
-				tRow = append(tRow, "")
-			}
+		//if snacsSeen {
+		//	if hasSnac {
+		//		tRow = append(tRow, string(emoji.DirectHit))
+		//	} else {
+		//		tRow = append(tRow, "")
+		//	}
+		//}
+
+		if hasSnac {
+			tRow = append(tRow, string(emoji.DirectHit))
+		} else {
+			tRow = append(tRow, "")
 		}
 
 		tRow = append(tRow, sender.Value)
@@ -342,13 +361,9 @@ func getArpTableContent(db *sql.DB, limit, offset int) (content arpTableContent)
 	//======================
 
 	// Include the snacs column if snacs were seen
-	content.cols = append(content.cols, table.Column{"#", len(fmt.Sprintf("%d", len(content.rows)))})
-	if snacsSeen {
-		content.cols = append(content.cols, table.Column{"SNAC", 4})
-	}
-
-	// Add remaining arpTable columns
 	content.cols = append(content.cols,
+		table.Column{"#", len(fmt.Sprintf("%d", len(content.rows)))},
+		table.Column{"SNAC", 4},
 		table.Column{"Sender", senderIpWidth},
 		table.Column{"Target", targetIpWidth},
 		table.Column{arpCountHeader, arpCountWidth})
