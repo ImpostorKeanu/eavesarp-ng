@@ -10,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	eavesarp_ng "github.com/impostorkeanu/eavesarp-ng"
+	pp "github.com/impostorkeanu/eavesarp-ng/cmd/ui/poison_panel"
 	zone "github.com/lrstanley/bubblezone"
 	"github.com/spf13/cobra"
 	_ "modernc.org/sqlite"
@@ -82,6 +83,8 @@ func runUi(db *sql.DB, startMainSniffer bool) (err error) {
 			Spinner: spinner.Dot,
 			Style:   spinnerStyle,
 		},
+		convosPoisonPanels: make(map[string]*pp.PoisonPanel),
+		poisonPanelIds:     make(map[string]*pp.PoisonPanel),
 	}
 	ui.logsViewPort.Style = panelStyle
 

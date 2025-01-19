@@ -8,6 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	eavesarp_ng "github.com/impostorkeanu/eavesarp-ng"
+	pp "github.com/impostorkeanu/eavesarp-ng/cmd/ui/poison_panel"
 	zone "github.com/lrstanley/bubblezone"
 	"math"
 	"slices"
@@ -71,7 +72,9 @@ type (
 		// convosRowSenders maps a row offset to its corresponding
 		// sender IP value, allowing us to filter out repetitive
 		// IPs from the convosTable table.
-		convosRowSenders map[int]string
+		convosRowSenders   map[int]string
+		convosPoisonPanels map[string]*pp.PoisonPanel
+		poisonPanelIds     map[string]*pp.PoisonPanel
 
 		curConvoRow       convoRow
 		curConvoTable     table.Model

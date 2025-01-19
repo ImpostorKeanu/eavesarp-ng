@@ -35,13 +35,13 @@ func (e eventWriter) WriteStringf(f string, args ...any) (n int, err error) {
 func (a *ActiveAttacks) Exists(senderIp, targetIp string) bool {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	return slices.Contains(a.attacks, a.Fmt(senderIp, targetIp))
+	return slices.Contains(a.attacks, FmtConvoKey(senderIp, targetIp))
 }
 
 func (a *ActiveAttacks) Remove(senderIp, targetIp string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	s := a.Fmt(senderIp, targetIp)
+	s := FmtConvoKey(senderIp, targetIp)
 	if ind := slices.Index(a.attacks, s); ind != -1 {
 		var n []string
 		if len(a.attacks) == 1 {
@@ -61,7 +61,7 @@ func (a *ActiveAttacks) Remove(senderIp, targetIp string) {
 func (a *ActiveAttacks) Add(senderIp, targetIp string) (err error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	s := a.Fmt(senderIp, targetIp)
+	s := FmtConvoKey(senderIp, targetIp)
 	if !slices.Contains(a.attacks, s) {
 		a.attacks = append(a.attacks, s)
 	} else {
@@ -70,6 +70,7 @@ func (a *ActiveAttacks) Add(senderIp, targetIp string) (err error) {
 	return
 }
 
-func (a *ActiveAttacks) Fmt(senderIp, targetIp string) string {
+// FmtConvoKey returns the IPs formatted for common lookups.
+func FmtConvoKey(senderIp, targetIp string) string {
 	return fmt.Sprintf("%s:%s", senderIp, targetIp)
 }
