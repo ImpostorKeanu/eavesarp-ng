@@ -50,7 +50,7 @@ func (a *ActiveAttacks) Remove(senderIp, targetIp string) {
 		} else {
 			n = make([]string, len(a.attacks)-1)
 		}
-		copy(n, a.attacks[:ind-1])
+		copy(n, a.attacks[:ind])
 		if len(a.attacks)-1 >= ind+1 {
 			copy(n, a.attacks[ind+1:])
 		}

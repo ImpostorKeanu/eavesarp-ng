@@ -1,7 +1,6 @@
 package main
 
 import (
-	"database/sql"
 	"fmt"
 	"github.com/charmbracelet/bubbles/table"
 	"github.com/enescakir/emoji"
@@ -54,7 +53,7 @@ WHERE aitm_opt.snac_target_ip_id = ?;
 )
 
 type (
-	arpTableContent struct {
+	convosTableContent struct {
 		cols       []table.Column
 		rows       []table.Row
 		rowSenders map[int]string
@@ -255,9 +254,9 @@ func getSelectedArpTableContent(m *model) (content curConvoTableData) {
 	return
 }
 
-func getArpTableContent(db *sql.DB) (content arpTableContent) {
+func getConvosTableContent(m *model) (content convosTableContent) {
 
-	rows, err := db.Query(convosTableQuery)
+	rows, err := m.db.Query(convosTableQuery)
 	if err != nil {
 		content.err = fmt.Errorf("failed to query conversations content: %w", err)
 		return
@@ -293,6 +292,11 @@ func getArpTableContent(db *sql.DB) (content arpTableContent) {
 			return
 		}
 
+		var senderPoisoned string
+		if is := m.activeAttacks.Exists(sender.Value, target.Value); is {
+			senderPoisoned = "x"
+		}
+
 		// Determine if the SNAC column should be displayed
 		if hasSnac && !snacsSeen {
 			snacsSeen = true
@@ -325,9 +329,9 @@ func getArpTableContent(db *sql.DB) (content arpTableContent) {
 		//}
 
 		if hasSnac {
-			tRow = append(tRow, string(emoji.DirectHit))
+			tRow = append(tRow, string(emoji.DirectHit), senderPoisoned)
 		} else {
-			tRow = append(tRow, "")
+			tRow = append(tRow, "", senderPoisoned)
 		}
 
 		tRow = append(tRow, sender.Value)
@@ -337,11 +341,11 @@ func getArpTableContent(db *sql.DB) (content arpTableContent) {
 	content.rowSenders = make(map[int]string)
 	var lastSender string
 	for i, r := range content.rows {
-		content.rowSenders[i] = content.rows[i][2]
-		if r[2] == lastSender {
-			content.rows[i][2] = strings.Repeat(" ", len(lastSender)-1) + "↖"
+		content.rowSenders[i] = content.rows[i][3]
+		if r[3] == lastSender {
+			content.rows[i][3] = strings.Repeat(" ", len(lastSender)-1) + "↖"
 		} else {
-			lastSender = r[2]
+			lastSender = r[3]
 		}
 	}
 
@@ -353,6 +357,7 @@ func getArpTableContent(db *sql.DB) (content arpTableContent) {
 	content.cols = append(content.cols,
 		table.Column{"#", len(fmt.Sprintf("%d", len(content.rows)))},
 		table.Column{"SNAC", 4},
+		table.Column{"Poisoned", 8},
 		table.Column{"Sender", senderIpWidth},
 		table.Column{"Target", targetIpWidth},
 		table.Column{arpCountHeader, arpCountWidth})

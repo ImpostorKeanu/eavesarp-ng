@@ -2,7 +2,10 @@ module github.com/impostorkeanu/eavesarp-ng
 
 go 1.23.1
 
+require github.com/google/gopacket v1.1.19
+
 require (
+	github.com/atotto/clipboard v0.1.4 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/aymanbagabas/go-udiff v0.2.0 // indirect
 	github.com/charmbracelet/bubbles v0.20.0 // indirect
@@ -15,7 +18,6 @@ require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/enescakir/emoji v1.0.0 // indirect
 	github.com/erikgeiser/coninput v0.0.0-20211004153227-1c3628e74d0f // indirect
-	github.com/google/gopacket v1.1.19 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect

@@ -86,14 +86,14 @@ func runUi(db *sql.DB, startMainSniffer bool) (err error) {
 	ui.logsViewPort.Style = panelStyle
 
 	// Initialize the ARP table
-	//c := getArpTableContent(ui.db, 100, 0)
-	c := getArpTableContent(ui.db)
+	//c := getConvosTableContent(ui.db, 100, 0)
+	c := getConvosTableContent(&ui)
 	if c.err != nil {
 		fmt.Println("failed to get initial conversations content")
 		return c.err
 	}
-	ui.doArpTableContent(c)
-	ui.doCurrArpTableRow()
+	ui.doConvoTableContent(c)
+	ui.doCurrConvoRow()
 
 	if _, err = tea.NewProgram(ui, tea.WithAltScreen(), tea.WithMouseCellMotion()).Run(); err != nil {
 		fmt.Printf("error starting the ui: %v", err.Error())

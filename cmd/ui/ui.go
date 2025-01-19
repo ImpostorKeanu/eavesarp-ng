@@ -18,14 +18,14 @@ import (
 
 var (
 	panelStyle = lipgloss.NewStyle().
-		Border(lipgloss.NormalBorder(), true, true, true, true).
-		BorderForeground(lipgloss.Color("240"))
+			Border(lipgloss.NormalBorder(), true, true, true, true).
+			BorderForeground(lipgloss.Color("240"))
 	centerStyle             = lipgloss.NewStyle().AlignHorizontal(lipgloss.Center)
 	selectedPaneBorderColor = lipgloss.Color("248")
 	spinnerStyle            = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("205")).
-		Width(35).
-		AlignHorizontal(lipgloss.Center).AlignVertical(lipgloss.Center)
+				Foreground(lipgloss.Color("205")).
+				Width(35).
+				AlignHorizontal(lipgloss.Center).AlignVertical(lipgloss.Center)
 	convosStyle table.Styles
 	eventsC     = make(chan string)
 )
@@ -109,10 +109,10 @@ func newArpTableRow(r table.Row) (_ convoRow, err error) {
 	var ind, arpCount int
 	if ind, err = strconv.Atoi(r[0]); err != nil {
 		return
-	} else if arpCount, err = strconv.Atoi(r[4]); err != nil {
+	} else if arpCount, err = strconv.Atoi(r[5]); err != nil {
 		return
 	}
-	return convoRow{ind, r[1] != "", r[2], r[3], arpCount}, err
+	return convoRow{ind, r[1] != "", r[3], r[4], arpCount}, err
 }
 
 func (m model) Init() tea.Cmd {
@@ -121,8 +121,8 @@ func (m model) Init() tea.Cmd {
 			return m.convosSpinner.Tick()
 		},
 		func() tea.Msg {
-			return getArpTableContent(m.db)
-			//return getArpTableContent(m.db, 100, 0)
+			return getConvosTableContent(&m)
+			//return getConvosTableContent(m.db, 100, 0)
 		}}
 
 	if m.mainSniff {
@@ -164,7 +164,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		m.doResize(msg)
 
-	case arpTableContent:
+	case convosTableContent:
 
 		if msg.err != nil {
 			_, err := m.eWriter.WriteStringf("failed update conversations content: %v", msg.err.Error())
@@ -174,15 +174,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		} else {
 			m.convosRowSenders = msg.rowSenders
-			m.doArpTableContent(msg)
+			m.doConvoTableContent(msg)
 		}
 
 		return m, func() tea.Msg {
 			// Periodically update the ARP table
 			// TODO we may want to make the update frequency configurable
 			time.Sleep(2 * time.Second)
-			//return getArpTableContent(m.db, 100, 0)
-			return getArpTableContent(m.db)
+			//return getConvosTableContent(m.db, 100, 0)
+			return getConvosTableContent(&m)
 		}
 
 	case logEvent:
@@ -280,14 +280,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				} else {
 					m.convosTable.MoveUp(1)
 				}
-				m.doCurrArpTableRow()
+				m.doCurrConvoRow()
 			case "down", "j":
 				if m.convosTable.Cursor() == len(m.convosTable.Rows())-1 {
 					m.convosTable.GotoTop()
 				} else {
 					m.convosTable.MoveDown(1)
 				}
-				m.doCurrArpTableRow()
+				m.doCurrConvoRow()
 			case "ctrl+shift+up":
 				m.focusedId = curConvoTableId
 			case "ctrl+shift+right":
@@ -500,10 +500,10 @@ func (m *model) doResize(msg tea.WindowSizeMsg) {
 	m.convosTable.SetHeight(m.uiHeight)
 	m.rightWidth = m.uiWidth / 2
 	m.rightHeight = m.uiHeight / 3
-	m.doCurrArpTableRow()
+	m.doCurrConvoRow()
 }
 
-func (m *model) doCurrArpTableRow() {
+func (m *model) doCurrConvoRow() {
 	if len(m.convosTable.Rows()) == 0 {
 		return
 	}
@@ -513,8 +513,8 @@ func (m *model) doCurrArpTableRow() {
 	// row
 	selectedRow := make(table.Row, len(m.convosTable.SelectedRow()))
 	copy(selectedRow, m.convosTable.SelectedRow())
-	if strings.HasSuffix(selectedRow[2], "↖") {
-		selectedRow[2] = m.convosRowSenders[m.convosTable.Cursor()]
+	if strings.HasSuffix(selectedRow[3], "↖") {
+		selectedRow[3] = m.convosRowSenders[m.convosTable.Cursor()]
 	}
 
 	var err error
@@ -538,10 +538,10 @@ func (m *model) doCurrArpTableRow() {
 	}
 }
 
-func (m *model) doArpTableContent(c arpTableContent) {
+func (m *model) doConvoTableContent(c convosTableContent) {
 	if len(c.rows) > 0 {
 		m.convosTable.SetColumns(c.cols)
 		m.convosTable.SetRows(c.rows)
-		m.doCurrArpTableRow()
+		m.doCurrConvoRow()
 	}
 }
