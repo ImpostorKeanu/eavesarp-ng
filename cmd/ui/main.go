@@ -83,10 +83,12 @@ func runUi(db *sql.DB, startMainSniffer bool) (err error) {
 			Spinner: spinner.Dot,
 			Style:   spinnerStyle,
 		},
-		convosPoisonPanels: make(map[string]*pp.PoisonPanel),
-		poisonPanelIds:     make(map[string]*pp.PoisonPanel),
+		convosPoisonPanels: &PoisoningPanels{
+			panels: make(map[string]*pp.PoisonPanel),
+		},
+		poisonPanelIds: make(map[string]*pp.PoisonPanel),
 	}
-	ui.logsViewPort.Style = panelStyle
+	ui.logsViewPort.Style = paneStyle
 
 	// Initialize the ARP table
 	//c := getConvosTableContent(ui.db, 100, 0)

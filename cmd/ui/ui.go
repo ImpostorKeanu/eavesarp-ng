@@ -18,15 +18,16 @@ import (
 )
 
 var (
-	panelStyle = lipgloss.NewStyle().
-			Border(lipgloss.NormalBorder(), true, true, true, true).
-			BorderForeground(lipgloss.Color("240"))
-	centerStyle             = lipgloss.NewStyle().AlignHorizontal(lipgloss.Center)
-	selectedPaneBorderColor = lipgloss.Color("248")
-	spinnerStyle            = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("205")).
-				Width(35).
-				AlignHorizontal(lipgloss.Center).AlignVertical(lipgloss.Center)
+	deselectedPaneBorderColor = lipgloss.Color("240")
+	selectedPaneBorderColor   = lipgloss.Color("248")
+	paneStyle                 = lipgloss.NewStyle().
+		Border(lipgloss.NormalBorder(), true, true, true, true).
+		BorderForeground(deselectedPaneBorderColor)
+	centerStyle  = lipgloss.NewStyle().AlignHorizontal(lipgloss.Center)
+	spinnerStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("205")).
+		Width(35).
+		AlignHorizontal(lipgloss.Center).AlignVertical(lipgloss.Center)
 	convosStyle table.Styles
 	eventsC     = make(chan string)
 )
@@ -73,7 +74,7 @@ type (
 		// sender IP value, allowing us to filter out repetitive
 		// IPs from the convosTable table.
 		convosRowSenders   map[int]string
-		convosPoisonPanels map[string]*pp.PoisonPanel
+		convosPoisonPanels *PoisoningPanels
 		poisonPanelIds     map[string]*pp.PoisonPanel
 
 		curConvoRow       convoRow
@@ -234,28 +235,76 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		if zone.Get(poisonButtonId).InBounds(msg) {
+
 			m.focusedId = poisonCfgPaneId
+			//m.convosPoisonPanels.GetOrCreate(m.curConvoRow.senderIp, m.curConvoRow.targetIp)
+			p := m.convosPoisonPanels.GetOrCreate(m.curConvoRow.senderIp, m.curConvoRow.targetIp)
+			p.Style = paneStyle.BorderForeground(selectedPaneBorderColor)
 			return m, nil
-		} else if zone.Get(poisonStartButtonId).InBounds(msg) {
 
-			if err := m.activeAttacks.Add(m.curConvoRow.senderIp, m.curConvoRow.targetIp); err != nil {
+		}
+		//if zone.Get(poisonButtonId).InBounds(msg) {
+		//
+		//	m.focusedId = poisonCfgPaneId
+		//	m.convosPoisonPanels.GetOrCreate(m.curConvoRow.senderIp, m.curConvoRow.targetIp)
+		//	//p := m.convosPoisonPanels.GetOrCreate(m.curConvoRow.senderIp, m.curConvoRow.targetIp)
+		//	//p.Style = paneStyle
+		//	return m, nil
+		//
+		//} else if zone.Get(poisonStartButtonId).InBounds(msg) {
+		//
+		//	// TODO start to be offloaded to the poisoning panel itself
+		//	if err := m.activeAttacks.Add(m.curConvoRow.senderIp, m.curConvoRow.targetIp); err != nil {
+		//		// TODO
+		//		panic(err)
+		//	}
+		//	m.focusedId = curConvoTableId
+		//	return m, nil
+		//
+		//} else if zone.Get(poisonCancelButtonId).InBounds(msg) {
+		//
+		//	// TODO poisoning cancellation to be offloaded to poisoning panel itself
+		//	m.activeAttacks.Remove(m.curConvoRow.senderIp, m.curConvoRow.targetIp)
+		//	m.focusedId = curConvoTableId
+		//	return m, nil
+		//
+		//}
+
+		if m.convosPoisonPanels.Exists(m.curConvoRow.senderIp, m.curConvoRow.targetIp) {
+			cmd, err := m.convosPoisonPanels.Update(m.curConvoRow.senderIp, m.curConvoRow.targetIp, msg)
+			if err != nil {
 				// TODO
-				panic(err)
+				panic("failed to update poison panel")
 			}
-			m.focusedId = curConvoTableId
-			return m, nil
-
-		} else if zone.Get(poisonCancelButtonId).InBounds(msg) {
-
-			m.activeAttacks.Remove(m.curConvoRow.senderIp, m.curConvoRow.targetIp)
-			m.focusedId = curConvoTableId
-			return m, nil
-
+			return m, cmd
 		}
 
 	case eavesarpError:
 
 		return m, tea.Quit
+
+	case pp.BtnPressMsg:
+
+		switch msg.Event {
+		case pp.StartPoisonEvent:
+			// TODO start to be offloaded to the poisoning panel itself
+			if err := m.activeAttacks.Add(m.curConvoRow.senderIp, m.curConvoRow.targetIp); err != nil {
+				// TODO
+				panic(err)
+			}
+		case pp.CancelPoisonEvent:
+			m.activeAttacks.Remove(m.curConvoRow.senderIp, m.curConvoRow.targetIp)
+			m.convosPoisonPanels.Remove(m.curConvoRow.senderIp, m.curConvoRow.targetIp)
+			m.focusedId = convosTableId
+		case pp.CancelConfigEvent:
+			m.convosPoisonPanels.Remove(m.curConvoRow.senderIp, m.curConvoRow.targetIp)
+			m.focusedId = logsViewPortId
+		default:
+			panic("unknown button press event emitted by poison configuration panel")
+		}
+
+		// TODO handle poison panel button press event
+		return m, nil
 
 	case tea.KeyMsg:
 
@@ -269,12 +318,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 
+		hasPoisonPanel := m.convosPoisonPanels.Exists(m.curConvoRow.senderIp, m.curConvoRow.targetIp)
+		handleBottomPanel := func() {
+			if hasPoisonPanel {
+				m.focusedId = poisonCfgPaneId
+			} else {
+				m.focusedId = logsViewPortId
+			}
+		}
+
 		switch m.focusedId {
+
 		case convosTableId:
 
-			//=====================
-			// ARP TABLE KEYSTROKES
-			//=====================
+			//========================
+			// CONVOS TABLE KEYSTROKES
+			//========================
 
 			switch msg.String() {
 			case "up", "k":
@@ -291,12 +350,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.convosTable.MoveDown(1)
 				}
 				m.doCurrConvoRow()
-			case "ctrl+shift+up":
+			case "ctrl+shift+up", "ctrl+shift+right":
 				m.focusedId = curConvoTableId
-			case "ctrl+shift+right":
-				m.focusedId = attacksViewPortId
 			case "ctrl+shift+down":
-				m.focusedId = logsViewPortId
+				handleBottomPanel()
 			case "q", "ctrl+c":
 				return m, tea.Quit
 			}
@@ -304,27 +361,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case curConvoTableId:
 
+			//===============================
+			// CURRENT CONVO TABLE KEYSTROKES
+			//===============================
+
 			switch msg.String() {
 			case "ctrl+shift+left":
 				m.focusedId = convosTableId
 			case "ctrl+shift+down":
-				m.focusedId = attacksViewPortId
+				handleBottomPanel()
 			case "ctrl+shift+up":
-				m.focusedId = logsViewPortId
+				handleBottomPanel()
 			}
 
-		case attacksViewPortId:
-
-			switch msg.String() {
-			case "ctrl+shift+up":
-				m.focusedId = curConvoTableId
-			case "ctrl+shift+down":
-				m.focusedId = logsViewPortId
-			case "ctrl+shift+left":
-				m.focusedId = convosTableId
-			}
-
-		case logsViewPortId:
+		case logsViewPortId, poisonCfgPaneId:
 
 			switch msg.String() {
 			case "down":
@@ -333,14 +383,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.logsViewPort.LineUp(1)
 			case "ctrl+shift+left":
 				m.focusedId = convosTableId
-			case "ctrl+shift+up":
-				m.focusedId = attacksViewPortId
-			case "ctrl+shift+down":
+			case "ctrl+shift+down", "ctrl+shift+up":
 				m.focusedId = curConvoTableId
+			default:
+				// Pass all other keystrokes to the poisoning configuration panel
+				if m.focusedId == poisonCfgPaneId {
+					cmd, err := m.convosPoisonPanels.Update(m.curConvoRow.senderIp, m.curConvoRow.targetIp, msg)
+					if err != nil {
+						// TODO
+						panic("failed to update poison panel")
+					}
+					return m, cmd
+				}
 			}
-
 		}
-
 	}
 
 	return m, nil
@@ -359,7 +415,7 @@ func (m model) View() string {
 	// REMAINING PANES
 	//================
 
-	rightPaneStyle := panelStyle
+	rightPaneStyle := paneStyle
 	rightPaneStyle = rightPaneStyle.Width(m.rightWidth).Height(m.rightHeight)
 
 	// Logging pane will be shorter than the other two right-hand panes
@@ -380,10 +436,10 @@ func (m model) View() string {
 	centerRightHeadingStyle := centerStyle
 	centerRightHeadingStyle = centerRightHeadingStyle.Width(m.rightWidth)
 
-	arpTableStyle := panelStyle
-	selectedArpTableStyle := panelStyle
-	attacksPanelStyle := panelStyle
-	logViewPortStyle := panelStyle
+	convosTblStyle := paneStyle
+	selectedArpTableStyle := paneStyle
+	attacksPanelStyle := paneStyle
+	logViewPortStyle := paneStyle
 
 	//==================================
 	// BRIGHTEN BORDER FOR SELECTED PANE
@@ -391,7 +447,7 @@ func (m model) View() string {
 
 	switch m.focusedId {
 	case convosTableId:
-		arpTableStyle = arpTableStyle.BorderForeground(selectedPaneBorderColor)
+		convosTblStyle = convosTblStyle.BorderForeground(selectedPaneBorderColor)
 	case curConvoTableId:
 		selectedArpTableStyle = selectedArpTableStyle.BorderForeground(selectedPaneBorderColor)
 	case attacksViewPortId:
@@ -411,7 +467,7 @@ func (m model) View() string {
 	arpTblHeading := zone.Mark(convosTableId.String(), centerStyle.Render("Conversations"))
 
 	if len(m.convosTable.Rows()) == 0 {
-		s := arpTableStyle
+		s := convosTblStyle
 		s = s.Height(m.uiHeight)
 		leftPane = lipgloss.JoinVertical(lipgloss.Center,
 			arpTblHeading,
@@ -419,8 +475,11 @@ func (m model) View() string {
 	} else {
 		leftPane = lipgloss.JoinVertical(lipgloss.Center,
 			arpTblHeading,
-			arpTableStyle.Render(lipgloss.JoinHorizontal(lipgloss.Center, m.convosTable.View())))
+			convosTblStyle.Render(lipgloss.JoinHorizontal(lipgloss.Center, m.convosTable.View())))
 	}
+
+	hasPoisonPanel := m.convosPoisonPanels.Exists(m.curConvoRow.senderIp, m.curConvoRow.targetIp)
+	hasActiveAttack := m.activeAttacks.Exists(m.curConvoRow.senderIp, m.curConvoRow.targetIp)
 
 	//=====================================
 	// BUILD THE CURRENT CONVERSATION TABLE
@@ -428,60 +487,53 @@ func (m model) View() string {
 
 	var rightPanels []string
 	if m.curConvoTableData != nil {
+
 		rightPanels = append(rightPanels,
 			zone.Mark(curConvoTableId.String(), centerRightHeadingStyle.Render("Selected Conversation")),
 			selectedArpTableStyle.Render(m.curConvoTable.View()))
-		if m.curConvoRow.isSnac {
 
+		if m.curConvoRow.isSnac && m.focusedId != poisonCfgPaneId && !hasPoisonPanel && !hasActiveAttack {
+			var button string
+			// TODO clean this up
 			s := lipgloss.NewStyle().
 				Width(m.rightWidth).
 				MarginLeft(1).MarginBottom(1).
 				PaddingRight(1).
 				AlignHorizontal(lipgloss.Center).
 				Background(lipgloss.Color("240"))
-
-			var button string
-			if m.focusedId == poisonCfgPaneId {
-
-				//============================
-				// CONFIGURE & START POISONING
-				//============================
-
-				s := s
-				s = s.Width(s.GetWidth() / 2)
-				button = lipgloss.JoinHorizontal(lipgloss.Center,
-					zone.Mark(poisonStartButtonId, s.Render("Start Poisoning")),
-					zone.Mark(poisonCancelButtonId, s.Render("Cancel")),
-				)
-
-			} else {
-
-				//=========================================================
-				// EITHER START CONFIGURING POISONING OR CANCEL THE ATTACK
-				//=========================================================
-
-				if !m.activeAttacks.Exists(m.curConvoRow.senderIp, m.curConvoRow.targetIp) {
-					button = zone.Mark(poisonButtonId, s.Render("Configure Poisoning"))
-				} else {
-					// Poisoning is ongoing, so we should only offer cancellation
-					button = zone.Mark(poisonCancelButtonId, s.Render("Cancel Poisoning"))
-				}
-
-			}
-
+			button = zone.Mark(poisonButtonId, s.Render("Configure Poisoning"))
 			rightPanels = append(rightPanels, button)
-
 		}
 	}
 
-	if m.curConvoRow.isSnac && m.focusedId == poisonCfgPaneId {
+	if m.curConvoRow.isSnac && (m.focusedId == poisonCfgPaneId || hasPoisonPanel) {
 
-		rightPanels = append(rightPanels,
-			zone.Mark(poisonCfgPaneId,
-				centerRightHeadingStyle.Render("Poisoning Configuration")),
-			m.logsViewPort.View())
+		//==============================
+		// POISONING CONFIGURATION PANEL
+		//==============================
+
+		p := m.convosPoisonPanels.Get(m.curConvoRow.senderIp, m.curConvoRow.targetIp)
+		if p == nil {
+			// TODO
+			panic("missing poison panel for conversation")
+		}
+		p.Width = m.rightWidth
+		p.Height = m.logsViewPort.Height
+
+		if m.focusedId == poisonCfgPaneId {
+			p.Style = p.Style.BorderForeground(selectedPaneBorderColor)
+		} else {
+			p.Style = p.Style.BorderForeground(deselectedPaneBorderColor)
+		}
+
+		rightPanels = append(rightPanels, lipgloss.JoinVertical(lipgloss.Center,
+			centerRightHeadingStyle.Render("Poisoning"), p.View()))
 
 	} else {
+
+		//===========
+		// LOGS PANEL
+		//===========
 
 		rightPanels = append(rightPanels,
 			zone.Mark(logsViewPortId.String(),

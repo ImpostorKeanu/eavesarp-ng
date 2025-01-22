@@ -43,50 +43,46 @@ const (
 
 type (
 	// PoisonPanel is the poisoning configuration form presented
-	// after the user has elected to begin the poisoning process
-	// for a given SNAC conversation.
+	// after the user has elected to begin poisoning a SNAC conversation.
 	//
 	// New should always be used to initialize this type to ensure
-	// a unique identifier is created for each button.
+	// creation of unique identifiers.
 	//
 	// Use Id to obtain the randomly created identifier.
 	PoisonPanel struct {
-		Style                lipgloss.Style    // Style for the panel element
-		Width, Height        int               // Width and Height for the element
-		id                   string            // random id created by New
-		inputs               []textinput.Model // text input fields
-		errors               []string          // error messages for inputs
-		inputFocusIndex      int               // track which input has focus
-		running              bool              // indicates if the poisoning attack is running
-		startBtnMark         string            // unique zone mark for this panel's start button
-		cancelBtnMark        string            // unique zone mark for this panel's cancel button
-		cancelConfigBtnPress BtnPressMsg       // created by New
-		cancelPoisonBtnPress BtnPressMsg       // created by New
-		startPoisonBtnPress  BtnPressMsg       // created by New
-		zoneM                *zone.Manager     // created by New
+		Style           lipgloss.Style    // Style for the panel element
+		Width, Height   int               // Width and Height for the element
+		id              string            // random id created by New
+		inputs          []textinput.Model // text input fields
+		errors          []string          // error messages for inputs
+		inputFocusIndex int               // track which input has focus
+		running         bool              // determines if the poisoning attack is running
+		startBtnMark    string            // unique zone mark for this panel's start button
+		cancelBtnMark   string            // unique zone mark for this panel's cancel button
+		zoneM           *zone.Manager     // created by New
 	}
 
 	// BtnPressMsg indicates a button has been pressed in a PoisonPanel.
 	BtnPressMsg struct {
-		Id    string // Id of the panel that emitted the event
-		Event string // Event that was emitted
+		Event    string // Event that was emitted
+		FormData FormData
+	}
+
+	FormData struct {
+		CaptureDuration, PacketLimit, OutputFile string
 	}
 
 	validator func(string) error
 )
 
-func New() PoisonPanel {
-	z := zone.New()
+func New(z *zone.Manager) PoisonPanel {
 	id := z.NewPrefix()
 	return PoisonPanel{
-		zoneM:                z,
-		inputs:               newTextInputs(),
-		id:                   id,
-		startBtnMark:         fmt.Sprintf("%s-%s", id, startBtnMark),
-		cancelBtnMark:        fmt.Sprintf("%s-%s", id, cancelBtnMark),
-		cancelConfigBtnPress: BtnPressMsg{id, CancelConfigEvent},
-		cancelPoisonBtnPress: BtnPressMsg{id, CancelPoisonEvent},
-		startPoisonBtnPress:  BtnPressMsg{id, StartPoisonEvent},
+		zoneM:         z,
+		inputs:        newTextInputs(),
+		id:            id,
+		startBtnMark:  fmt.Sprintf("%s-%s", id, startBtnMark),
+		cancelBtnMark: fmt.Sprintf("%s-%s", id, cancelBtnMark),
 	}
 }
 
@@ -170,6 +166,14 @@ func (p PoisonPanel) Init() tea.Cmd {
 	return textinput.Blink
 }
 
+func (p PoisonPanel) FormData() FormData {
+	return FormData{
+		CaptureDuration: p.CaptureDurationInput().Value(),
+		PacketLimit:     p.PacketLimitInput().Value(),
+		OutputFile:      p.OutputFileInput().Value(),
+	}
+}
+
 func (p PoisonPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.MouseMsg:
@@ -186,31 +190,37 @@ func (p PoisonPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					p.inputs[p.inputFocusIndex].PromptStyle = focusedStyle
 					return p, func() tea.Msg {
 						// Notify that poisoning should be canceled
-						return p.cancelPoisonBtnPress
+						return BtnPressMsg{
+							Event:    CancelPoisonEvent,
+							FormData: p.FormData(),
+						}
 					}
 				}
 
 				p.inputFocusIndex = 0
 				p.inputs = newTextInputs()
 				p.inputs[captureDurationInputIndex].Focus()
-
-				// Cancel poisoning configuration
 				return p, func() tea.Msg {
 					// Notify that configuration should stop
-					return p.cancelConfigBtnPress
+					return BtnPressMsg{
+						Event:    CancelConfigEvent,
+						FormData: p.FormData(),
+					}
 				}
 
 			} else if p.zoneM.Get(p.startBtnMark).InBounds(msg) {
-
+				// Start button clicked
 				p.running = true
 				p.inputs[p.inputFocusIndex].Blur()
 				p.inputs[p.inputFocusIndex].TextStyle = blurredStyle
 				p.inputs[p.inputFocusIndex].PromptStyle = blurredStyle
 				return p, func() tea.Msg {
 					// Notify that poisoning should start
-					return p.startPoisonBtnPress
+					return BtnPressMsg{
+						Event:    StartPoisonEvent,
+						FormData: p.FormData(),
+					}
 				}
-
 			}
 		}
 	case tea.KeyMsg:
@@ -306,7 +316,8 @@ func (p PoisonPanel) View() string {
 
 	if p.running || hasErrors {
 		// Only show cancel button
-		builder.WriteString(p.zoneM.Mark(p.cancelBtnMark, btnStyle.Width(s.GetWidth()).Render("Cancel Poisoning")))
+		builder.WriteString(p.zoneM.Mark(p.cancelBtnMark,
+			btnStyle.Width(s.GetWidth()).Render("Cancel Poisoning")))
 	} else {
 		// Show start and cancel button
 		w := s.GetWidth() / 2
@@ -319,5 +330,6 @@ func (p PoisonPanel) View() string {
 				Render("Cancel Configuration"))))
 	}
 
-	return p.zoneM.Scan(s.Render(builder.String()))
+	//return p.zoneM.Scan(s.Render(builder.String()))
+	return s.Render(builder.String())
 }
