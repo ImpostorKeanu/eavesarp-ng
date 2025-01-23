@@ -4,20 +4,20 @@ import (
 	"fmt"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/impostorkeanu/eavesarp-ng/cmd/ui/poison_panel"
+	"github.com/impostorkeanu/eavesarp-ng/cmd/ui/panes"
 	zone "github.com/lrstanley/bubblezone"
 )
 
 type model struct {
-	panel poison_panel.PoisonPanel
+	pane panes.PoisonPane
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	return m.panel.Update(msg)
+	return m.pane.Update(msg)
 }
 
 func (m model) View() string {
-	return zone.Scan(m.panel.View())
+	return zone.Scan(m.pane.View())
 }
 
 func (m model) Init() tea.Cmd {
@@ -26,7 +26,7 @@ func (m model) Init() tea.Cmd {
 
 func main() {
 	zone.NewGlobal()
-	p := poison_panel.New(zone.DefaultManager)
+	p := panes.NewPoison(zone.DefaultManager)
 	p.Style = lipgloss.NewStyle().Border(lipgloss.NormalBorder(), true, true, true, true)
 	p.Height = 10
 	p.Width = 70

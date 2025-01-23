@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/impostorkeanu/eavesarp-ng/cmd/ui/poison_panel"
+	"github.com/impostorkeanu/eavesarp-ng/cmd/ui/panes"
 	zone "github.com/lrstanley/bubblezone"
 	"slices"
 	"sync"
@@ -24,7 +24,7 @@ type (
 		mu      sync.RWMutex
 	}
 	PoisoningPanels struct {
-		panels map[string]*poison_panel.PoisonPanel
+		panels map[string]*panes.PoisonPane
 		mu     sync.RWMutex
 	}
 )
@@ -111,7 +111,7 @@ func (p *PoisoningPanels) Remove(senderIp, targetIp string) {
 	delete(p.panels, FmtConvoKey(senderIp, targetIp))
 }
 
-func (p *PoisoningPanels) Add(senderIp, targetIp string, panel *poison_panel.PoisonPanel) (err error) {
+func (p *PoisoningPanels) Add(senderIp, targetIp string, panel *panes.PoisonPane) (err error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.add(senderIp, targetIp, panel)
@@ -123,25 +123,25 @@ func (p *PoisoningPanels) Update(senderIp, targetIp string, msg tea.Msg) (cmd te
 	if p.exists(senderIp, targetIp) {
 		var buff tea.Msg
 		buff, cmd = p.panels[FmtConvoKey(senderIp, targetIp)].Update(msg)
-		*p.panels[FmtConvoKey(senderIp, targetIp)] = buff.(poison_panel.PoisonPanel)
+		*p.panels[FmtConvoKey(senderIp, targetIp)] = buff.(panes.PoisonPane)
 	} else {
 		err = PoisoningPanelDoesntExistError
 	}
 	return
 }
 
-func (p *PoisoningPanels) GetOrCreate(senderIp, targetIp string) (panel *poison_panel.PoisonPanel) {
+func (p *PoisoningPanels) GetOrCreate(senderIp, targetIp string) (panel *panes.PoisonPane) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if panel = p.panels[FmtConvoKey(senderIp, targetIp)]; panel == nil {
-		buff := poison_panel.New(zone.DefaultManager)
+		buff := panes.NewPoison(zone.DefaultManager)
 		panel = &buff
 		p.panels[FmtConvoKey(senderIp, targetIp)] = panel
 	}
 	return
 }
 
-func (p *PoisoningPanels) Get(senderIp, targetIp string) *poison_panel.PoisonPanel {
+func (p *PoisoningPanels) Get(senderIp, targetIp string) *panes.PoisonPane {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return p.panels[FmtConvoKey(senderIp, targetIp)]
@@ -151,7 +151,7 @@ func (p *PoisoningPanels) exists(senderIp, targetIp string) bool {
 	return p.panels[FmtConvoKey(senderIp, targetIp)] != nil
 }
 
-func (p *PoisoningPanels) add(senderIp, targetIp string, panel *poison_panel.PoisonPanel) (err error) {
+func (p *PoisoningPanels) add(senderIp, targetIp string, panel *panes.PoisonPane) (err error) {
 	if p.exists(senderIp, targetIp) {
 		return PoisoningPanelAlreadyExistsError
 	}

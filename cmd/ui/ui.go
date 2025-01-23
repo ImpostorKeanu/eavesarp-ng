@@ -8,7 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	eavesarp_ng "github.com/impostorkeanu/eavesarp-ng"
-	pp "github.com/impostorkeanu/eavesarp-ng/cmd/ui/poison_panel"
+	"github.com/impostorkeanu/eavesarp-ng/cmd/ui/panes"
 	zone "github.com/lrstanley/bubblezone"
 	"math"
 	"slices"
@@ -75,7 +75,7 @@ type (
 		// IPs from the convosTable table.
 		convosRowSenders   map[int]string
 		convosPoisonPanels *PoisoningPanels
-		poisonPanelIds     map[string]*pp.PoisonPanel
+		poisonPanelIds     map[string]*panes.PoisonPane
 
 		curConvoRow       convoRow
 		curConvoTable     table.Model
@@ -283,20 +283,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		return m, tea.Quit
 
-	case pp.BtnPressMsg:
+	case panes.BtnPressMsg:
 
 		switch msg.Event {
-		case pp.StartPoisonEvent:
+		case panes.StartPoisonEvent:
 			// TODO start to be offloaded to the poisoning panel itself
 			if err := m.activeAttacks.Add(m.curConvoRow.senderIp, m.curConvoRow.targetIp); err != nil {
 				// TODO
 				panic(err)
 			}
-		case pp.CancelPoisonEvent:
+		case panes.CancelPoisonEvent:
 			m.activeAttacks.Remove(m.curConvoRow.senderIp, m.curConvoRow.targetIp)
 			m.convosPoisonPanels.Remove(m.curConvoRow.senderIp, m.curConvoRow.targetIp)
 			m.focusedId = convosTableId
-		case pp.CancelConfigEvent:
+		case panes.CancelConfigEvent:
 			m.convosPoisonPanels.Remove(m.curConvoRow.senderIp, m.curConvoRow.targetIp)
 			m.focusedId = logsViewPortId
 		default:
