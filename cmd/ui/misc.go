@@ -7,7 +7,6 @@ import (
 	"github.com/impostorkeanu/eavesarp-ng/cmd/ui/panes"
 	zone "github.com/lrstanley/bubblezone"
 	"slices"
-	"sync"
 )
 
 var (
@@ -21,12 +20,8 @@ type (
 	}
 	ActiveAttacks struct {
 		attacks []string
-		mu      sync.RWMutex
 	}
-	PoisoningPanels struct {
-		panels map[string]*panes.PoisonPane
-		mu     sync.RWMutex
-	}
+	PoisoningPanels map[string]*panes.PoisonPane
 )
 
 func (e eventWriter) WriteString(s string) (n int, err error) {
@@ -46,14 +41,10 @@ func (e eventWriter) WriteStringf(f string, args ...any) (n int, err error) {
 }
 
 func (a *ActiveAttacks) Exists(senderIp, targetIp string) bool {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
 	return slices.Contains(a.attacks, FmtConvoKey(senderIp, targetIp))
 }
 
 func (a *ActiveAttacks) Remove(senderIp, targetIp string) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
 
 	// return if zero active attacks are occurring
 	l := len(a.attacks)
@@ -83,8 +74,6 @@ func (a *ActiveAttacks) Remove(senderIp, targetIp string) {
 }
 
 func (a *ActiveAttacks) Add(senderIp, targetIp string) (err error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
 	s := FmtConvoKey(senderIp, targetIp)
 	if !slices.Contains(a.attacks, s) {
 		a.attacks = append(a.attacks, s)
@@ -99,62 +88,51 @@ func FmtConvoKey(senderIp, targetIp string) string {
 	return fmt.Sprintf("%s:%s", senderIp, targetIp)
 }
 
-func (p *PoisoningPanels) Exists(senderIp, targetIp string) bool {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
+func (p PoisoningPanels) Exists(senderIp, targetIp string) bool {
 	return p.exists(senderIp, targetIp)
 }
 
-func (p *PoisoningPanels) Remove(senderIp, targetIp string) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	delete(p.panels, FmtConvoKey(senderIp, targetIp))
+func (p PoisoningPanels) Remove(senderIp, targetIp string) {
+	delete(p, FmtConvoKey(senderIp, targetIp))
 }
 
-func (p *PoisoningPanels) Add(senderIp, targetIp string, panel *panes.PoisonPane) (err error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+func (p PoisoningPanels) Add(senderIp, targetIp string, panel *panes.PoisonPane) (err error) {
 	return p.add(senderIp, targetIp, panel)
 }
 
-func (p *PoisoningPanels) Update(senderIp, targetIp string, msg tea.Msg) (cmd tea.Cmd, err error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+func (p PoisoningPanels) Update(senderIp, targetIp string, msg tea.Msg) (cmd tea.Cmd, err error) {
 	if p.exists(senderIp, targetIp) {
 		var buff tea.Msg
-		buff, cmd = p.panels[FmtConvoKey(senderIp, targetIp)].Update(msg)
-		*p.panels[FmtConvoKey(senderIp, targetIp)] = buff.(panes.PoisonPane)
+		buff, cmd = p[FmtConvoKey(senderIp, targetIp)].Update(msg)
+		b2 := buff.(panes.PoisonPane)
+		p[FmtConvoKey(senderIp, targetIp)] = &b2
 	} else {
 		err = PoisoningPanelDoesntExistError
 	}
 	return
 }
 
-func (p *PoisoningPanels) GetOrCreate(senderIp, targetIp string) (panel *panes.PoisonPane) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if panel = p.panels[FmtConvoKey(senderIp, targetIp)]; panel == nil {
+func (p PoisoningPanels) GetOrCreate(senderIp, targetIp string) (panel *panes.PoisonPane) {
+	if panel = p[FmtConvoKey(senderIp, targetIp)]; panel == nil {
 		buff := panes.NewPoison(zone.DefaultManager)
 		panel = &buff
-		p.panels[FmtConvoKey(senderIp, targetIp)] = panel
+		p[FmtConvoKey(senderIp, targetIp)] = panel
 	}
 	return
 }
 
-func (p *PoisoningPanels) Get(senderIp, targetIp string) *panes.PoisonPane {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	return p.panels[FmtConvoKey(senderIp, targetIp)]
+func (p PoisoningPanels) Get(senderIp, targetIp string) *panes.PoisonPane {
+	return p[FmtConvoKey(senderIp, targetIp)]
 }
 
-func (p *PoisoningPanels) exists(senderIp, targetIp string) bool {
-	return p.panels[FmtConvoKey(senderIp, targetIp)] != nil
+func (p PoisoningPanels) exists(senderIp, targetIp string) bool {
+	return p[FmtConvoKey(senderIp, targetIp)] != nil
 }
 
-func (p *PoisoningPanels) add(senderIp, targetIp string, panel *panes.PoisonPane) (err error) {
+func (p PoisoningPanels) add(senderIp, targetIp string, panel *panes.PoisonPane) (err error) {
 	if p.exists(senderIp, targetIp) {
 		return PoisoningPanelAlreadyExistsError
 	}
-	p.panels[FmtConvoKey(senderIp, targetIp)] = panel
+	p[FmtConvoKey(senderIp, targetIp)] = panel
 	return
 }

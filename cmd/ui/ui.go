@@ -36,10 +36,8 @@ const (
 	maxLogCount  = 1000
 	maxLogLength = 2000
 
-	poisonButtonId       = "poisonBtn"
-	poisonCfgPaneId      = "poisonCfgPane"
-	poisonCancelButtonId = "poisonCancelBtn"
-	poisonStartButtonId  = "poisonStartBtn"
+	poisonButtonId  = "poisonBtn"
+	poisonCfgPaneId = "poisonCfgPane"
 )
 
 func init() {
@@ -74,8 +72,7 @@ type (
 		// sender IP value, allowing us to filter out repetitive
 		// IPs from the convosTable table.
 		convosRowSenders   map[int]string
-		convosPoisonPanels *PoisoningPanels
-		poisonPanelIds     map[string]*panes.PoisonPane
+		convosPoisonPanels PoisoningPanels
 
 		curConvoRow       convoRow
 		curConvoTable     table.Model
