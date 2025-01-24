@@ -240,7 +240,7 @@ func getSelectedArpTableContent(m *model) (content curConvoTableData) {
 		table.Row{"Ports", "---", "---"})
 
 	if target.Mac != nil {
-		content.rows[len(content.rows)-3][2] = target.Mac.Value
+		content.rows[1][2] = target.Mac.Value
 	}
 
 	// TODO Why is this math for the sender and target columns so wonky?

@@ -69,8 +69,8 @@ type (
 		// convosRowSenders maps a row offset to its corresponding
 		// sender IP value, allowing us to filter out repetitive
 		// IPs from the convosTable table.
-		convosRowSenders   map[int]string
-		convosPoisonPanels PoisoningPanels
+		convosRowSenders  map[int]string
+		convosPoisonPanes PoisoningPanels
 
 		curConvoRow       convoRow
 		curConvoTable     table.Model
@@ -176,10 +176,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case panes.CancelPoisonEvent:
 			m.activeAttacks.Remove(m.curConvoRow.senderIp, m.curConvoRow.targetIp)
-			m.convosPoisonPanels.Remove(m.curConvoRow.senderIp, m.curConvoRow.targetIp)
+			m.convosPoisonPanes.Remove(m.curConvoRow.senderIp, m.curConvoRow.targetIp)
 			m.focusedId = convosTableHeadingId
 		case panes.CancelConfigEvent:
-			m.convosPoisonPanels.Remove(m.curConvoRow.senderIp, m.curConvoRow.targetIp)
+			m.convosPoisonPanes.Remove(m.curConvoRow.senderIp, m.curConvoRow.targetIp)
 			m.focusedId = logsViewPortHeadingId
 		default:
 			panic("unknown button press event emitted by poison configuration panel")
@@ -212,13 +212,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		if zone.Get(poisonButtonId).InBounds(msg) {
 			m.focusedId = poisonCfgPaneId
-			p := m.convosPoisonPanels.GetOrCreate(m.curConvoRow.senderIp, m.curConvoRow.targetIp)
+			p := m.convosPoisonPanes.GetOrCreate(m.curConvoRow.senderIp, m.curConvoRow.targetIp)
 			p.Style = paneStyle.BorderForeground(selectedPaneBorderColor)
 			return m, nil
 		}
 
-		if m.convosPoisonPanels.Exists(m.curConvoRow.senderIp, m.curConvoRow.targetIp) {
-			cmd, err := m.convosPoisonPanels.Update(m.curConvoRow.senderIp, m.curConvoRow.targetIp, msg)
+		if m.convosPoisonPanes.Exists(m.curConvoRow.senderIp, m.curConvoRow.targetIp) {
+			cmd, err := m.convosPoisonPanes.Update(m.curConvoRow.senderIp, m.curConvoRow.targetIp, msg)
 			if err != nil {
 				// TODO
 				panic("failed to update poison panel")
@@ -235,7 +235,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 
-		hasPoisonPanel := m.convosPoisonPanels.Exists(m.curConvoRow.senderIp, m.curConvoRow.targetIp)
+		hasPoisonPanel := m.convosPoisonPanes.Exists(m.curConvoRow.senderIp, m.curConvoRow.targetIp)
 		handleBottomPanel := func() {
 			if hasPoisonPanel {
 				m.focusedId = poisonCfgPaneId
@@ -252,22 +252,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.convosTable.Cursor() == 0 {
 					m.convosTable.GotoBottom()
 				} else {
-					m.convosTable.MoveUp(1)
+					m.convosTable, _ = m.convosTable.Update(msg)
 				}
 				m.doCurrConvoRow()
 			case "down", "j":
 				if m.convosTable.Cursor() == len(m.convosTable.Rows())-1 {
 					m.convosTable.GotoTop()
 				} else {
-					m.convosTable.MoveDown(1)
+					m.convosTable, _ = m.convosTable.Update(msg)
 				}
 				m.doCurrConvoRow()
 			case "ctrl+shift+up", "ctrl+shift+right":
 				m.focusedId = curConvoTableHeadingId
 			case "ctrl+shift+down":
 				handleBottomPanel()
-			case "q", "ctrl+c":
-				return m, tea.Quit
+			default:
+				m.convosTable, _ = m.convosTable.Update(msg)
+				m.doCurrConvoRow()
 			}
 			return m, nil
 
@@ -276,6 +277,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "ctrl+shift+left":
 				m.focusedId = convosTableHeadingId
+				m.convosTable.Focus()
 			case "ctrl+shift+down", "ctrl+shift+up":
 				handleBottomPanel()
 			}
@@ -285,6 +287,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "ctrl+shift+left":
 				m.focusedId = convosTableHeadingId
+				m.convosTable.Focus()
 			case "ctrl+shift+down", "ctrl+shift+up":
 				m.focusedId = curConvoTableHeadingId
 			default:
@@ -299,12 +302,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "ctrl+shift+left":
 				m.focusedId = convosTableHeadingId
+				m.convosTable.Focus()
 			case "ctrl+shift+down", "ctrl+shift+up":
 				m.focusedId = curConvoTableHeadingId
 			default:
 				// Pass all other keystrokes to the poisoning configuration pane
 				if m.focusedId == poisonCfgPaneId {
-					cmd, err := m.convosPoisonPanels.Update(m.curConvoRow.senderIp, m.curConvoRow.targetIp, msg)
+					cmd, err := m.convosPoisonPanes.Update(m.curConvoRow.senderIp, m.curConvoRow.targetIp, msg)
 					if err != nil {
 						// TODO
 						panic("failed to update poison panel")
@@ -369,7 +373,7 @@ func (m model) View() string {
 	// Logging pane will be shorter than the other two right-hand panes
 	w, h := lipgloss.Size(rightPaneStyle.Render())
 
-	logsHeight := m.uiHeight - (h * 2) + 1
+	logsHeight := m.uiHeight - (h * 2) + 2
 	logsPaneStyle := rightPaneStyle
 	logsPaneStyle = logsPaneStyle.Height(logsHeight)
 
@@ -381,7 +385,7 @@ func (m model) View() string {
 	attacksPanelStyle := paneStyle
 	logViewPortStyle := paneStyle
 
-	hasPoisonPanel := m.convosPoisonPanels.Exists(m.curConvoRow.senderIp, m.curConvoRow.targetIp)
+	hasPoisonPanel := m.convosPoisonPanes.Exists(m.curConvoRow.senderIp, m.curConvoRow.targetIp)
 	hasActiveAttack := m.activeAttacks.Exists(m.curConvoRow.senderIp, m.curConvoRow.targetIp)
 	var hasConfigurePoisoningBtn bool
 
@@ -422,12 +426,12 @@ func (m model) View() string {
 			convosTblStyle.Render(lipgloss.JoinHorizontal(lipgloss.Center, m.convosTable.View())))
 	}
 
-	//===========================
-	// CURRENT CONVERSATION TABLE
-	//===========================
-
 	var rightPanels []string
 	if m.curConvoTableData != nil {
+
+		//===========================
+		// CURRENT CONVERSATION TABLE
+		//===========================
 
 		rightPanels = append(rightPanels,
 			zone.Mark(curConvoTableHeadingId.String(), centerRightHeadingStyle.Render("Selected Conversation")),
@@ -437,7 +441,7 @@ func (m model) View() string {
 			// TODO clean this up
 			s := lipgloss.NewStyle().
 				Width(m.rightWidth).
-				MarginLeft(1).MarginBottom(1).
+				MarginLeft(1).
 				PaddingRight(1).
 				AlignHorizontal(lipgloss.Center).
 				Background(lipgloss.Color("240"))
@@ -453,7 +457,7 @@ func (m model) View() string {
 		// POISONING CONFIGURATION PANEL
 		//==============================
 
-		p := m.convosPoisonPanels.Get(m.curConvoRow.senderIp, m.curConvoRow.targetIp)
+		p := m.convosPoisonPanes.Get(m.curConvoRow.senderIp, m.curConvoRow.targetIp)
 		if p == nil {
 			// TODO
 			panic("missing poison panel for conversation")

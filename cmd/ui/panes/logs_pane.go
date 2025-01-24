@@ -41,20 +41,7 @@ func (l LogsPane) Init() tea.Cmd {
 func (l LogsPane) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "down":
-			if l.vp.YPosition == l.vp.TotalLineCount() {
-				l.vp.YPosition = 0
-			} else {
-				l.vp.LineDown(1)
-			}
-		case "up":
-			if l.vp.YPosition == 0 {
-				l.vp.YPosition = l.vp.TotalLineCount()
-			} else {
-				l.vp.LineUp(1)
-			}
-		}
+		l.vp, _ = l.vp.Update(msg)
 	case LogEvent:
 		s := string(msg)
 

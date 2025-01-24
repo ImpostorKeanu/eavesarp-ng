@@ -75,8 +75,10 @@ func runUi(db *sql.DB, startMainSniffer bool) (err error) {
 	lPane.Style = paneStyle
 
 	ui := model{
-		db:            db,
-		convosTable:   table.New(table.WithStyles(convosStyle)),
+		db: db,
+		convosTable: table.New(
+			table.WithStyles(convosStyle),
+			table.WithKeyMap(table.DefaultKeyMap())),
 		curConvoTable: table.New(table.WithStyles(selectedArpStyles)),
 		//logsViewPort:  viewport.New(0, 0),
 		focusedId:     convosTableHeadingId,
@@ -87,12 +89,14 @@ func runUi(db *sql.DB, startMainSniffer bool) (err error) {
 			Spinner: spinner.Dot,
 			Style:   spinnerStyle,
 		},
-		convosPoisonPanels: PoisoningPanels{},
+		convosPoisonPanes: PoisoningPanels{},
 		//poisonPanelIds: make(map[string]*panes.PoisonPane),
 		logsCh:   lCh,
 		logsPane: lPane,
 	}
-	ui.logsPane.Style = paneStyle.PaddingTop(2).PaddingBottom(2)
+	ui.convosTable.Focus()
+	ui.logsPane.Style = paneStyle
+	//ui.logsPane.Style = paneStyle.PaddingTop(2).PaddingBottom(2)
 
 	// TODO delete this
 	go func() {
