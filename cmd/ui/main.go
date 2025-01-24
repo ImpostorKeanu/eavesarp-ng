@@ -72,7 +72,6 @@ func runUi(db *sql.DB, startMainSniffer bool) (err error) {
 	selectedArpStyles.Selected = lipgloss.NewStyle()
 
 	lCh, lPane := panes.NewLogsPane(maxLogLength, maxLogCount)
-	lPane.Style = paneStyle
 
 	ui := model{
 		db: db,
@@ -95,8 +94,6 @@ func runUi(db *sql.DB, startMainSniffer bool) (err error) {
 		logsPane: lPane,
 	}
 	ui.convosTable.Focus()
-	ui.logsPane.Style = paneStyle
-	//ui.logsPane.Style = paneStyle.PaddingTop(2).PaddingBottom(2)
 
 	// TODO delete this
 	go func() {

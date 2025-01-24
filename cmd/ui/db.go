@@ -67,9 +67,9 @@ type (
 	}
 )
 
-func getSelectedArpTableContent(m *model) (content curConvoTableData) {
+func getSelectedConvoTableContent(m *model) (content curConvoTableData) {
 
-	rows, err := m.db.Query(convoTableSelectionQuery, m.curConvoRow.senderIp, m.curConvoRow.targetIp)
+	rows, err := m.db.Query(convoTableSelectionQuery, m.curConvoRow.SenderIp, m.curConvoRow.TargetIp)
 	if err != nil {
 		content.err = fmt.Errorf("failed to get selected arp row content: %w", err)
 		return
@@ -95,7 +95,7 @@ func getSelectedArpTableContent(m *model) (content curConvoTableData) {
 		}
 
 		var ipObj *eavesarp_ng.Ip
-		if ip == m.curConvoRow.senderIp {
+		if ip == m.curConvoRow.SenderIp {
 
 			if sender == nil {
 
@@ -118,7 +118,7 @@ func getSelectedArpTableContent(m *model) (content curConvoTableData) {
 				ipObj = sender
 			}
 
-		} else if ip == m.curConvoRow.targetIp {
+		} else if ip == m.curConvoRow.TargetIp {
 
 			if target == nil {
 

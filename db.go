@@ -159,6 +159,10 @@ type (
 	}
 )
 
+func (p Port) String() string {
+	return fmt.Sprintf("%d/%s", p.Number, p.Protocol)
+}
+
 func (i Ip) IsSnac() bool {
 	return i.ArpResolved && i.MacId != nil
 }
