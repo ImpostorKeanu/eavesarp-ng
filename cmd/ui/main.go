@@ -6,14 +6,15 @@ import (
 	"fmt"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/table"
-	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	eavesarp_ng "github.com/impostorkeanu/eavesarp-ng"
+	"github.com/impostorkeanu/eavesarp-ng/cmd/ui/panes"
 	zone "github.com/lrstanley/bubblezone"
 	"github.com/spf13/cobra"
 	_ "modernc.org/sqlite"
 	"os"
+	"time"
 )
 
 var (
@@ -69,12 +70,16 @@ func runUi(db *sql.DB, startMainSniffer bool) (err error) {
 	zone.NewGlobal()
 	selectedArpStyles := convosStyle
 	selectedArpStyles.Selected = lipgloss.NewStyle()
+
+	lCh, lPane := panes.NewLogsPane(maxLogLength, maxLogCount)
+	lPane.Style = paneStyle
+
 	ui := model{
 		db:            db,
 		convosTable:   table.New(table.WithStyles(convosStyle)),
 		curConvoTable: table.New(table.WithStyles(selectedArpStyles)),
-		logsViewPort:  viewport.New(0, 0),
-		focusedId:     convosTableId,
+		//logsViewPort:  viewport.New(0, 0),
+		focusedId:     convosTableHeadingId,
 		eWriter:       eventWriter{wC: eventsC},
 		mainSniff:     startMainSniffer,
 		activeAttacks: &ActiveAttacks{},
@@ -84,8 +89,18 @@ func runUi(db *sql.DB, startMainSniffer bool) (err error) {
 		},
 		convosPoisonPanels: PoisoningPanels{},
 		//poisonPanelIds: make(map[string]*panes.PoisonPane),
+		logsCh:   lCh,
+		logsPane: lPane,
 	}
-	ui.logsViewPort.Style = paneStyle
+	ui.logsPane.Style = paneStyle.PaddingTop(2).PaddingBottom(2)
+
+	// TODO delete this
+	go func() {
+		for n := 1; n <= 100; n++ {
+			time.Sleep(50 * time.Millisecond)
+			lCh <- fmt.Sprintf("event %d", n)
+		}
+	}()
 
 	// Initialize the ARP table
 	//c := getConvosTableContent(ui.db, 100, 0)

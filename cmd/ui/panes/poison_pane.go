@@ -6,6 +6,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/enescakir/emoji"
 	zone "github.com/lrstanley/bubblezone"
 	"os"
 	"path"
@@ -301,36 +302,41 @@ func (p PoisonPane) View() string {
 			panic("heading offset exceeded")
 		}
 
+		builder.WriteString(" ")
+
 		if err != nil {
 			builder.WriteString(validationFailureStyle.Render(
 				fmt.Sprintf(" %s", err.Error())))
 			if !hasErrors {
 				hasErrors = true
 			}
+		} else if p.running {
+			builder.WriteString(emoji.Locked.String())
 		} else {
-			builder.WriteString(validationSuccessStyle.Render(" ✓"))
+			builder.WriteString(validationSuccessStyle.Render("✔"))
 		}
-		builder.WriteString("\n" + p.inputs[i].View() + "\n\n")
+		builder.WriteString("\n" + p.inputs[i].View())
+		if i < len(p.inputs)-1 {
+			builder.WriteString("\n\n")
+		}
 	}
 
-	s := p.Style.Width(p.Width).Height(p.Height)
+	_, formH := lipgloss.Size(builder.String())
+	for btnPad := p.Height - formH; btnPad > 0; btnPad-- {
+		builder.WriteString("\n")
+	}
 
 	if p.running || hasErrors {
-		// Only show cancel button
+		// Show only the cancel button
 		builder.WriteString(p.zoneM.Mark(p.cancelBtnMark,
-			btnStyle.Width(s.GetWidth()).Render("Cancel Poisoning")))
+			btnStyle.Width(p.Width).Render("Cancel Poisoning")))
 	} else {
 		// Show start and cancel button
-		w := s.GetWidth() / 2
+		btnStyle := btnStyle.Width(p.Width / 2)
 		builder.WriteString(lipgloss.JoinHorizontal(lipgloss.Center,
-			p.zoneM.Mark(p.startBtnMark, btnStyle.Width(w-1).
-				PaddingRight(1).
-				MarginRight(1).
-				Render("Start")),
-			p.zoneM.Mark(p.cancelBtnMark, btnStyle.Width(w).
-				Render("Cancel Configuration"))))
+			p.zoneM.Mark(p.startBtnMark, btnStyle.MarginRight(1).Render("Start")),
+			p.zoneM.Mark(p.cancelBtnMark, btnStyle.Render("Cancel Configuration"))))
 	}
 
-	//return p.zoneM.Scan(s.Render(builder.String()))
-	return s.Render(builder.String())
+	return p.Style.Width(p.Width).Height(p.Height).Render(builder.String())
 }

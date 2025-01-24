@@ -1,34 +1,35 @@
 package main
 
-// paneId represents a bubble zone mark ID used to
+// paneHeadingId represents a bubble zone mark ID used to
 // identify a UI pane.
-type paneId string
+type paneHeadingId string
 
 const (
-	convosTableId     paneId = "convosTable"
-	curConvoTableId   paneId = "selectedArpTable"
-	logsViewPortId    paneId = "logsViewPort"
-	attacksViewPortId paneId = "attacksViewPort"
+	convosTableHeadingId     paneHeadingId = "convosTable"
+	curConvoTableHeadingId   paneHeadingId = "selectedArpTable"
+	logsViewPortHeadingId    paneHeadingId = "logsViewPort"
+	attacksViewPortHeadingId paneHeadingId = "attacksViewPort"
+	poisonPaneHeadingId      paneHeadingId = "poisonPane"
 )
 
-func (p paneId) String() string {
+func (p paneHeadingId) String() string {
 	return string(p)
 }
 
 // Int returns an index indicating where in the ui
 // that the pane resides.
-func (p paneId) Int() int {
+func (p paneHeadingId) Int() int {
 	switch p {
-	case convosTableId:
+	case convosTableHeadingId:
 		return 0
-	case curConvoTableId:
+	case curConvoTableHeadingId:
 		return 1
-	case attacksViewPortId:
+	case attacksViewPortHeadingId:
 		return 2
-	case logsViewPortId:
+	case logsViewPortHeadingId:
 		return 3
 	default:
-		panic("invalid paneId")
+		panic("invalid paneHeadingId")
 	}
 }
 
@@ -36,7 +37,7 @@ func (p paneId) Int() int {
 // selected ui pane and returns the ID of the next one. Direction,
 // "forward" or "backward", indicates if the next pane will be
 // selected in a clockwise or counter-clockwise motion respectively.
-func (p paneId) nextPane(direction string) (next paneId) {
+func (p paneHeadingId) nextPane(direction string) (next paneHeadingId) {
 
 	i := p.Int()
 
@@ -57,13 +58,13 @@ func (p paneId) nextPane(direction string) (next paneId) {
 
 	switch i {
 	case 0:
-		next = convosTableId
+		next = convosTableHeadingId
 	case 1:
-		next = curConvoTableId
+		next = curConvoTableHeadingId
 	case 2:
-		next = attacksViewPortId
+		next = attacksViewPortHeadingId
 	case 3:
-		next = logsViewPortId
+		next = logsViewPortHeadingId
 	}
 
 	return

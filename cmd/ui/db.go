@@ -294,7 +294,9 @@ func getConvosTableContent(m *model) (content convosTableContent) {
 
 		var senderPoisoned string
 		if is := m.activeAttacks.Exists(sender.Value, target.Value); is {
-			senderPoisoned = string(emoji.SkullAndCrossbones)
+			senderPoisoned = string(emoji.GreenCircle)
+			//senderPoisoned = string(emoji.Skull)
+			//senderPoisoned = string(emoji.SkullAndCrossbones)
 		}
 
 		// Determine if the SNAC column should be displayed
@@ -318,18 +320,9 @@ func getConvosTableContent(m *model) (content convosTableContent) {
 
 		tRow := table.Row{fmt.Sprintf("%d", rowInd)}
 
-		// Include the snacs column if they've been seen regardless
-		// if the row represents a snac
-		//if snacsSeen {
-		//	if hasSnac {
-		//		tRow = append(tRow, string(emoji.DirectHit))
-		//	} else {
-		//		tRow = append(tRow, "")
-		//	}
-		//}
-
 		if hasSnac {
-			tRow = append(tRow, string(emoji.Dizzy), senderPoisoned)
+			tRow = append(tRow, string(emoji.OrangeCircle), senderPoisoned)
+			//tRow = append(tRow, string(emoji.Dizzy), senderPoisoned)
 			//tRow = append(tRow, string(emoji.MagnifyingGlassTiltedRight), senderPoisoned)
 			//tRow = append(tRow, string(emoji.SatelliteAntenna), senderPoisoned)
 			//tRow = append(tRow, string(emoji.Collision), senderPoisoned)
