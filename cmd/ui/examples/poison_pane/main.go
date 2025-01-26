@@ -28,8 +28,8 @@ func main() {
 	zone.NewGlobal()
 	p := panes.NewPoison(zone.DefaultManager)
 	p.Style = lipgloss.NewStyle().Border(lipgloss.NormalBorder(), true, true, true, true)
-	p.Height = 10
-	p.Width = 70
+	p.height = 10
+	p.width = 70
 	if _, err := tea.NewProgram(model{p}, tea.WithAltScreen(), tea.WithMouseCellMotion()).Run(); err != nil {
 		fmt.Printf("error starting the ui: %v", err.Error())
 	}

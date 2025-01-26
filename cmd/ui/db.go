@@ -228,9 +228,9 @@ func getSelectedConvoTableContent(m *model) (content curConvoTableData) {
 		targetDnsCell += fmt.Sprintf("%s (%s)", r.Name.Value, "a")
 	}
 
-	emptyOrDefault(&senderDnsCell, "---")
-	emptyOrDefault(&targetDnsCell, "---")
-	emptyOrDefault(&aitmValue, "---")
+	eavesarp_ng.EmptyOrDefault(&senderDnsCell, "---")
+	eavesarp_ng.EmptyOrDefault(&targetDnsCell, "---")
+	eavesarp_ng.EmptyOrDefault(&aitmValue, "---")
 
 	content.rows = append(content.rows,
 		table.Row{"IP", sender.Value, target.Value},
@@ -294,7 +294,8 @@ func getConvosTableContent(m *model) (content convosTableContent) {
 
 		var senderPoisoned string
 		if is := m.activeAttacks.Exists(sender.Value, target.Value); is {
-			senderPoisoned = string(emoji.GreenCircle)
+			senderPoisoned = string(emoji.FortuneCookie)
+			//senderPoisoned = string(emoji.GreenCircle)
 			//senderPoisoned = string(emoji.Skull)
 			//senderPoisoned = string(emoji.SkullAndCrossbones)
 		}
@@ -310,9 +311,9 @@ func getConvosTableContent(m *model) (content convosTableContent) {
 		// ADJUST WIDTH OFFSETS
 		//=====================
 
-		greaterLength(sender.Value, &senderIpWidth)
-		greaterLength(target.Value, &targetIpWidth)
-		greaterLength(arpCountValue, &arpCountWidth)
+		eavesarp_ng.GreaterLength(sender.Value, &senderIpWidth)
+		eavesarp_ng.GreaterLength(target.Value, &targetIpWidth)
+		eavesarp_ng.GreaterLength(arpCountValue, &arpCountWidth)
 
 		//======================================
 		// CONSTRUCT AND CAPTURE THE CURRENT ROW
@@ -321,7 +322,8 @@ func getConvosTableContent(m *model) (content convosTableContent) {
 		tRow := table.Row{fmt.Sprintf("%d", rowInd)}
 
 		if hasSnac {
-			tRow = append(tRow, string(emoji.OrangeCircle), senderPoisoned)
+			tRow = append(tRow, string(emoji.TakeoutBox), senderPoisoned)
+			//tRow = append(tRow, string(emoji.OrangeCircle), senderPoisoned)
 			//tRow = append(tRow, string(emoji.Dizzy), senderPoisoned)
 			//tRow = append(tRow, string(emoji.MagnifyingGlassTiltedRight), senderPoisoned)
 			//tRow = append(tRow, string(emoji.SatelliteAntenna), senderPoisoned)
@@ -361,23 +363,4 @@ func getConvosTableContent(m *model) (content convosTableContent) {
 
 	return
 
-}
-
-// greaterLength will split a string on newlines and set i
-// to the longest length line so long as it is greater than
-// the supplied value.
-func greaterLength(s string, i *int) {
-	for _, x := range strings.Split(s, "\n") {
-		if len(x) > *i {
-			*i = len(x)
-		}
-	}
-}
-
-// emptyOrDefault sets the value of s to d if it's currently
-// empty.
-func emptyOrDefault(s *string, d string) {
-	if *s == "" {
-		*s = d
-	}
 }

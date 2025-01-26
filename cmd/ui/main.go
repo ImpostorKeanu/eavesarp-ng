@@ -68,20 +68,19 @@ func initDb(dsn string) (db *sql.DB, err error) {
 
 func runUi(db *sql.DB, startMainSniffer bool) (err error) {
 	zone.NewGlobal()
-	selectedArpStyles := convosStyle
+	selectedArpStyles := convosTableStyle
 	selectedArpStyles.Selected = lipgloss.NewStyle()
 
-	lCh, lPane := panes.NewLogsPane(maxLogLength, maxLogCount)
+	lCh, lPane := panes.NewLogsPane(maxLogLength, maxLogCount, logPaneId.String())
 
 	ui := model{
 		db: db,
 		convosTable: table.New(
-			table.WithStyles(convosStyle),
+			table.WithStyles(convosTableStyle),
 			table.WithKeyMap(table.DefaultKeyMap())),
-		curConvoTable: table.New(table.WithStyles(selectedArpStyles)),
-		//logsViewPort:  viewport.New(0, 0),
-		focusedId:     convosTableHeadingId,
-		eWriter:       eventWriter{wC: eventsC},
+		curConvoPane:  panes.NewCurConvoPane(db, zone.DefaultManager, poisonButtonId),
+		focusedId:     convosTableId,
+		eWriter:       eventWriter{wC: lCh},
 		mainSniff:     startMainSniffer,
 		activeAttacks: &ActiveAttacks{},
 		convosSpinner: spinner.Model{
@@ -89,9 +88,7 @@ func runUi(db *sql.DB, startMainSniffer bool) (err error) {
 			Style:   spinnerStyle,
 		},
 		convosPoisonPanes: PoisoningPanels{},
-		//poisonPanelIds: make(map[string]*panes.PoisonPane),
-		logsCh:   lCh,
-		logsPane: lPane,
+		logsPane:          lPane,
 	}
 	ui.convosTable.Focus()
 

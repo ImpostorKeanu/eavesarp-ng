@@ -112,9 +112,9 @@ func (p PoisoningPanels) Update(senderIp, targetIp string, msg tea.Msg) (cmd tea
 	return
 }
 
-func (p PoisoningPanels) GetOrCreate(senderIp, targetIp string) (panel *panes.PoisonPane) {
+func (p PoisoningPanels) GetOrCreate(senderIp, targetIp string, headingPaneId string) (panel *panes.PoisonPane) {
 	if panel = p[FmtConvoKey(senderIp, targetIp)]; panel == nil {
-		buff := panes.NewPoison(zone.DefaultManager)
+		buff := panes.NewPoison(zone.DefaultManager, headingPaneId)
 		panel = &buff
 		p[FmtConvoKey(senderIp, targetIp)] = panel
 	}

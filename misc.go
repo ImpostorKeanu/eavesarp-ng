@@ -3,6 +3,7 @@ package eavesarp_ng
 import (
 	"math"
 	"math/rand"
+	"strings"
 	"sync"
 	"time"
 )
@@ -90,4 +91,33 @@ func (f *FailCounter) Count() int {
 // NewFailCounter initializes a new FailCounter.
 func NewFailCounter(max int) (fC *FailCounter) {
 	return &FailCounter{max: max, mu: sync.RWMutex{}}
+}
+
+// GreaterLength will split a string on newlines and set i
+// to the longest length line so long as it is greater than
+// the supplied value.
+func GreaterLength(s string, i *int) {
+	for _, x := range strings.Split(s, "\n") {
+		if len(x) > *i {
+			*i = len(x)
+		}
+	}
+}
+
+// EmptyOrDefault sets the value of s to d if it's currently
+// empty.
+func EmptyOrDefault(s *string, d string) {
+	if *s == "" {
+		*s = d
+	}
+}
+
+func Longest(s []string) (e string, i int) {
+	for _, ele := range s {
+		if len(ele) > i {
+			i = len(ele)
+			e = ele
+		}
+	}
+	return
 }

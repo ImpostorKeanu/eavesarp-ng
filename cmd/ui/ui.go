@@ -26,8 +26,7 @@ var (
 		Foreground(lipgloss.Color("205")).
 		Width(35).
 		AlignHorizontal(lipgloss.Center).AlignVertical(lipgloss.Center)
-	convosStyle table.Styles
-	eventsC     = make(chan string)
+	convosTableStyle table.Styles
 )
 
 const (
@@ -39,18 +38,20 @@ const (
 )
 
 func init() {
-	convosStyle = table.DefaultStyles()
-	convosStyle.Header = convosStyle.Header.
+	convosTableStyle = table.DefaultStyles()
+	convosTableStyle.Header = convosTableStyle.Header.
 		BorderStyle(lipgloss.NormalBorder()).
 		BorderForeground(lipgloss.Color("240")).
 		BorderBottom(true).
 		Bold(true).
 		PaddingLeft(1)
-	convosStyle.Cell.PaddingLeft(1)
-	convosStyle.Selected = convosStyle.Selected.
-		Foreground(lipgloss.Color("229")).
-		Background(lipgloss.Color("57")).
-		Bold(false)
+	convosTableStyle.Cell.PaddingLeft(1)
+	convosTableStyle.Selected = convosTableStyle.Selected.
+		//Foreground(lipgloss.Color("229")).
+		//Background(lipgloss.Color("57")).
+		//UnsetForeground().
+		Foreground(lipgloss.Color("255")).
+		Bold(true)
 }
 
 type (
@@ -59,27 +60,41 @@ type (
 
 		uiHeight, uiWidth int
 		rightWidth        int
-		focusedId         paneHeadingId
-
-		events  []string
+		curConvoHeight    int
+		bottomRightHeight int
+		// focusedId tracks the pane ID that is currently in
+		// focus within the UI.
+		focusedId paneHeadingId
+		// events tracks records emitted by Eavesarp and the UI.
+		// Each record is presented to the user via the logsPane.
+		events []string
+		// eWriter is a channel used to write records to events.
 		eWriter eventWriter
-
-		convosTable   table.Model
+		// activeAttacks tracks attacks that are currently active.
+		activeAttacks *ActiveAttacks
+		// convosTable is the key conversations table that maps
+		// sender IPs to target IPs, allowing us to determine which
+		// hosts are intercommunicating.
+		convosTable table.Model
+		// convosSpinner spins while no ARP traffic has been collected
+		// to present.
 		convosSpinner spinner.Model
 		// convosRowSenders maps a row offset to its corresponding
 		// sender IP value, allowing us to filter out repetitive
 		// IPs from the convosTable table.
-		convosRowSenders  map[int]string
+		convosRowSenders map[int]string
+		// convosPoisonPanes maps ongoing poison configurations
+		// back to specific conversations, allowing us to run
+		// concurrent poisoning attacks.
 		convosPoisonPanes PoisoningPanels
+		// curConvoRow contains details related to the currently selected
+		// conversation row.
+		curConvoRow panes.CurConvoRowDetails
+		// curConvoPane presents information related to the currently
+		// selected conversation, such as MAC addresses and DNS names.
+		curConvoPane panes.CurConvoPane
 
-		curConvoRow       panes.CurConvoRowDetails
-		curConvoTable     table.Model
-		curConvoTableData *curConvoTableData
-
-		activeAttacks *ActiveAttacks
-
-		poisonCfgShow bool
-
+		// logsPane presents lines from events.
 		logsPane panes.LogsPane
 		logsCh   chan string
 
@@ -111,7 +126,10 @@ func (m model) Init() tea.Cmd {
 		},
 		func() tea.Msg {
 			return getConvosTableContent(&m)
-			//return getConvosTableContent(m.db, 100, 0)
+		},
+		func() tea.Msg {
+			m.doCurrConvoRow()
+			return m.curConvoPane.GetContent(m.db, m.curConvoRow)
 		},
 	}
 
@@ -124,7 +142,7 @@ func (m model) Init() tea.Cmd {
 		})
 	}
 
-	return tea.Batch(cmds...)
+	return tea.Sequence(cmds...)
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -147,6 +165,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.convosRowSenders = msg.rowSenders
 			m.doConvoTableContent(msg)
+			//m.doCurrConvoRow()
 		}
 
 		return m, func() tea.Msg {
@@ -166,13 +185,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// TODO
 				panic(err)
 			}
+			m.curConvoPane.IsPoisoning = true
 		case panes.CancelPoisonEvent:
 			m.activeAttacks.Remove(m.curConvoRow.SenderIp, m.curConvoRow.TargetIp)
 			m.convosPoisonPanes.Remove(m.curConvoRow.SenderIp, m.curConvoRow.TargetIp)
-			m.focusedId = convosTableHeadingId
+			m.focusedId = convosTableId
+			m.curConvoPane.IsConfiguringPoisoning = false
+			m.curConvoPane.IsPoisoning = false
 		case panes.CancelConfigEvent:
 			m.convosPoisonPanes.Remove(m.curConvoRow.SenderIp, m.curConvoRow.TargetIp)
-			m.focusedId = logsViewPortHeadingId
+			m.focusedId = logPaneId
+			m.curConvoPane.IsConfiguringPoisoning = false
+			m.curConvoPane.IsPoisoning = false
 		default:
 			panic("unknown button press event emitted by poison configuration panel")
 		}
@@ -192,20 +216,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// CHANGE FOCUSED PANES BASED ON HEADER CLICK
 		//===========================================
 
-		if m.focusedId != logsViewPortHeadingId && zone.Get(logsViewPortHeadingId.String()).InBounds(msg) {
-			m.focusedId = logsViewPortHeadingId
-		} else if m.focusedId != convosTableHeadingId && zone.Get(convosTableHeadingId.String()).InBounds(msg) {
-			m.focusedId = convosTableHeadingId
-		} else if m.focusedId != attacksViewPortHeadingId && zone.Get(attacksViewPortHeadingId.String()).InBounds(msg) {
-			m.focusedId = attacksViewPortHeadingId
-		} else if m.focusedId != curConvoTableHeadingId && zone.Get(curConvoTableHeadingId.String()).InBounds(msg) {
-			m.focusedId = curConvoTableHeadingId
+		if m.focusedId != poisonCfgPaneId {
+			if m.focusedId != logPaneId && zone.Get(logPaneId.String()).InBounds(msg) {
+				m.focusedId = logPaneId
+			} else if m.focusedId != convosTableId && zone.Get(convosTableId.String()).InBounds(msg) {
+				m.focusedId = convosTableId
+			} else if m.focusedId != attacksViewPortHeadingId && zone.Get(attacksViewPortHeadingId.String()).InBounds(msg) {
+				m.focusedId = attacksViewPortHeadingId
+			} else if m.focusedId != curConvoId && zone.Get(curConvoId.String()).InBounds(msg) {
+				m.focusedId = curConvoId
+			}
 		}
 
 		if zone.Get(poisonButtonId).InBounds(msg) {
 			m.focusedId = poisonCfgPaneId
-			p := m.convosPoisonPanes.GetOrCreate(m.curConvoRow.SenderIp, m.curConvoRow.TargetIp)
-			p.Style = paneStyle.BorderForeground(selectedPaneBorderColor)
+			p := m.convosPoisonPanes.GetOrCreate(m.curConvoRow.SenderIp, m.curConvoRow.TargetIp, poisonPaneHeadingId.String())
+			p.SetWidth(m.rightWidth)
+			p.SetHeight(m.bottomRightHeight)
+			p.Style = paneStyle.BorderForeground(selectedPaneBorderColor).Inherit(p.Style)
+			m.curConvoPane.IsConfiguringPoisoning = true
 			return m, nil
 		}
 
@@ -232,12 +261,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if hasPoisonPanel {
 				m.focusedId = poisonCfgPaneId
 			} else {
-				m.focusedId = logsViewPortHeadingId
+				m.focusedId = logPaneId
 			}
 		}
 
 		switch m.focusedId {
-		case convosTableHeadingId:
+		case convosTableId:
+
+			cmd := func() tea.Msg {
+				m.doCurrConvoRow()
+				return m.curConvoPane.GetContent(m.db, m.curConvoRow)
+			}
 
 			switch msg.String() {
 			case "up", "k":
@@ -246,43 +280,46 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				} else {
 					m.convosTable, _ = m.convosTable.Update(msg)
 				}
-				m.doCurrConvoRow()
 			case "down", "j":
 				if m.convosTable.Cursor() == len(m.convosTable.Rows())-1 {
 					m.convosTable.GotoTop()
 				} else {
 					m.convosTable, _ = m.convosTable.Update(msg)
 				}
-				m.doCurrConvoRow()
 			case "ctrl+shift+up", "ctrl+shift+right":
-				m.focusedId = curConvoTableHeadingId
-				// TODO focus the cur convo table
+				m.focusedId = curConvoId
+				m.curConvoPane.FocusTable()
+				cmd = nil
 			case "ctrl+shift+down":
 				handleBottomPanel()
+				cmd = nil
 			default:
 				m.convosTable, _ = m.convosTable.Update(msg)
-				m.doCurrConvoRow()
 			}
-			return m, nil
 
-		case curConvoTableHeadingId:
+			return m, cmd
+
+		case curConvoId:
 
 			switch msg.String() {
 			case "ctrl+shift+left":
-				m.focusedId = convosTableHeadingId
+				m.focusedId = convosTableId
 				m.convosTable.Focus()
 			case "ctrl+shift+down", "ctrl+shift+up":
 				handleBottomPanel()
+			default:
+				buff, _ := m.curConvoPane.Update(msg)
+				m.curConvoPane = buff.(panes.CurConvoPane)
 			}
 
-		case logsViewPortHeadingId:
+		case logPaneId:
 
 			switch msg.String() {
 			case "ctrl+shift+left":
-				m.focusedId = convosTableHeadingId
+				m.focusedId = convosTableId
 				m.convosTable.Focus()
 			case "ctrl+shift+down", "ctrl+shift+up":
-				m.focusedId = curConvoTableHeadingId
+				m.focusedId = curConvoId
 				// TODO focus the cur convo table
 			default:
 				// Pass all other keystrokes to the logs pane
@@ -295,11 +332,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			switch msg.String() {
 			case "ctrl+shift+left":
-				m.focusedId = convosTableHeadingId
+				if !hasPoisonPanel || m.curConvoPane.IsPoisoning {
+					m.focusedId = convosTableId
+				}
 				m.convosTable.Focus()
 			case "ctrl+shift+down", "ctrl+shift+up":
-				m.focusedId = curConvoTableHeadingId
-				// TODO focus the cur convo table
+				if !hasPoisonPanel || m.curConvoPane.IsPoisoning {
+					m.focusedId = curConvoId
+				}
 			default:
 				// Pass all other keystrokes to the poisoning configuration pane
 				if m.focusedId == poisonCfgPaneId {
@@ -313,6 +353,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		}
+
+	case panes.CurConvoTableData:
+		// Receive row and column data for current conversation pane
+
+		m.curConvoPane.SetColumns(msg.Cols)
+		m.curConvoPane.SetRows(msg.Rows)
+		m.curConvoRow = msg.CurConvoRowDetails
+		return m, nil
 
 	case spinner.TickMsg:
 		// Spin the spinner
@@ -338,7 +386,37 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// this logic will also be accessed during initial
 		// rendering.
 
-		m.doResize(msg)
+		m.uiWidth = int(math.Round(float64(msg.Width) * .99))
+		m.uiHeight = int(math.Round(float64(msg.Height) * .90))
+		//m.uiWidth = msg.Width - 1
+		//m.uiHeight = msg.Height - 3
+		m.convosTable.SetHeight(m.uiHeight)
+
+		m.rightWidth = m.uiWidth / 2
+		m.curConvoHeight = int(math.Round(float64(m.uiHeight-1) * .65))
+
+		// NOTE: subtract 1 to account for the heading row separating
+		//       the selected convo pane from the bottom pane
+		m.bottomRightHeight = m.uiHeight - m.curConvoHeight
+
+		if m.bottomRightHeight < 0 {
+			m.bottomRightHeight = 0
+		}
+
+		m.curConvoPane.SetWidth(m.rightWidth + 1)
+		m.curConvoPane.SetHeight(m.curConvoHeight)
+
+		//m.curConvoPane.SetHeight(m.uiHeight - m.bottomRightHeight - 6)
+
+		m.logsPane.SetWidth(m.rightWidth + 1)
+		m.logsPane.SetHeight(m.bottomRightHeight)
+
+		for _, pp := range m.convosPoisonPanes {
+			pp.SetWidth(m.rightWidth)
+			pp.SetHeight(m.bottomRightHeight)
+		}
+
+		m.doCurrConvoRow()
 
 	case eavesarpError:
 
@@ -351,41 +429,29 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m model) View() string {
 
-	//===========================
-	// CURRENT ARP TABLE ROW PANE
-	//===========================
-
-	bottomRightHeight := m.uiHeight / 3
-	m.curConvoTable.SetWidth(m.rightWidth)
-	m.curConvoTable.SetHeight(m.uiHeight - bottomRightHeight)
-
-	//================
-	// REMAINING PANES
-	//================
-
 	centerRightHeadingStyle := centerStyle.Width(m.rightWidth)
 
 	convosTblStyle := paneStyle
-	currConvoStyle := paneStyle
+	currConvoStyle := paneStyle.Width(m.rightWidth)
+	//currConvoStyle := paneStyle
 	attacksPanelStyle := paneStyle
 	logViewPortStyle := paneStyle
 
 	hasPoisonPanel := m.convosPoisonPanes.Exists(m.curConvoRow.SenderIp, m.curConvoRow.TargetIp)
 	hasActiveAttack := m.activeAttacks.Exists(m.curConvoRow.SenderIp, m.curConvoRow.TargetIp)
-	var hasConfigurePoisoningBtn bool
 
 	//==================================
 	// BRIGHTEN BORDER FOR SELECTED PANE
 	//==================================
 
 	switch m.focusedId {
-	case convosTableHeadingId:
+	case convosTableId:
 		convosTblStyle = convosTblStyle.BorderForeground(selectedPaneBorderColor)
-	case curConvoTableHeadingId:
+	case curConvoId:
 		currConvoStyle = currConvoStyle.BorderForeground(selectedPaneBorderColor)
 	case attacksViewPortHeadingId:
 		attacksPanelStyle = attacksPanelStyle.BorderForeground(selectedPaneBorderColor)
-	case logsViewPortHeadingId, poisonCfgPaneId:
+	case logPaneId, poisonCfgPaneId:
 		logViewPortStyle = logViewPortStyle.BorderForeground(selectedPaneBorderColor)
 	}
 
@@ -394,60 +460,43 @@ func (m model) View() string {
 	//====================
 
 	var leftPane string
-	arpTblHeading := zone.Mark(convosTableHeadingId.String(), centerStyle.Render("Conversations"))
+	convosTblHeading := zone.Mark(convosTableId.String(), centerStyle.Render("Conversations"))
 
 	if len(m.convosTable.Rows()) == 0 {
-		s := convosTblStyle
-		s = s.Height(m.uiHeight)
 		leftPane = lipgloss.JoinVertical(lipgloss.Center,
-			arpTblHeading,
-			s.Render(m.convosSpinner.View()+" Capturing ARP traffic"))
+			convosTblHeading,
+			convosTblStyle.Render(m.convosSpinner.View()+" Capturing ARP traffic"))
 	} else {
 		leftPane = lipgloss.JoinVertical(lipgloss.Center,
-			arpTblHeading,
+			convosTblHeading,
 			convosTblStyle.Render(lipgloss.JoinHorizontal(lipgloss.Center, m.convosTable.View())))
 	}
 
-	var rightPanels []string
-	if m.curConvoTableData != nil {
+	//==========================
+	// CURRENT CONVERSATION PANE
+	//==========================
 
-		//===========================
-		// CURRENT CONVERSATION TABLE
-		//===========================
+	var rightPanes []string
 
-		// TODO adjust column widths here
+	m.curConvoPane.IsPoisoning = hasActiveAttack
+	m.curConvoPane.IsSnac = m.curConvoRow.IsSnac
+	m.curConvoPane.Style = currConvoStyle
+	rightPanes = append(rightPanes,
+		zone.Mark(curConvoId.String(),
+			centerRightHeadingStyle.Render("Selected Conversation")),
+		m.curConvoPane.View())
 
-		rightPanels = append(rightPanels,
-			zone.Mark(curConvoTableHeadingId.String(), centerRightHeadingStyle.Render("Selected Conversation")),
-			currConvoStyle.Render(m.curConvoTable.View()))
+	if m.curConvoRow.IsSnac && hasPoisonPanel {
 
-		if m.curConvoRow.IsSnac && m.focusedId != poisonCfgPaneId && !hasPoisonPanel && !hasActiveAttack {
-			// TODO clean this up
-			s := lipgloss.NewStyle().
-				Width(m.rightWidth).
-				MarginLeft(1).
-				PaddingRight(1).
-				AlignHorizontal(lipgloss.Center).
-				Background(lipgloss.Color("240"))
-			button := zone.Mark(poisonButtonId, s.Render("Configure Poisoning"))
-			rightPanels = append(rightPanels, button)
-			hasConfigurePoisoningBtn = true
-		}
-	}
-
-	if m.curConvoRow.IsSnac && (m.focusedId == poisonCfgPaneId || hasPoisonPanel) {
-
-		//==============================
-		// POISONING CONFIGURATION PANEL
-		//==============================
+		//=============================
+		// POISONING CONFIGURATION PANE
+		//=============================
 
 		p := m.convosPoisonPanes.Get(m.curConvoRow.SenderIp, m.curConvoRow.TargetIp)
 		if p == nil {
 			// TODO
 			panic("missing poison panel for conversation")
 		}
-		p.Width = m.rightWidth
-		p.Height = bottomRightHeight - 1
 
 		if m.focusedId == poisonCfgPaneId {
 			p.Style = p.Style.BorderForeground(selectedPaneBorderColor)
@@ -455,46 +504,33 @@ func (m model) View() string {
 			p.Style = p.Style.BorderForeground(deselectedPaneBorderColor)
 		}
 
-		rightPanels = append(rightPanels, lipgloss.JoinVertical(lipgloss.Center,
-			zone.Mark(poisonPaneHeadingId.String(), centerRightHeadingStyle.Render("Poisoning")), p.View()))
+		rightPanes = append(rightPanes, p.View())
 
 	} else {
 
-		//===========
-		// LOGS PANEL
-		//===========
+		//==========
+		// LOGS PANE
+		//==========
 
-		if !hasConfigurePoisoningBtn {
-			bottomRightHeight += 2
+		if m.focusedId == logPaneId {
+			m.logsPane.Style = paneStyle.BorderForeground(selectedPaneBorderColor)
+		} else {
+			m.logsPane.Style = paneStyle
 		}
 
-		m.logsPane.Style = logViewPortStyle.Width(m.rightWidth).Height(bottomRightHeight)
-		m.logsPane.Width(m.rightWidth)
-		m.logsPane.Height(bottomRightHeight)
-
-		rightPanels = append(rightPanels,
-			zone.Mark(logsViewPortHeadingId.String(),
-				centerRightHeadingStyle.Render("Logs")),
+		rightPanes = append(rightPanes,
+			//zone.Mark(logPaneId.String(),
+			//	centerRightHeadingStyle.Render("Logs")),
 			m.logsPane.View())
 
 	}
 
-	rightPane := lipgloss.JoinVertical(lipgloss.Left, rightPanels...)
-	//zone.Mark(attacksViewPortHeadingId.String(), centerRightHeadingStyle.Render("Attacks")),
-	//attacksPanelStyle.Render("stuff and things"),
-
+	rightPane := lipgloss.JoinVertical(lipgloss.Top, rightPanes...)
 	return zone.Scan(lipgloss.JoinHorizontal(lipgloss.Left, leftPane, rightPane))
 }
 
-func (m *model) doResize(msg tea.WindowSizeMsg) {
-	m.uiHeight = int(math.Round(float64(msg.Height) * .90))
-	m.uiWidth = int(math.Round(float64(msg.Width) * .99))
-	m.convosTable.SetHeight(m.uiHeight)
-	m.rightWidth = m.uiWidth / 2
-	m.doCurrConvoRow()
-}
-
 func (m *model) doCurrConvoRow() {
+
 	if len(m.convosTable.Rows()) == 0 {
 		return
 	}
@@ -505,7 +541,7 @@ func (m *model) doCurrConvoRow() {
 	selectedRow := make(table.Row, len(m.convosTable.SelectedRow()))
 	copy(selectedRow, m.convosTable.SelectedRow())
 
-	// Reduce noise by clearing repeating instances of the sender IP
+	// Retrieve sender IP from row senders
 	if strings.HasSuffix(selectedRow[3], "↖") {
 		selectedRow[3] = m.convosRowSenders[m.convosTable.Cursor()]
 	}
@@ -516,19 +552,12 @@ func (m *model) doCurrConvoRow() {
 		return
 	}
 
-	// Get content for the current conversation
-	buff := getSelectedConvoTableContent(m)
-	if buff.err != nil {
-		_, err = m.eWriter.WriteStringf("failed to get selected conversations content: %v", err.Error())
-		if err != nil {
-			m.eWriter.WriteString("failed to write error to log pane")
-			panic(err)
-		}
-	} else {
-		m.curConvoTableData = &buff
-		m.curConvoTable.SetColumns(buff.cols)
-		m.curConvoTable.SetRows(buff.rows)
-	}
+	m.curConvoPane.IsPoisoning = m.activeAttacks.Exists(m.curConvoRow.SenderIp, m.curConvoRow.TargetIp)
+	m.curConvoPane.IsSnac = m.curConvoRow.IsSnac
+	m.curConvoPane.IsConfiguringPoisoning = !m.curConvoPane.IsPoisoning &&
+	  m.convosPoisonPanes.Exists(m.curConvoRow.SenderIp, m.curConvoRow.TargetIp)
+
+	return
 }
 
 func (m *model) doConvoTableContent(c convosTableContent) {

@@ -16,7 +16,7 @@ import (
 )
 
 var (
-	btnStyle               = lipgloss.NewStyle().Background(lipgloss.Color("241")).AlignHorizontal(lipgloss.Center)
+	btnStyle               = lipgloss.NewStyle().Background(lipgloss.Color("241")).AlignHorizontal(lipgloss.Center).PaddingLeft(1).PaddingRight(1)
 	focusedStyle           = lipgloss.NewStyle()
 	blurredStyle           = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 	underlineStyle         = lipgloss.NewStyle().Underline(true)
@@ -51,16 +51,16 @@ type (
 	//
 	// Use Id to obtain the randomly created identifier.
 	PoisonPane struct {
-		Style           lipgloss.Style    // Style for the panel element
-		Width, Height   int               // Width and Height for the element
-		id              string            // random id created by NewPoison
-		inputs          []textinput.Model // text input fields
-		errors          []string          // error messages for inputs
-		inputFocusIndex int               // track which input has focus
-		running         bool              // determines if the poisoning attack is running
-		startBtnMark    string            // unique zone mark for this panel's start button
-		cancelBtnMark   string            // unique zone mark for this panel's cancel button
-		zoneM           *zone.Manager     // created by NewPoison
+		Style             lipgloss.Style    // Style for the panel element
+		paneHeadingZoneId string            // To make the pane's "Poisoning" heading clickable
+		id                string            // random id created by NewPoison
+		inputs            []textinput.Model // text input fields
+		errors            []string          // error messages for inputs
+		inputFocusIndex   int               // track which input has focus
+		running           bool              // determines if the poisoning attack is running
+		startBtnMark      string            // unique zone mark for this panel's start button
+		cancelBtnMark     string            // unique zone mark for this panel's cancel button
+		zoneM             *zone.Manager     // created by NewPoison
 	}
 
 	// BtnPressMsg indicates a button has been pressed in a PoisonPane.
@@ -76,7 +76,7 @@ type (
 	validator func(string) error
 )
 
-func NewPoison(z *zone.Manager) PoisonPane {
+func NewPoison(z *zone.Manager, paneHeadingZoneId string) PoisonPane {
 	id := z.NewPrefix()
 	return PoisonPane{
 		zoneM:         z,
@@ -284,6 +284,14 @@ func (p *PoisonPane) updateInputs(msg tea.Msg) tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
+func (p *PoisonPane) SetHeight(h int) {
+	p.Style = p.Style.Height(h - 2)
+}
+
+func (p *PoisonPane) SetWidth(w int) {
+	p.Style = p.Style.Width(w)
+}
+
 func (p PoisonPane) View() string {
 	var hasErrors bool
 	var builder strings.Builder
@@ -303,10 +311,8 @@ func (p PoisonPane) View() string {
 		}
 
 		builder.WriteString(" ")
-
 		if err != nil {
-			builder.WriteString(validationFailureStyle.Render(
-				fmt.Sprintf(" %s", err.Error())))
+			builder.WriteString(validationFailureStyle.Render(err.Error()))
 			if !hasErrors {
 				hasErrors = true
 			}
@@ -321,22 +327,23 @@ func (p PoisonPane) View() string {
 		}
 	}
 
-	_, formH := lipgloss.Size(builder.String())
-	for btnPad := p.Height - formH; btnPad > 0; btnPad-- {
+	for btnPad := p.Style.GetHeight() - lipgloss.Height(builder.String()); btnPad > 1; btnPad-- {
 		builder.WriteString("\n")
 	}
 
+	centerStyle := lipgloss.NewStyle().AlignHorizontal(lipgloss.Center).Width(p.Style.GetWidth())
 	if p.running || hasErrors {
 		// Show only the cancel button
-		builder.WriteString(p.zoneM.Mark(p.cancelBtnMark,
-			btnStyle.Width(p.Width).Render("Cancel Poisoning")))
+		builder.WriteString(
+			centerStyle.Render(p.zoneM.Mark(p.cancelBtnMark, btnStyle.Render("Cancel Poisoning"))))
 	} else {
 		// Show start and cancel button
-		btnStyle := btnStyle.Width(p.Width / 2)
-		builder.WriteString(lipgloss.JoinHorizontal(lipgloss.Center,
+		//btnStyle := btnStyle.Width((p.Style.GetMaxWidth() - 3) / 2)
+
+		builder.WriteString(centerStyle.Render(lipgloss.JoinHorizontal(lipgloss.Center,
 			p.zoneM.Mark(p.startBtnMark, btnStyle.MarginRight(1).Render("Start")),
-			p.zoneM.Mark(p.cancelBtnMark, btnStyle.Render("Cancel Configuration"))))
+			p.zoneM.Mark(p.cancelBtnMark, btnStyle.Render("Cancel")))))
 	}
 
-	return p.Style.Width(p.Width).Height(p.Height).Render(builder.String())
+	return p.Style.Render(centerStyle.Render(p.zoneM.Mark(p.paneHeadingZoneId, "Poisoning")), builder.String())
 }

@@ -38,17 +38,43 @@ WHERE aitm_opt.snac_target_ip_id = ?;
 `
 )
 
+var (
+	curConvoTableStyle table.Styles
+	protoWeights       = map[string]int{"tcp": 1, "udp": 2, "sctp": 3}
+)
+
+func init() {
+	//curConvoTableStyle = table.DefaultStyles()
+	curConvoTableStyle.Header = curConvoTableStyle.Header.
+		BorderStyle(lipgloss.NormalBorder()).
+		BorderForeground(lipgloss.Color("240")).
+		BorderBottom(true).
+		Bold(true).
+		Padding(0, 0, 0, 2).
+		Margin(0, 0, 0, 0)
+	//PaddingLeft(1).
+	//curConvoTableStyle.Cell.PaddingLeft(1)
+	curConvoTableStyle.Cell = curConvoTableStyle.Cell.
+		Padding(0, 0, 0, 2).
+		Margin(0, 0, 0, 0)
+	curConvoTableStyle.Selected = curConvoTableStyle.Selected.
+		Foreground(lipgloss.Color("255")).
+		Bold(true).
+		Padding(0, 0, 0, 0).
+		Margin(0, 0, 0, 0)
+}
+
 type (
 	CurConvoPane struct {
-		db             *sql.DB
-		zone           *zone.Manager
-		curConvoRow    CurConvoRowDetails
-		tbl            table.Model
-		poisonCfgBtnId string
-		Width, Height  int
-		Style          lipgloss.Style
-		IsSnac         bool
-		IsPoisoning    bool
+		Style                  lipgloss.Style
+		db                     *sql.DB
+		zone                   *zone.Manager
+		curConvoRow            CurConvoRowDetails
+		tbl                    table.Model
+		poisonCfgBtnId         string
+		IsSnac                 bool
+		IsPoisoning            bool
+		IsConfiguringPoisoning bool
 	}
 
 	CurConvoRowDetails struct {
@@ -60,9 +86,10 @@ type (
 	}
 
 	CurConvoTableData struct {
-		Cols []table.Column
-		Rows []table.Row
-		Err  error
+		Cols               []table.Column
+		Rows               []table.Row
+		CurConvoRowDetails CurConvoRowDetails
+		Err                error
 	}
 )
 
@@ -71,6 +98,7 @@ func NewCurConvoPane(db *sql.DB, zone *zone.Manager, poisonCfgBtnId string) CurC
 		db:             db,
 		zone:           zone,
 		poisonCfgBtnId: poisonCfgBtnId,
+		tbl:            table.New(table.WithKeyMap(table.DefaultKeyMap()), table.WithStyles(curConvoTableStyle)),
 	}
 }
 
@@ -106,21 +134,56 @@ func (c CurConvoPane) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return c, cmd
 }
 
+func (c *CurConvoPane) SetWidth(w int) {
+	c.tbl.SetWidth(w)
+}
+
+func (c *CurConvoPane) SetHeight(h int) {
+	c.tbl.SetHeight(h)
+}
+
 func (c CurConvoPane) View() string {
-	c.tbl.SetHeight(c.Height)
-	c.tbl.SetWidth(c.Width)
+
+	if len(c.tbl.Columns()) > 0 {
+
+		c.tbl.SetWidth(c.Style.GetWidth())
+		widthPaddingOffset :=
+		  (curConvoTableStyle.Header.GetPaddingRight() + curConvoTableStyle.Header.GetPaddingLeft()) *
+			len(c.tbl.Columns())
+
+		// Calculate the widest width for first column
+		for _, r := range c.tbl.Rows() {
+			if len(r[0]) > c.tbl.Columns()[0].Width {
+				c.tbl.Columns()[0].Width = len(r[0])
+			} else if r[0] == "" {
+				break
+			}
+		}
+
+		// Calculate width for remaining columns
+		c.tbl.Columns()[1].Width = (c.tbl.Width()-c.tbl.Columns()[0].Width)/2 - widthPaddingOffset
+		c.tbl.Columns()[2].Width = c.tbl.Width() - c.tbl.Columns()[0].Width - c.tbl.Columns()[1].Width - widthPaddingOffset
+	}
 
 	var content string
-	if c.IsSnac && !c.IsPoisoning {
-		c.tbl.SetHeight(c.tbl.Height() - 1)
+	if c.IsSnac && !c.IsPoisoning && !c.IsConfiguringPoisoning {
+
+		//====================================
+		// RENDER WITH POISONING CONFIG BUTTON
+		//====================================
+
+		c.tbl.SetHeight(c.tbl.Height() + 1)
 		s := lipgloss.NewStyle().
-			Width(c.Width).
+			Width(c.Style.GetWidth() / 4).
 			AlignHorizontal(lipgloss.Center).
 			Background(lipgloss.Color("240"))
 		btn := zone.Mark(c.poisonCfgBtnId, s.Render("Configure Poisoning"))
-		content = lipgloss.JoinVertical(lipgloss.Bottom, c.tbl.View(), btn)
+		content = lipgloss.JoinVertical(lipgloss.Center, c.tbl.View(), btn)
+
 	} else {
+
 		content = c.tbl.View()
+
 	}
 
 	return c.Style.Render(content)
@@ -130,9 +193,19 @@ func (c *CurConvoPane) FocusTable() {
 	c.tbl.Focus()
 }
 
+func (c *CurConvoPane) SetColumns(columns []table.Column) {
+	c.tbl.SetColumns(columns)
+}
+
+func (c *CurConvoPane) SetRows(rows []table.Row) {
+	c.tbl.SetRows(rows)
+}
+
 func (c CurConvoPane) GetContent(db *sql.DB, curConvoRow CurConvoRowDetails) tea.Msg {
 
-	content := CurConvoTableData{}
+	content := CurConvoTableData{
+		CurConvoRowDetails: curConvoRow,
+	}
 	rows, err := db.Query(convoTableSelectionQuery, curConvoRow.SenderIp, curConvoRow.TargetIp)
 	if err != nil {
 		content.Err = fmt.Errorf("failed to get selected arp row content: %w", err)
@@ -325,13 +398,13 @@ func (c CurConvoPane) GetContent(db *sql.DB, curConvoRow CurConvoRowDetails) tea
 	// HANDLE PORTS
 	//=============
 
-	// TODO query for ports
+	//TODO query for ports
 
 	var dbPorts []eavesarp_ng.Port
 	for n := 0; n < 100; n++ {
-		dbPorts = append(dbPorts, eavesarp_ng.Port{Number: n, Protocol: "tcp"})
-		dbPorts = append(dbPorts, eavesarp_ng.Port{Number: n, Protocol: "udp"})
 		dbPorts = append(dbPorts, eavesarp_ng.Port{Number: n, Protocol: "sctp"})
+		dbPorts = append(dbPorts, eavesarp_ng.Port{Number: n, Protocol: "udp"})
+		dbPorts = append(dbPorts, eavesarp_ng.Port{Number: n, Protocol: "tcp"})
 	}
 
 	// Example formatting:
@@ -354,9 +427,9 @@ func (c CurConvoPane) GetContent(db *sql.DB, curConvoRow CurConvoRowDetails) tea
 			// update max port width with this length
 			maxPortWidth = len(s)
 		}
-		if !slices.Contains(protocols, s) {
+		if !slices.Contains(protocols, port.Protocol) {
 			// capture new protocol
-			protocols = append(protocols, s)
+			protocols = append(protocols, port.Protocol)
 		}
 		portsByProto[port.Protocol] = append(portsByProto[port.Protocol], s)
 		if len(portsByProto[port.Protocol]) > longestPortSlice {
@@ -364,18 +437,24 @@ func (c CurConvoPane) GetContent(db *sql.DB, curConvoRow CurConvoRowDetails) tea
 		}
 	}
 
+	// Sort protocols by weight
+	slices.SortFunc(protocols, func(a, b string) int {
+		return protoWeights[a] - protoWeights[b]
+	})
+
 	curRow := table.Row{"Ports Seen"}
 	for i := 0; i < longestPortSlice; i++ {
 		// current port line
 		var line string
 		protoInd := 1
 
-		for proto := range portsByProto {
+		for _, proto := range protocols {
 			var v string
-			if i < len(portsByProto[proto]) {
-				// retrieve the port value
-				v = portsByProto[proto][i]
+			if i >= len(portsByProto[proto]) {
+				continue
 			}
+			// retrieve the port value
+			v = portsByProto[proto][i]
 			if maxPortWidth-len(v) > 0 {
 				// pad the value to the right
 				v += strings.Repeat(" ", maxPortWidth-len(v))
@@ -392,7 +471,7 @@ func (c CurConvoPane) GetContent(db *sql.DB, curConvoRow CurConvoRowDetails) tea
 		curRow = append(curRow, line, "")
 
 		// capture the row
-		var buff table.Row
+		buff := make(table.Row, 3)
 		copy(buff, curRow)
 		content.Rows = append(content.Rows, buff)
 

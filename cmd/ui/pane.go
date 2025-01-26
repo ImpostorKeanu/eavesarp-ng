@@ -5,9 +5,9 @@ package main
 type paneHeadingId string
 
 const (
-	convosTableHeadingId     paneHeadingId = "convosTable"
-	curConvoTableHeadingId   paneHeadingId = "selectedArpTable"
-	logsViewPortHeadingId    paneHeadingId = "logsViewPort"
+	convosTableId            paneHeadingId = "convosTable"
+	curConvoId               paneHeadingId = "selectedArpTable"
+	logPaneId                paneHeadingId = "logsViewPort"
 	attacksViewPortHeadingId paneHeadingId = "attacksViewPort"
 	poisonPaneHeadingId      paneHeadingId = "poisonPane"
 )
@@ -20,13 +20,13 @@ func (p paneHeadingId) String() string {
 // that the pane resides.
 func (p paneHeadingId) Int() int {
 	switch p {
-	case convosTableHeadingId:
+	case convosTableId:
 		return 0
-	case curConvoTableHeadingId:
+	case curConvoId:
 		return 1
 	case attacksViewPortHeadingId:
 		return 2
-	case logsViewPortHeadingId:
+	case logPaneId:
 		return 3
 	default:
 		panic("invalid paneHeadingId")
@@ -58,13 +58,13 @@ func (p paneHeadingId) nextPane(direction string) (next paneHeadingId) {
 
 	switch i {
 	case 0:
-		next = convosTableHeadingId
+		next = convosTableId
 	case 1:
-		next = curConvoTableHeadingId
+		next = curConvoId
 	case 2:
 		next = attacksViewPortHeadingId
 	case 3:
-		next = logsViewPortHeadingId
+		next = logPaneId
 	}
 
 	return
