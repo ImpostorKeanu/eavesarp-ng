@@ -285,11 +285,11 @@ func (p *PoisonPane) updateInputs(msg tea.Msg) tea.Cmd {
 }
 
 func (p *PoisonPane) SetHeight(h int) {
-	p.Style = p.Style.Height(h - 2)
+	p.Style = p.Style.Height(h - 2).MaxHeight(h)
 }
 
 func (p *PoisonPane) SetWidth(w int) {
-	p.Style = p.Style.Width(w)
+	p.Style = p.Style.Width(w - 2).MaxWidth(w + 2)
 }
 
 func (p PoisonPane) View() string {
@@ -332,18 +332,18 @@ func (p PoisonPane) View() string {
 	}
 
 	centerStyle := lipgloss.NewStyle().AlignHorizontal(lipgloss.Center).Width(p.Style.GetWidth())
+	heading := "Poisoning"
 	if p.running || hasErrors {
 		// Show only the cancel button
 		builder.WriteString(
 			centerStyle.Render(p.zoneM.Mark(p.cancelBtnMark, btnStyle.Render("Cancel Poisoning"))))
 	} else {
 		// Show start and cancel button
-		//btnStyle := btnStyle.Width((p.Style.GetMaxWidth() - 3) / 2)
-
+		heading = "Configure Poisoning"
 		builder.WriteString(centerStyle.Render(lipgloss.JoinHorizontal(lipgloss.Center,
 			p.zoneM.Mark(p.startBtnMark, btnStyle.MarginRight(1).Render("Start")),
 			p.zoneM.Mark(p.cancelBtnMark, btnStyle.Render("Cancel")))))
 	}
 
-	return p.Style.Render(centerStyle.Render(p.zoneM.Mark(p.paneHeadingZoneId, "Poisoning")), builder.String())
+	return p.Style.Render(centerStyle.Render(p.zoneM.Mark(p.paneHeadingZoneId, heading)), builder.String())
 }

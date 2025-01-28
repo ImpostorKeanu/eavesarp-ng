@@ -85,16 +85,15 @@ func (l LogsPane) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (l LogsPane) View() string {
-	//if l.vp.YOffset == 0 && l.vp.SetHeight > 0 {
-	//	// Scroll to the bottom of the logs viewport
-	//	l.vp.GotoBottom()
-	//}
-	l.vp.Style = l.Style
-	return l.vp.View()
+	return l.Style.Height(l.vp.Height).MaxHeight(l.vp.Height + 2).Render(l.vp.View())
 }
 
 func EmitEvent(c chan string) tea.Msg {
 	return LogEvent(<-c)
+}
+
+func (l *LogsPane) SetWidth(w int) {
+	l.vp.Width = w
 }
 
 func (l *LogsPane) SetHeight(h int) {
@@ -103,10 +102,6 @@ func (l *LogsPane) SetHeight(h int) {
 
 func (l *LogsPane) Height() int {
 	return l.vp.Height
-}
-
-func (l *LogsPane) SetWidth(w int) {
-	l.vp.Width = w + 1
 }
 
 func (l *LogsPane) AtBottom() bool {
