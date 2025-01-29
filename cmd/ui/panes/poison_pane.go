@@ -16,7 +16,11 @@ import (
 )
 
 var (
-	btnStyle               = lipgloss.NewStyle().Background(lipgloss.Color("241")).AlignHorizontal(lipgloss.Center).PaddingLeft(1).PaddingRight(1)
+	btnStyle = lipgloss.NewStyle().
+		Align(lipgloss.Center).
+		Background(lipgloss.Color("241")).
+		PaddingLeft(1).
+		PaddingRight(1)
 	focusedStyle           = lipgloss.NewStyle()
 	blurredStyle           = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 	underlineStyle         = lipgloss.NewStyle().Underline(true)
@@ -327,22 +331,94 @@ func (p PoisonPane) View() string {
 		}
 	}
 
-	for btnPad := p.Style.GetHeight() - lipgloss.Height(builder.String()); btnPad > 1; btnPad-- {
+	var pO int
+	if p.running {
+		pO++
+	}
+	for btnPad := p.Style.GetHeight() - lipgloss.Height(builder.String()); btnPad > (1 + pO); btnPad-- {
 		builder.WriteString("\n")
 	}
 
 	centerStyle := lipgloss.NewStyle().AlignHorizontal(lipgloss.Center).Width(p.Style.GetWidth())
 	heading := "Poisoning"
-	if p.running || hasErrors {
-		// Show only the cancel button
+	if p.running {
+
+		btn := p.zoneM.Mark(p.cancelBtnMark, btnStyle.Render("Cancel Poisoning"))
+
+		//=================
+		// STATS HEADER ROW
+		//=================
+
+		maxW := p.Style.GetWidth() / 2
+		s := lipgloss.NewStyle().Width(maxW)
+		timeS := s.AlignHorizontal(lipgloss.Left).Underline(true)
+
+		//tHeader := "Time Elapsed"
+		//pHeader := "Packet Count"
+
+		if p.CaptureDurationInput().Value() != "" {
+			//tHeader = "Time Remaining"
+			builder.WriteString(timeS.Render("Time Remaining"))
+		} else {
+			builder.WriteString(timeS.Render("Time Elapsed"))
+		}
+
+		builder.WriteString(timeS.UnsetPaddingLeft().AlignHorizontal(lipgloss.Right).Render("Packet Count"))
+		builder.WriteString("\n")
+
+		//==========
+		// STATS ROW
+		//==========
+
+		maxW = p.Style.GetWidth()
+		s = s.Width(maxW)
+		timeS = timeS.UnsetUnderline()
+
+		var tVal string
+		if p.CaptureDurationInput().Value() != "" {
+			tVal = "remaining time"
+			//builder.WriteString(timeS.Render(tVal))
+		} else {
+			tVal = "elapsed time"
+		}
+		//tVal = timeS.Render(tVal)
+		pVal := "count of packets"
+
+		//nW := (maxW - (len(tVal) + lipgloss.Width(btn) + len(pVal) + 2)) / 2
+
+		halfW := maxW / 2
+		halfBtnW := lipgloss.Width(btn) / 2
+		lW := halfW - (len(tVal) + halfBtnW)
+		rW := halfW - (len(pVal) + halfBtnW)
+
+		builder.WriteString(timeS.UnsetWidth().Render(tVal))
+		builder.WriteString(strings.Repeat(" ", lW))
+		builder.WriteString(btn)
+		builder.WriteString(strings.Repeat(" ", rW))
+		builder.WriteString(pVal)
+
+		// Show cancel button along with capture stats
+		//builder.WriteString(
+		//	s.AlignHorizontal(lipgloss.Center).Render()))
+		//
+		//builder.WriteString(s.AlignHorizontal(lipgloss.Right).PaddingRight(1).Render("count of packets"))
+
+	} else if hasErrors {
+
+		heading = "Configuration Error"
+		// Show cancel button along with capture stats
+		s := lipgloss.NewStyle().Width(p.Style.GetWidth())
 		builder.WriteString(
-			centerStyle.Render(p.zoneM.Mark(p.cancelBtnMark, btnStyle.Render("Cancel Poisoning"))))
+			s.AlignHorizontal(lipgloss.Center).Render(p.zoneM.Mark(p.cancelBtnMark, btnStyle.Render("Cancel"))))
+
 	} else {
+
 		// Show start and cancel button
 		heading = "Configure Poisoning"
 		builder.WriteString(centerStyle.Render(lipgloss.JoinHorizontal(lipgloss.Center,
 			p.zoneM.Mark(p.startBtnMark, btnStyle.MarginRight(1).Render("Start")),
 			p.zoneM.Mark(p.cancelBtnMark, btnStyle.Render("Cancel")))))
+
 	}
 
 	return p.Style.Render(centerStyle.Render(p.zoneM.Mark(p.paneHeadingZoneId, heading)), builder.String())

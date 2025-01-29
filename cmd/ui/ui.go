@@ -9,7 +9,6 @@ import (
 	eavesarp_ng "github.com/impostorkeanu/eavesarp-ng"
 	"github.com/impostorkeanu/eavesarp-ng/cmd/ui/panes"
 	zone "github.com/lrstanley/bubblezone"
-	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -58,10 +57,10 @@ type (
 	model struct {
 		db *sql.DB
 
-		uiHeight, uiWidth int
-		rightWidth        int
-		curConvoHeight    int
-		bottomRightHeight int
+		maxPaneHeight, uiWidth int
+		rightWidth             int
+		curConvoHeight         int
+		bottomRightHeight      int
 		// focusedId tracks the pane ID that is currently in
 		// focus within the UI.
 		focusedId paneHeadingId
@@ -230,10 +229,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		if zone.Get(poisonButtonId).InBounds(msg) {
 			m.focusedId = poisonCfgPaneId
-			p := m.convosPoisonPanes.GetOrCreate(m.curConvoRow.SenderIp, m.curConvoRow.TargetIp, poisonPaneHeadingId.String())
-			p.SetWidth(m.rightWidth)
-			p.SetHeight(m.bottomRightHeight)
-			p.Style = paneStyle.BorderForeground(selectedPaneBorderColor).Inherit(p.Style)
+			m.convosPoisonPanes.GetOrCreate(m.curConvoRow.SenderIp, m.curConvoRow.TargetIp, poisonPaneHeadingId.String())
 			m.curConvoPane.IsConfiguringPoisoning = true
 			return m, nil
 		}
@@ -386,35 +382,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// this logic will also be accessed during initial
 		// rendering.
 
-		m.uiWidth = int(math.Round(float64(msg.Width) * .99))
-		m.uiHeight = int(math.Round(float64(msg.Height) * .90))
-		//m.uiWidth = msg.Width - 1
-		//m.uiHeight = msg.Height - 3
-		m.convosTable.SetHeight(m.uiHeight)
+		m.uiWidth = msg.Width
+		m.maxPaneHeight = msg.Height - 4
+
+		m.convosTable.SetHeight(m.maxPaneHeight)
 
 		m.rightWidth = m.uiWidth / 2
-		m.curConvoHeight = int(math.Round(float64(m.uiHeight-1) * .65))
+		m.curConvoHeight = m.maxPaneHeight - 15
 
-		// NOTE: subtract 1 to account for the heading row separating
-		//       the selected convo pane from the bottom pane
-		m.bottomRightHeight = m.uiHeight - m.curConvoHeight
+		m.bottomRightHeight = 15
 
 		if m.bottomRightHeight < 0 {
-			m.bottomRightHeight = 0
+			m.bottomRightHeight = 3
 		}
 
-		m.curConvoPane.SetWidth(m.rightWidth + 1)
+		m.curConvoPane.SetWidth(m.rightWidth)
 		m.curConvoPane.SetHeight(m.curConvoHeight)
 
-		//m.curConvoPane.SetHeight(m.uiHeight - m.bottomRightHeight - 6)
-
-		m.logsPane.SetWidth(m.rightWidth + 1)
-		m.logsPane.SetHeight(m.bottomRightHeight)
-
-		for _, pp := range m.convosPoisonPanes {
-			pp.SetWidth(m.rightWidth)
-			pp.SetHeight(m.bottomRightHeight)
-		}
+		m.logsPane.SetWidth(m.rightWidth - 2)
+		m.logsPane.SetHeight(m.bottomRightHeight - 2)
 
 		m.doCurrConvoRow()
 
@@ -429,31 +415,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m model) View() string {
 
-	centerRightHeadingStyle := centerStyle.Width(m.rightWidth)
-
-	convosTblStyle := paneStyle
-	currConvoStyle := paneStyle.Width(m.rightWidth)
-	//currConvoStyle := paneStyle
-	attacksPanelStyle := paneStyle
-	logViewPortStyle := paneStyle
-
-	hasPoisonPanel := m.convosPoisonPanes.Exists(m.curConvoRow.SenderIp, m.curConvoRow.TargetIp)
+	curPoisonPane := m.convosPoisonPanes.Get(m.curConvoRow.SenderIp, m.curConvoRow.TargetIp)
 	hasActiveAttack := m.activeAttacks.Exists(m.curConvoRow.SenderIp, m.curConvoRow.TargetIp)
-
-	//==================================
-	// BRIGHTEN BORDER FOR SELECTED PANE
-	//==================================
-
-	switch m.focusedId {
-	case convosTableId:
-		convosTblStyle = convosTblStyle.BorderForeground(selectedPaneBorderColor)
-	case curConvoId:
-		currConvoStyle = currConvoStyle.BorderForeground(selectedPaneBorderColor)
-	case attacksViewPortHeadingId:
-		attacksPanelStyle = attacksPanelStyle.BorderForeground(selectedPaneBorderColor)
-	case logPaneId, poisonCfgPaneId:
-		logViewPortStyle = logViewPortStyle.BorderForeground(selectedPaneBorderColor)
-	}
+	var rightPanes []string
 
 	//====================
 	// CONVERSATIONS TABLE
@@ -461,6 +425,11 @@ func (m model) View() string {
 
 	var leftPane string
 	convosTblHeading := zone.Mark(convosTableId.String(), centerStyle.Render("Conversations"))
+
+	convosTblStyle := paneStyle.Height(m.maxPaneHeight).MaxHeight(m.maxPaneHeight + 2)
+	if m.focusedId == convosTableId {
+		convosTblStyle = convosTblStyle.BorderForeground(selectedPaneBorderColor)
+	}
 
 	if len(m.convosTable.Rows()) == 0 {
 		leftPane = lipgloss.JoinVertical(lipgloss.Center,
@@ -476,35 +445,38 @@ func (m model) View() string {
 	// CURRENT CONVERSATION PANE
 	//==========================
 
-	var rightPanes []string
+	currConvoStyle := paneStyle.Width(m.rightWidth - 2).MaxWidth(m.rightWidth)
+	if m.focusedId == curConvoId {
+		currConvoStyle = currConvoStyle.BorderForeground(selectedPaneBorderColor)
+	}
 
 	m.curConvoPane.IsPoisoning = hasActiveAttack
 	m.curConvoPane.IsSnac = m.curConvoRow.IsSnac
 	m.curConvoPane.Style = currConvoStyle
 	rightPanes = append(rightPanes,
 		zone.Mark(curConvoId.String(),
-			centerRightHeadingStyle.Render("Selected Conversation")),
+			centerStyle.Width(m.rightWidth).Render("Selected Conversation")),
 		m.curConvoPane.View())
 
-	if m.curConvoRow.IsSnac && hasPoisonPanel {
+	//==========================
+	// PREPARE BOTTOM RIGHT PANE
+	//==========================
+
+	if m.curConvoRow.IsSnac && curPoisonPane != nil {
 
 		//=============================
 		// POISONING CONFIGURATION PANE
 		//=============================
 
-		p := m.convosPoisonPanes.Get(m.curConvoRow.SenderIp, m.curConvoRow.TargetIp)
-		if p == nil {
-			// TODO
-			panic("missing poison panel for conversation")
-		}
-
 		if m.focusedId == poisonCfgPaneId {
-			p.Style = p.Style.BorderForeground(selectedPaneBorderColor)
+			curPoisonPane.Style = paneStyle.BorderForeground(selectedPaneBorderColor)
 		} else {
-			p.Style = p.Style.BorderForeground(deselectedPaneBorderColor)
+			curPoisonPane.Style = paneStyle.BorderForeground(deselectedPaneBorderColor)
 		}
 
-		rightPanes = append(rightPanes, p.View())
+		curPoisonPane.SetWidth(m.rightWidth)
+		curPoisonPane.SetHeight(m.bottomRightHeight)
+		rightPanes = append(rightPanes, curPoisonPane.View())
 
 	} else {
 
@@ -518,10 +490,7 @@ func (m model) View() string {
 			m.logsPane.Style = paneStyle
 		}
 
-		rightPanes = append(rightPanes,
-			//zone.Mark(logPaneId.String(),
-			//	centerRightHeadingStyle.Render("Logs")),
-			m.logsPane.View())
+		rightPanes = append(rightPanes, m.logsPane.View())
 
 	}
 
