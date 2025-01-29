@@ -229,7 +229,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		if zone.Get(poisonButtonId).InBounds(msg) {
 			m.focusedId = poisonCfgPaneId
-			m.convosPoisonPanes.GetOrCreate(m.curConvoRow.SenderIp, m.curConvoRow.TargetIp, poisonPaneHeadingId.String())
+			p := m.convosPoisonPanes.GetOrCreate(m.curConvoRow.SenderIp, m.curConvoRow.TargetIp, poisonPaneHeadingId.String())
+			p.SetWidth(m.rightWidth)
+			p.SetHeight(m.bottomRightHeight)
 			m.curConvoPane.IsConfiguringPoisoning = true
 			return m, nil
 		}
@@ -387,7 +389,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		m.convosTable.SetHeight(m.maxPaneHeight)
 
-		m.rightWidth = m.uiWidth / 2
+		m.rightWidth = (m.uiWidth / 2) + (m.uiWidth % 2)
 		m.curConvoHeight = m.maxPaneHeight - 15
 
 		m.bottomRightHeight = 15
@@ -399,8 +401,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.curConvoPane.SetWidth(m.rightWidth)
 		m.curConvoPane.SetHeight(m.curConvoHeight)
 
-		m.logsPane.SetWidth(m.rightWidth - 2)
-		m.logsPane.SetHeight(m.bottomRightHeight - 2)
+		m.logsPane.SetWidth(m.rightWidth)
+		m.logsPane.SetHeight(m.bottomRightHeight)
+
+		for _, p := range m.convosPoisonPanes {
+			p.SetWidth(m.rightWidth)
+			p.SetHeight(m.bottomRightHeight)
+		}
 
 		m.doCurrConvoRow()
 
@@ -426,7 +433,7 @@ func (m model) View() string {
 	var leftPane string
 	convosTblHeading := zone.Mark(convosTableId.String(), centerStyle.Render("Conversations"))
 
-	convosTblStyle := paneStyle.Height(m.maxPaneHeight).MaxHeight(m.maxPaneHeight + 2)
+	convosTblStyle := paneStyle.Height(m.maxPaneHeight)
 	if m.focusedId == convosTableId {
 		convosTblStyle = convosTblStyle.BorderForeground(selectedPaneBorderColor)
 	}
@@ -473,9 +480,6 @@ func (m model) View() string {
 		} else {
 			curPoisonPane.Style = paneStyle.BorderForeground(deselectedPaneBorderColor)
 		}
-
-		curPoisonPane.SetWidth(m.rightWidth)
-		curPoisonPane.SetHeight(m.bottomRightHeight)
 		rightPanes = append(rightPanes, curPoisonPane.View())
 
 	} else {
@@ -485,11 +489,10 @@ func (m model) View() string {
 		//==========
 
 		if m.focusedId == logPaneId {
-			m.logsPane.Style = paneStyle.BorderForeground(selectedPaneBorderColor)
+			m.logsPane.SetStyle(paneStyle.BorderForeground(selectedPaneBorderColor))
 		} else {
-			m.logsPane.Style = paneStyle
+			m.logsPane.SetStyle(paneStyle)
 		}
-
 		rightPanes = append(rightPanes, m.logsPane.View())
 
 	}

@@ -10,7 +10,6 @@ import (
 
 type (
 	LogsPane struct {
-		Style          lipgloss.Style
 		vp             viewport.Model
 		headingZoneId  string
 		events         []string
@@ -24,7 +23,6 @@ type (
 func NewLogsPane(maxEventLength, maxEventCount int, headingZoneId string) (chan string, LogsPane) {
 	ch := make(chan string)
 	return ch, LogsPane{
-		Style:          lipgloss.Style{},
 		vp:             viewport.New(0, 0),
 		headingZoneId:  headingZoneId,
 		events:         make([]string, 0),
@@ -68,7 +66,7 @@ func (l LogsPane) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		l.events = append(l.events, s)
 		l.vp.SetContent(strings.Join(l.events, "\n"))
 
-		if wasAtBottom && (l.vp.TotalLineCount() >= l.vp.Height) {
+		if l.vp.Height > 0 && wasAtBottom && (l.vp.TotalLineCount() >= l.vp.Height) {
 			// Stick to the bottom unless we've scrolled up
 			l.vp.GotoBottom()
 		}
@@ -85,11 +83,15 @@ func (l LogsPane) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (l LogsPane) View() string {
-	return l.Style.Height(l.vp.Height).MaxHeight(l.vp.Height + 2).Render(l.vp.View())
+	return l.vp.View()
 }
 
 func EmitEvent(c chan string) tea.Msg {
 	return LogEvent(<-c)
+}
+
+func (l *LogsPane) SetStyle(s lipgloss.Style) {
+	l.vp.Style = s
 }
 
 func (l *LogsPane) SetWidth(w int) {

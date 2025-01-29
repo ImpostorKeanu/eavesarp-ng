@@ -55,7 +55,8 @@ type (
 	//
 	// Use Id to obtain the randomly created identifier.
 	PoisonPane struct {
-		Style             lipgloss.Style    // Style for the panel element
+		Style             lipgloss.Style // Style for the panel element
+		height, width     int
 		paneHeadingZoneId string            // To make the pane's "Poisoning" heading clickable
 		id                string            // random id created by NewPoison
 		inputs            []textinput.Model // text input fields
@@ -289,11 +290,11 @@ func (p *PoisonPane) updateInputs(msg tea.Msg) tea.Cmd {
 }
 
 func (p *PoisonPane) SetHeight(h int) {
-	p.Style = p.Style.Height(h - 2).MaxHeight(h)
+	p.height = h - 2
 }
 
 func (p *PoisonPane) SetWidth(w int) {
-	p.Style = p.Style.Width(w - 2).MaxWidth(w + 2)
+	p.width = w - 2
 }
 
 func (p PoisonPane) View() string {
@@ -335,79 +336,56 @@ func (p PoisonPane) View() string {
 	if p.running {
 		pO++
 	}
-	for btnPad := p.Style.GetHeight() - lipgloss.Height(builder.String()); btnPad > (1 + pO); btnPad-- {
+	for btnPad := p.height - lipgloss.Height(builder.String()); btnPad > (1 + pO); btnPad-- {
 		builder.WriteString("\n")
 	}
 
-	centerStyle := lipgloss.NewStyle().AlignHorizontal(lipgloss.Center).Width(p.Style.GetWidth())
+	centerStyle := lipgloss.NewStyle().AlignHorizontal(lipgloss.Center).Width(p.width)
 	heading := "Poisoning"
 	if p.running {
 
-		btn := p.zoneM.Mark(p.cancelBtnMark, btnStyle.Render("Cancel Poisoning"))
+		btn := p.zoneM.Mark(p.cancelBtnMark, btnStyle.Render("Stop"))
 
 		//=================
 		// STATS HEADER ROW
 		//=================
 
-		maxW := p.Style.GetWidth() / 2
-		s := lipgloss.NewStyle().Width(maxW)
-		timeS := s.AlignHorizontal(lipgloss.Left).Underline(true)
+		maxW := p.width
+		halfW := (maxW / 2) - (lipgloss.Width(btn) / 2)
 
-		//tHeader := "Time Elapsed"
-		//pHeader := "Packet Count"
+		tHeader := "Time Elapsed"
+		pHeader := "Packet Count"
 
 		if p.CaptureDurationInput().Value() != "" {
-			//tHeader = "Time Remaining"
-			builder.WriteString(timeS.Render("Time Remaining"))
-		} else {
-			builder.WriteString(timeS.Render("Time Elapsed"))
+			tHeader = "Time Remaining"
 		}
 
-		builder.WriteString(timeS.UnsetPaddingLeft().AlignHorizontal(lipgloss.Right).Render("Packet Count"))
+		builder.WriteString(underlineStyle.Width(halfW + (maxW % 2)).AlignHorizontal(lipgloss.Left).Render(tHeader))
+		builder.WriteString(btn)
+		builder.WriteString(underlineStyle.Width(halfW).AlignHorizontal(lipgloss.Right).Render(pHeader))
 		builder.WriteString("\n")
 
 		//==========
 		// STATS ROW
 		//==========
 
-		maxW = p.Style.GetWidth()
-		s = s.Width(maxW)
-		timeS = timeS.UnsetUnderline()
-
 		var tVal string
 		if p.CaptureDurationInput().Value() != "" {
 			tVal = "remaining time"
-			//builder.WriteString(timeS.Render(tVal))
 		} else {
 			tVal = "elapsed time"
 		}
-		//tVal = timeS.Render(tVal)
 		pVal := "count of packets"
 
-		//nW := (maxW - (len(tVal) + lipgloss.Width(btn) + len(pVal) + 2)) / 2
-
-		halfW := maxW / 2
-		halfBtnW := lipgloss.Width(btn) / 2
-		lW := halfW - (len(tVal) + halfBtnW)
-		rW := halfW - (len(pVal) + halfBtnW)
-
-		builder.WriteString(timeS.UnsetWidth().Render(tVal))
-		builder.WriteString(strings.Repeat(" ", lW))
-		builder.WriteString(btn)
-		builder.WriteString(strings.Repeat(" ", rW))
-		builder.WriteString(pVal)
-
-		// Show cancel button along with capture stats
-		//builder.WriteString(
-		//	s.AlignHorizontal(lipgloss.Center).Render()))
-		//
-		//builder.WriteString(s.AlignHorizontal(lipgloss.Right).PaddingRight(1).Render("count of packets"))
+		halfW = maxW / 2
+		builder.WriteString(lipgloss.NewStyle().AlignHorizontal(lipgloss.Left).Width(halfW + (maxW % 2)).Render(tVal))
+		builder.WriteString(lipgloss.NewStyle().AlignHorizontal(lipgloss.Right).Width(halfW).Render(pVal))
 
 	} else if hasErrors {
 
 		heading = "Configuration Error"
 		// Show cancel button along with capture stats
-		s := lipgloss.NewStyle().Width(p.Style.GetWidth())
+		s := lipgloss.NewStyle().Width(p.width)
 		builder.WriteString(
 			s.AlignHorizontal(lipgloss.Center).Render(p.zoneM.Mark(p.cancelBtnMark, btnStyle.Render("Cancel"))))
 
@@ -421,5 +399,5 @@ func (p PoisonPane) View() string {
 
 	}
 
-	return p.Style.Render(centerStyle.Render(p.zoneM.Mark(p.paneHeadingZoneId, heading)), builder.String())
+	return p.Style.Width(p.width).Height(p.height).Render(centerStyle.Render(p.zoneM.Mark(p.paneHeadingZoneId, heading)), builder.String())
 }
