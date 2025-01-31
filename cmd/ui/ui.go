@@ -82,12 +82,7 @@ type (
 		// sender IP value, allowing us to filter out repetitive
 		// IPs from the convosTable table.
 		convosRowSenders map[int]string
-		// convosPoisonPanes maps ongoing poison configurations
-		// back to specific conversations, allowing us to run
-		// concurrent poisoning attacks.
-		//convosPoisonPanes PoisoningPanes
-
-		convoPoisonPane panes.PoisonPane
+		convoPoisonPane  panes.PoisonPane
 		// curConvoRow contains details related to the currently selected
 		// conversation row.
 		curConvoRow panes.CurConvoRowDetails
@@ -167,14 +162,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.convosRowSenders = msg.rowSenders
 			m.doConvoTableContent(msg)
-			//m.doCurrConvoRow()
 		}
 
 		cmd = func() tea.Msg {
 			// Periodically update the ARP table
 			// TODO we may want to make the update frequency configurable
 			time.Sleep(2 * time.Second)
-			//return getConvosTableContent(m.db, 100, 0)
 			return getConvosTableContent(&m)
 		}
 
@@ -328,12 +321,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				} else {
 					m.convosTable, _ = m.convosTable.Update(msg)
 				}
+				m.curConvoPane.ResetTable()
 			case "down", "j":
 				if m.convosTable.Cursor() == len(m.convosTable.Rows())-1 {
 					m.convosTable.GotoTop()
 				} else {
 					m.convosTable, _ = m.convosTable.Update(msg)
 				}
+				m.curConvoPane.ResetTable()
 			case "ctrl+shift+up", "ctrl+shift+right":
 				m.focusedId = curConvoId
 				m.curConvoPane.FocusTable()
@@ -356,8 +351,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "ctrl+shift+down", "ctrl+shift+up":
 				handleBottomPanel()
 			default:
-				buff, _ := m.curConvoPane.Update(msg)
-				m.curConvoPane = buff.(panes.CurConvoPane)
+				m.curConvoPane, _ = m.curConvoPane.Update(msg)
 			}
 
 		case logPaneId:

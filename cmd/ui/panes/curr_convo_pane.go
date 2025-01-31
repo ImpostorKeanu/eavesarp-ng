@@ -114,7 +114,11 @@ func (c CurConvoPane) Init() tea.Cmd {
 	return nil
 }
 
-func (c CurConvoPane) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (c *CurConvoPane) ResetTable() {
+	c.tbl.GotoTop()
+}
+
+func (c CurConvoPane) Update(msg tea.Msg) (CurConvoPane, tea.Cmd) {
 	var cmd tea.Cmd
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
@@ -173,6 +177,8 @@ func (c CurConvoPane) View() string {
 		c.tbl.Columns()[2].Width = c.tbl.Width() - c.tbl.Columns()[0].Width - c.tbl.Columns()[1].Width - widthPaddingOffset
 	}
 
+	c.tbl.SetHeight(c.tbl.Height() + 1)
+	var btn string
 	var content string
 	if c.IsSnac && !c.IsPoisoning && !c.IsConfiguringPoisoning {
 
@@ -180,19 +186,15 @@ func (c CurConvoPane) View() string {
 		// RENDER WITH POISONING CONFIG BUTTON
 		//====================================
 
-		c.tbl.SetHeight(c.tbl.Height() + 1)
 		s := lipgloss.NewStyle().
 			Width(c.Style.GetWidth() / 4).
 			AlignHorizontal(lipgloss.Center).
 			Background(lipgloss.Color("240"))
-		btn := zone.Mark(c.poisonCfgBtnId, s.Render("Configure Poisoning"))
-		content = lipgloss.JoinVertical(lipgloss.Center, c.tbl.View(), btn)
-
-	} else {
-
-		content = c.tbl.View()
+		btn = zone.Mark(c.poisonCfgBtnId, s.Render("Configure Poisoning"))
 
 	}
+
+	content = lipgloss.JoinVertical(lipgloss.Center, c.tbl.View(), btn)
 
 	return c.Style.Render(content)
 }
