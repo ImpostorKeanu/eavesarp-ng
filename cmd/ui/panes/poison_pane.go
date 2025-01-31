@@ -386,7 +386,7 @@ func (p PoisonPane) View() string {
 		//=================
 
 		maxW := p.width
-		halfW := (maxW / 2) - (lipgloss.Width(btn) / 2)
+		halfW := maxW / 2
 
 		tHeader := "Time Elapsed"
 		pHeader := "Packet Count"
@@ -396,7 +396,6 @@ func (p PoisonPane) View() string {
 		}
 
 		builder.WriteString(underlineStyle.Width(halfW + (maxW % 2)).AlignHorizontal(lipgloss.Left).Render(tHeader))
-		builder.WriteString(btn)
 		builder.WriteString(underlineStyle.Width(halfW).AlignHorizontal(lipgloss.Right).Render(pHeader))
 		builder.WriteString("\n")
 
@@ -408,13 +407,13 @@ func (p PoisonPane) View() string {
 		if p.CaptureDurationInput().Value() != "" {
 			tVal = "remaining time"
 		} else {
-			//tVal = "elapsed time"
 			tVal = p.Stopwatch.View()
 		}
 		pVal := "count of packets"
 
-		halfW = maxW / 2
+		halfW = (maxW / 2) - (lipgloss.Width(btn) / 2)
 		builder.WriteString(lipgloss.NewStyle().AlignHorizontal(lipgloss.Left).Width(halfW + (maxW % 2)).Render(tVal))
+		builder.WriteString(btn)
 		builder.WriteString(lipgloss.NewStyle().AlignHorizontal(lipgloss.Right).Width(halfW).Render(pVal))
 
 	} else if hasErrors {
