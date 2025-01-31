@@ -9,7 +9,7 @@ const (
 	curConvoId               paneHeadingId = "selectedArpTable"
 	logPaneId                paneHeadingId = "logsViewPort"
 	attacksViewPortHeadingId paneHeadingId = "attacksViewPort"
-	poisonPaneHeadingId      paneHeadingId = "poisonPane"
+	poisonPaneHeadingId      paneHeadingId = "convoPoisonPane"
 )
 
 func (p paneHeadingId) String() string {

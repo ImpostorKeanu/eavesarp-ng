@@ -1,6 +1,7 @@
 package eavesarp_ng
 
 import (
+	"fmt"
 	"math"
 	"math/rand"
 	"strings"
@@ -46,7 +47,56 @@ type (
 		// Percentage variability in sleep duration.
 		jitterMax int
 	}
+
+	ConvoLockMap[T any] struct {
+		mu sync.RWMutex
+		m  map[string]*T
+	}
 )
+
+func NewConvoLockMap[T any](m map[string]*T) *ConvoLockMap[T] {
+	return &ConvoLockMap[T]{m: m}
+}
+
+func (l *ConvoLockMap[T]) Get(key string) *T {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.m[key]
+}
+
+func (l *ConvoLockMap[T]) Set(key string, value *T) {
+	l.mu.Lock()
+	l.m[key] = value
+	l.mu.Unlock()
+}
+
+func (l *ConvoLockMap[T]) Delete(key string) {
+	l.mu.Lock()
+	delete(l.m, key)
+	l.mu.Unlock()
+}
+
+func (l *ConvoLockMap[T]) Update(key string, f func(*T)) {
+	l.mu.Lock()
+	f(l.m[key])
+	l.mu.Unlock()
+}
+
+func (l *ConvoLockMap[T]) CGet(sIp, tIp string) *T {
+	return l.Get(FmtConvoKey(sIp, tIp))
+}
+
+func (l *ConvoLockMap[T]) CSet(sIp, tIp string, v *T) {
+	l.Set(FmtConvoKey(sIp, tIp), v)
+}
+
+func (l *ConvoLockMap[T]) CDelete(sIp, tIp string) {
+	l.Delete(FmtConvoKey(sIp, tIp))
+}
+
+func (l *ConvoLockMap[T]) CUpdate(sIp, tIp string, f func(*T)) {
+	l.Update(FmtConvoKey(sIp, tIp), f)
+}
 
 func (s Sleeper) Sleep() {
 	jitter := s.window * (rnd.Float64() * (float64(s.jitterMax) / 100))
@@ -120,4 +170,9 @@ func Longest(s []string) (e string, i int) {
 		}
 	}
 	return
+}
+
+// FmtConvoKey returns the IPs formatted for common lookups.
+func FmtConvoKey(senderIp, targetIp string) string {
+	return fmt.Sprintf("%s:%s", senderIp, targetIp)
 }

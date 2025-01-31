@@ -78,7 +78,7 @@ func runUi(db *sql.DB, startMainSniffer bool) (err error) {
 		convosTable: table.New(
 			table.WithStyles(convosTableStyle),
 			table.WithKeyMap(table.DefaultKeyMap())),
-		curConvoPane:  panes.NewCurConvoPane(db, zone.DefaultManager, poisonButtonId),
+		curConvoPane:  panes.NewCurConvoPane(db, zone.DefaultManager, cfgPoisonButtonId),
 		focusedId:     convosTableId,
 		eWriter:       eventWriter{wC: lCh},
 		mainSniff:     startMainSniffer,
@@ -87,8 +87,8 @@ func runUi(db *sql.DB, startMainSniffer bool) (err error) {
 			Spinner: spinner.Dot,
 			Style:   spinnerStyle,
 		},
-		convosPoisonPanes: PoisoningPanels{},
-		logsPane:          lPane,
+		//convosPoisonPanes: PoisoningPanes{},
+		logsPane: lPane,
 	}
 	ui.convosTable.Focus()
 

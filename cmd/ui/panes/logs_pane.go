@@ -38,7 +38,7 @@ func (l LogsPane) Init() tea.Cmd {
 	}
 }
 
-func (l LogsPane) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (l LogsPane) Update(msg tea.Msg) (LogsPane, tea.Cmd) {
 	var cmd tea.Cmd
 	switch msg := msg.(type) {
 	case tea.KeyMsg:

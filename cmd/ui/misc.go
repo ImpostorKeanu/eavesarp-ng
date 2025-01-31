@@ -1,17 +1,8 @@
 package main
 
 import (
-	"errors"
 	"fmt"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/impostorkeanu/eavesarp-ng/cmd/ui/panes"
-	zone "github.com/lrstanley/bubblezone"
 	"slices"
-)
-
-var (
-	PoisoningPanelAlreadyExistsError = errors.New("poisoning panel already exists")
-	PoisoningPanelDoesntExistError   = errors.New("poisoning panel doesn't exist")
 )
 
 type (
@@ -21,7 +12,6 @@ type (
 	ActiveAttacks struct {
 		attacks []string
 	}
-	PoisoningPanels map[string]*panes.PoisonPane
 )
 
 func (e eventWriter) WriteString(s string) (n int, err error) {
@@ -86,53 +76,4 @@ func (a *ActiveAttacks) Add(senderIp, targetIp string) (err error) {
 // FmtConvoKey returns the IPs formatted for common lookups.
 func FmtConvoKey(senderIp, targetIp string) string {
 	return fmt.Sprintf("%s:%s", senderIp, targetIp)
-}
-
-func (p PoisoningPanels) Exists(senderIp, targetIp string) bool {
-	return p.exists(senderIp, targetIp)
-}
-
-func (p PoisoningPanels) Remove(senderIp, targetIp string) {
-	delete(p, FmtConvoKey(senderIp, targetIp))
-}
-
-func (p PoisoningPanels) Add(senderIp, targetIp string, panel *panes.PoisonPane) (err error) {
-	return p.add(senderIp, targetIp, panel)
-}
-
-func (p PoisoningPanels) Update(senderIp, targetIp string, msg tea.Msg) (cmd tea.Cmd, err error) {
-	if p.exists(senderIp, targetIp) {
-		var buff tea.Msg
-		buff, cmd = p[FmtConvoKey(senderIp, targetIp)].Update(msg)
-		b2 := buff.(panes.PoisonPane)
-		p[FmtConvoKey(senderIp, targetIp)] = &b2
-	} else {
-		err = PoisoningPanelDoesntExistError
-	}
-	return
-}
-
-func (p PoisoningPanels) GetOrCreate(senderIp, targetIp string, headingPaneId string) (panel *panes.PoisonPane) {
-	if panel = p[FmtConvoKey(senderIp, targetIp)]; panel == nil {
-		buff := panes.NewPoison(zone.DefaultManager, headingPaneId)
-		panel = &buff
-		p[FmtConvoKey(senderIp, targetIp)] = panel
-	}
-	return
-}
-
-func (p PoisoningPanels) Get(senderIp, targetIp string) *panes.PoisonPane {
-	return p[FmtConvoKey(senderIp, targetIp)]
-}
-
-func (p PoisoningPanels) exists(senderIp, targetIp string) bool {
-	return p[FmtConvoKey(senderIp, targetIp)] != nil
-}
-
-func (p PoisoningPanels) add(senderIp, targetIp string, panel *panes.PoisonPane) (err error) {
-	if p.exists(senderIp, targetIp) {
-		return PoisoningPanelAlreadyExistsError
-	}
-	p[FmtConvoKey(senderIp, targetIp)] = panel
-	return
 }

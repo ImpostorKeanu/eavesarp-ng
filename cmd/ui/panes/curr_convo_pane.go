@@ -22,18 +22,18 @@ SELECT ip.value AS ip,
        COALESCE(dns_record.kind, '') AS dns_record_kind,
        COALESCE(dns_name.value, '') AS dns_name
 FROM ip
-LEFT JOIN mac ON mac.id = ip.mac_id
-LEFT JOIN dns_record ON dns_record.ip_id = ip.id
-LEFT JOIN dns_name ON dns_name.id = dns_record.dns_name_id
+LEFT JOIN mac ON mac.Id = ip.mac_id
+LEFT JOIN dns_record ON dns_record.ip_id = ip.Id
+LEFT JOIN dns_name ON dns_name.Id = dns_record.dns_name_id
 WHERE ip.value IN (?,?);
 `
 	snacAitmQuery = `
 SELECT snac_ip.value AS snac_ip, upstream_ip.value AS upstream_ip, dns_name.value AS forward_dns_name
 FROM aitm_opt
-INNER JOIN ip AS snac_ip ON snac_ip.id = aitm_opt.snac_target_ip_id
-INNER JOIN ip AS upstream_ip ON upstream_ip.id = aitm_opt.upstream_ip_id
+INNER JOIN ip AS snac_ip ON snac_ip.Id = aitm_opt.snac_target_ip_id
+INNER JOIN ip AS upstream_ip ON upstream_ip.Id = aitm_opt.upstream_ip_id
 LEFT JOIN dns_record ON dns_record.ip_id = aitm_opt.upstream_ip_id AND dns_record.kind = 'a'
-LEFT JOIN dns_name ON dns_name.id = dns_record.dns_name_id
+LEFT JOIN dns_name ON dns_name.Id = dns_record.dns_name_id
 WHERE aitm_opt.snac_target_ip_id = ?;
 `
 )
@@ -92,6 +92,14 @@ type (
 		Err                error
 	}
 )
+
+func (c CurConvoRowDetails) ConvoKey() string {
+	return eavesarp_ng.FmtConvoKey(c.SenderIp, c.TargetIp)
+}
+
+func (c CurConvoRowDetails) IsZero() bool {
+	return c.SenderIp == "" && c.TargetIp == "" && c.ArpCount == 0
+}
 
 func NewCurConvoPane(db *sql.DB, zone *zone.Manager, poisonCfgBtnId string) CurConvoPane {
 	return CurConvoPane{

@@ -32,8 +32,8 @@ const (
 	maxLogCount  = 1000
 	maxLogLength = 2000
 
-	poisonButtonId  = "poisonBtn"
-	poisonCfgPaneId = "poisonCfgPane"
+	cfgPoisonButtonId = "poisonBtn"
+	poisonCfgPaneId   = "poisonCfgPane"
 )
 
 func init() {
@@ -85,7 +85,9 @@ type (
 		// convosPoisonPanes maps ongoing poison configurations
 		// back to specific conversations, allowing us to run
 		// concurrent poisoning attacks.
-		convosPoisonPanes PoisoningPanels
+		//convosPoisonPanes PoisoningPanes
+
+		convoPoisonPane panes.PoisonPane
 		// curConvoRow contains details related to the currently selected
 		// conversation row.
 		curConvoRow panes.CurConvoRowDetails
@@ -145,13 +147,14 @@ func (m model) Init() tea.Cmd {
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+
+	var cmd tea.Cmd
+
 	switch msg := msg.(type) {
 
 	case panes.LogEvent:
 
-		lP, c := m.logsPane.Update(msg)
-		m.logsPane = lP.(panes.LogsPane)
-		return m, c
+		m.logsPane, cmd = m.logsPane.Update(msg)
 
 	case convosTableContent:
 
@@ -167,7 +170,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			//m.doCurrConvoRow()
 		}
 
-		return m, func() tea.Msg {
+		cmd = func() tea.Msg {
 			// Periodically update the ARP table
 			// TODO we may want to make the update frequency configurable
 			time.Sleep(2 * time.Second)
@@ -175,7 +178,29 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return getConvosTableContent(&m)
 		}
 
+	case panes.TickMsg:
+
+		if poisonPane := poisonPaneLm.Get(msg.Id); poisonPane == nil {
+			// NOP for missing poison pane
+		} else if msg.Id != m.curConvoRow.ConvoKey() {
+			// Stop ticks for out of focus stop watches
+			cmd = poisonPane.Stopwatch.Stop()
+		} else {
+			// Update the stopwatch to reflect current tick
+			*poisonPane, cmd = poisonPane.Update(msg)
+		}
+		return m, cmd
+
+	case panes.StartStopMsg:
+
+		if poisonPane := poisonPaneLm.Get(msg.Id); poisonPane != nil {
+			*poisonPane, cmd = poisonPane.Update(msg)
+		}
+		return m, cmd
+
 	case panes.BtnPressMsg:
+
+		poisonPane := poisonPaneLm.Get(m.curConvoRow.ConvoKey())
 
 		switch msg.Event {
 		case panes.StartPoisonEvent:
@@ -185,36 +210,48 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				panic(err)
 			}
 			m.curConvoPane.IsPoisoning = true
+			// Emit the proper msg based on timer type
+			if poisonPane == nil {
+				// TODO
+				panic("failed to find poison pane for conversation")
+			} else if len(poisonPane.CaptureDurationInput().Value()) > 0 {
+				// TODO new timer
+			} else {
+				poisonPane.Stopwatch = panes.NewStopwatch(m.curConvoRow.SenderIp, m.curConvoRow.TargetIp, time.Now(), time.Second)
+				cmd = poisonPane.Stopwatch.Start()
+				// TODO start poisoning
+				//    Be sure to include cmd in a Tea.Sequence
+			}
 		case panes.CancelPoisonEvent:
 			m.activeAttacks.Remove(m.curConvoRow.SenderIp, m.curConvoRow.TargetIp)
-			m.convosPoisonPanes.Remove(m.curConvoRow.SenderIp, m.curConvoRow.TargetIp)
+			//poisonPanes.Remove(m.curConvoRow.SenderIp, m.curConvoRow.TargetIp)
+			poisonPaneLm.CDelete(m.curConvoRow.SenderIp, m.curConvoRow.TargetIp)
 			m.focusedId = convosTableId
 			m.curConvoPane.IsConfiguringPoisoning = false
 			m.curConvoPane.IsPoisoning = false
+			//m.convoPoisonPane = nil
 		case panes.CancelConfigEvent:
-			m.convosPoisonPanes.Remove(m.curConvoRow.SenderIp, m.curConvoRow.TargetIp)
+			//poisonPanes.Remove(m.curConvoRow.SenderIp, m.curConvoRow.TargetIp)
+			poisonPaneLm.CDelete(m.curConvoRow.SenderIp, m.curConvoRow.TargetIp)
 			m.focusedId = logPaneId
 			m.curConvoPane.IsConfiguringPoisoning = false
 			m.curConvoPane.IsPoisoning = false
+			//m.convoPoisonPane = nil
 		default:
 			panic("unknown button press event emitted by poison configuration panel")
 		}
 
-		// TODO handle poison panel button press event
-		return m, nil
+		return m, cmd
 
 	case tea.MouseMsg:
 		// Handle mouse events, like button presses
 
 		if msg.Action != tea.MouseActionRelease || msg.Button != tea.MouseButtonLeft {
 			// We only care about the left mouse button
-			return m, nil
+			break
 		}
 
-		//===========================================
-		// CHANGE FOCUSED PANES BASED ON HEADER CLICK
-		//===========================================
-
+		// Change focus based on header click
 		if m.focusedId != poisonCfgPaneId {
 			if m.focusedId != logPaneId && zone.Get(logPaneId.String()).InBounds(msg) {
 				m.focusedId = logPaneId
@@ -227,22 +264,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		if zone.Get(poisonButtonId).InBounds(msg) {
+		poisonPane := poisonPaneLm.Get(m.curConvoRow.ConvoKey())
+		if zone.Get(cfgPoisonButtonId).InBounds(msg) {
+			// "Configure Poisoning" button has been clicked
 			m.focusedId = poisonCfgPaneId
-			p := m.convosPoisonPanes.GetOrCreate(m.curConvoRow.SenderIp, m.curConvoRow.TargetIp, poisonPaneHeadingId.String())
-			p.SetWidth(m.rightWidth)
-			p.SetHeight(m.bottomRightHeight)
+			if poisonPane == nil {
+				// Create a new poison pane for the conversation
+				buff := panes.NewPoison(zone.DefaultManager, m.curConvoRow.SenderIp, m.curConvoRow.TargetIp)
+				poisonPane = &buff
+				poisonPaneLm.CSet(m.curConvoRow.SenderIp, m.curConvoRow.TargetIp, poisonPane)
+				poisonPane.SetWidth(m.rightWidth)
+				poisonPane.SetHeight(m.bottomRightHeight)
+			}
 			m.curConvoPane.IsConfiguringPoisoning = true
-			return m, nil
 		}
 
-		if m.convosPoisonPanes.Exists(m.curConvoRow.SenderIp, m.curConvoRow.TargetIp) {
-			cmd, err := m.convosPoisonPanes.Update(m.curConvoRow.SenderIp, m.curConvoRow.TargetIp, msg)
-			if err != nil {
-				// TODO
-				panic("failed to update poison panel")
-			}
-			return m, cmd
+		if poisonPane != nil {
+			// Update poison pane button clicks
+			*poisonPane, cmd = poisonPane.Update(msg)
 		}
 
 	case tea.KeyMsg:
@@ -254,9 +293,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 
-		hasPoisonPanel := m.convosPoisonPanes.Exists(m.curConvoRow.SenderIp, m.curConvoRow.TargetIp)
 		handleBottomPanel := func() {
-			if hasPoisonPanel {
+			if poisonPaneLm.Get(m.curConvoRow.ConvoKey()) != nil {
 				m.focusedId = poisonCfgPaneId
 			} else {
 				m.focusedId = logPaneId
@@ -266,10 +304,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch m.focusedId {
 		case convosTableId:
 
-			cmd := func() tea.Msg {
+			cmd = tea.Sequence(func() tea.Msg {
 				m.doCurrConvoRow()
 				return m.curConvoPane.GetContent(m.db, m.curConvoRow)
-			}
+			}, func() tea.Msg {
+				if pp := poisonPaneLm.Get(m.curConvoRow.ConvoKey()); pp != nil && pp.Running() {
+					// TODO the ticker selection logic should probably be moved
+					//   to the PoisonPane itself
+					if pp.CaptureDurationInput().Value() == "" {
+						// Restart the stopwatch ticker
+						return pp.Stopwatch.Start()()
+					} else {
+						// TODO restart timer ticker
+					}
+				}
+				return nil
+			})
 
 			switch msg.String() {
 			case "up", "k":
@@ -321,32 +371,27 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// TODO focus the cur convo table
 			default:
 				// Pass all other keystrokes to the logs pane
-				lP, c := m.logsPane.Update(msg)
-				m.logsPane = lP.(panes.LogsPane)
-				return m, c
+				m.logsPane, cmd = m.logsPane.Update(msg)
 			}
 
 		case poisonCfgPaneId:
 
+			poisonPane := poisonPaneLm.Get(m.curConvoRow.ConvoKey())
+
 			switch msg.String() {
 			case "ctrl+shift+left":
-				if !hasPoisonPanel || m.curConvoPane.IsPoisoning {
+				if poisonPane == nil || m.curConvoPane.IsPoisoning {
 					m.focusedId = convosTableId
 				}
 				m.convosTable.Focus()
 			case "ctrl+shift+down", "ctrl+shift+up":
-				if !hasPoisonPanel || m.curConvoPane.IsPoisoning {
+				if poisonPane == nil || m.curConvoPane.IsPoisoning {
 					m.focusedId = curConvoId
 				}
 			default:
 				// Pass all other keystrokes to the poisoning configuration pane
 				if m.focusedId == poisonCfgPaneId {
-					cmd, err := m.convosPoisonPanes.Update(m.curConvoRow.SenderIp, m.curConvoRow.TargetIp, msg)
-					if err != nil {
-						// TODO
-						panic("failed to update poison panel")
-					}
-					return m, cmd
+					*poisonPane, cmd = poisonPane.Update(msg)
 				}
 			}
 
@@ -358,7 +403,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.curConvoPane.SetColumns(msg.Cols)
 		m.curConvoPane.SetRows(msg.Rows)
 		m.curConvoRow = msg.CurConvoRowDetails
-		return m, nil
 
 	case spinner.TickMsg:
 		// Spin the spinner
@@ -367,9 +411,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// which occurs when no ARP requests have been captured
 
 		if len(m.convosTable.Rows()) == 0 {
-			var cmd tea.Cmd
 			m.convosSpinner, cmd = m.convosSpinner.Update(msg)
-			return m, cmd
 		}
 
 	case tea.WindowSizeMsg:
@@ -404,25 +446,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.logsPane.SetWidth(m.rightWidth)
 		m.logsPane.SetHeight(m.bottomRightHeight)
 
-		for _, p := range m.convosPoisonPanes {
-			p.SetWidth(m.rightWidth)
-			p.SetHeight(m.bottomRightHeight)
-		}
+		// TODO reset width and heights for all poison panes
 
 		m.doCurrConvoRow()
 
 	case eavesarpError:
 
-		return m, tea.Quit
+		cmd = tea.Quit
 
 	}
 
-	return m, nil
+	return m, cmd
 }
 
 func (m model) View() string {
 
-	curPoisonPane := m.convosPoisonPanes.Get(m.curConvoRow.SenderIp, m.curConvoRow.TargetIp)
+	//curPoisonPane := m.getPoisonPane()
+	poisonPane := poisonPaneLm.Get(m.curConvoRow.ConvoKey())
 	hasActiveAttack := m.activeAttacks.Exists(m.curConvoRow.SenderIp, m.curConvoRow.TargetIp)
 	var rightPanes []string
 
@@ -469,18 +509,18 @@ func (m model) View() string {
 	// PREPARE BOTTOM RIGHT PANE
 	//==========================
 
-	if m.curConvoRow.IsSnac && curPoisonPane != nil {
+	if m.curConvoRow.IsSnac && poisonPane != nil {
 
 		//=============================
 		// POISONING CONFIGURATION PANE
 		//=============================
 
 		if m.focusedId == poisonCfgPaneId {
-			curPoisonPane.Style = paneStyle.BorderForeground(selectedPaneBorderColor)
+			poisonPane.Style = paneStyle.BorderForeground(selectedPaneBorderColor)
 		} else {
-			curPoisonPane.Style = paneStyle.BorderForeground(deselectedPaneBorderColor)
+			poisonPane.Style = paneStyle.BorderForeground(deselectedPaneBorderColor)
 		}
-		rightPanes = append(rightPanes, curPoisonPane.View())
+		rightPanes = append(rightPanes, poisonPane.View())
 
 	} else {
 
@@ -526,10 +566,8 @@ func (m *model) doCurrConvoRow() {
 
 	m.curConvoPane.IsPoisoning = m.activeAttacks.Exists(m.curConvoRow.SenderIp, m.curConvoRow.TargetIp)
 	m.curConvoPane.IsSnac = m.curConvoRow.IsSnac
-	m.curConvoPane.IsConfiguringPoisoning = !m.curConvoPane.IsPoisoning &&
-	  m.convosPoisonPanes.Exists(m.curConvoRow.SenderIp, m.curConvoRow.TargetIp)
+	m.curConvoPane.IsConfiguringPoisoning = !m.curConvoPane.IsPoisoning && poisonPaneLm.Get(m.curConvoRow.ConvoKey()) != nil
 
-	return
 }
 
 func (m *model) doConvoTableContent(c convosTableContent) {
