@@ -9,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	eavesarp_ng "github.com/impostorkeanu/eavesarp-ng"
+	"github.com/impostorkeanu/eavesarp-ng/cmd/ui/misc"
 	"github.com/impostorkeanu/eavesarp-ng/cmd/ui/panes"
 	zone "github.com/lrstanley/bubblezone"
 	"github.com/spf13/cobra"
@@ -25,6 +26,7 @@ var (
 		Short: "ARP reconnaissance tool",
 		Run:   start,
 	}
+	poisonPaneLm = eavesarp_ng.NewConvoLockMap(make(map[string]*panes.PoisonPane))
 )
 
 func init() {
@@ -71,24 +73,23 @@ func runUi(db *sql.DB, startMainSniffer bool) (err error) {
 	selectedArpStyles := convosTableStyle
 	selectedArpStyles.Selected = lipgloss.NewStyle()
 
-	lCh, lPane := panes.NewLogsPane(maxLogLength, maxLogCount, logPaneId.String())
+	lCh, lPane := panes.NewLogsPane(misc.MaxLogLength, misc.MaxLogCount, misc.LogPaneId.String())
 
 	ui := model{
 		db: db,
 		convosTable: table.New(
 			table.WithStyles(convosTableStyle),
 			table.WithKeyMap(table.DefaultKeyMap())),
-		curConvoPane:  panes.NewCurConvoPane(db, zone.DefaultManager, cfgPoisonButtonId),
-		focusedId:     convosTableId,
-		eWriter:       eventWriter{wC: lCh},
+		curConvoPane:  panes.NewCurConvoPane(db, zone.DefaultManager, CfgPoisonButtonId),
+		focusedId:     misc.ConvosPaneId,
+		eWriter:       misc.NewEventWriter(lCh),
 		mainSniff:     startMainSniffer,
-		activeAttacks: &ActiveAttacks{},
+		activeAttacks: &misc.ActiveAttacks{},
 		convosSpinner: spinner.Model{
 			Spinner: spinner.Dot,
 			Style:   spinnerStyle,
 		},
-		//convosPoisonPanes: PoisoningPanes{},
-		logsPane: lPane,
+		logPane: lPane,
 	}
 	ui.convosTable.Focus()
 

@@ -1,14 +1,17 @@
 package panes
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"github.com/charmbracelet/bubbles/textinput"
-	"github.com/charmbracelet/bubbles/timer"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/enescakir/emoji"
 	eavesarp_ng "github.com/impostorkeanu/eavesarp-ng"
+	"github.com/impostorkeanu/eavesarp-ng/cmd/ui/misc"
+	"github.com/impostorkeanu/eavesarp-ng/cmd/ui/panes/stopwatch"
+	"github.com/impostorkeanu/eavesarp-ng/cmd/ui/panes/timer"
 	zone "github.com/lrstanley/bubblezone"
 	"os"
 	"path"
@@ -57,25 +60,25 @@ type (
 	//
 	// Use Id to obtain the randomly created identifier.
 	PoisonPane struct {
-		Style lipgloss.Style // Style for the panel element
+		Style     lipgloss.Style  // Style for the panel element
+		Stopwatch stopwatch.Model // For tracking elapsed time
+		Timer     timer.Model     // For tracking how long until completion (capture duration)
 		// Track height and width such that setters must be used.
 		//
 		// These values override those set in styles during render.
-		height, width     int
-		paneHeadingZoneId string            // To make the pane's "Poisoning" heading clickable
-		id                string            // random id created by NewPoison
-		inputs            []textinput.Model // text input fields
-		errors            []string          // error messages for inputs
-		inputFocusIndex   int               // track which input has focus
-		running           bool              // determines if the poisoning attack is running
-		startBtnMark      string            // unique zone mark for this panel's start button
-		cancelBtnMark     string            // unique zone mark for this panel's cancel button
-		zoneM             *zone.Manager     // created by NewPoison
-
-		Stopwatch          Stopwatch // For tracking elapsed time
-		lastSwTick         time.Time
-		Timer              timer.Model // For tracking how long until completion (capture duration)
+		height, width      int
+		paneHeadingZoneId  string            // To make the pane's "Poisoning" heading clickable
+		id                 string            // random id created by NewPoison
+		inputs             []textinput.Model // text input fields
+		errors             []string          // error messages for inputs
+		inputFocusIndex    int               // track which input has focus
+		running            bool              // determines if the poisoning attack is running
+		startBtnMark       string            // unique zone mark for this panel's start button
+		cancelBtnMark      string            // unique zone mark for this panel's cancel button
+		zoneM              *zone.Manager     // created by NewPoison
 		senderIp, targetIp string
+		packetCount        int
+		CancelPoisonCtx    context.CancelFunc
 	}
 
 	// BtnPressMsg indicates a button has been pressed in a PoisonPane.
@@ -89,6 +92,13 @@ type (
 	}
 
 	validator func(string) error
+
+	PacketCountMessage struct {
+		Id    string
+		Count int
+		Ctx   context.Context
+		Ew    *misc.EventWriter
+	}
 )
 
 func (p PoisonPane) ConvoKey() string {
@@ -208,11 +218,24 @@ func (p PoisonPane) FormData() FormData {
 	}
 }
 
-func (p PoisonPane) Update(msg tea.Msg) (PoisonPane, tea.Cmd) {
+func (p PoisonPane) Update(msg tea.Msg) (_ PoisonPane, cmd tea.Cmd) {
 	switch msg := msg.(type) {
-	case TickMsg, StartStopMsg:
+	case PacketCountMessage:
 
-		var cmd tea.Cmd
+		p.packetCount = msg.Count
+		return p, cmd
+
+	case timer.TimeoutMsg:
+
+		// TODO handle timer.TimedoutMsg
+
+	case timer.TickMsg, timer.StartStopMsg:
+
+		p.Timer, cmd = p.Timer.Update(msg)
+		return p, cmd
+
+	case stopwatch.TickMsg, stopwatch.StartStopMsg:
+
 		p.Stopwatch, cmd = p.Stopwatch.Update(msg)
 		return p, cmd
 
@@ -405,11 +428,11 @@ func (p PoisonPane) View() string {
 
 		var tVal string
 		if p.CaptureDurationInput().Value() != "" {
-			tVal = "remaining time"
+			tVal = p.Timer.View()
 		} else {
 			tVal = p.Stopwatch.View()
 		}
-		pVal := "count of packets"
+		pVal := fmt.Sprintf("%d", p.packetCount)
 
 		halfW = (maxW / 2) - (lipgloss.Width(btn) / 2)
 		builder.WriteString(lipgloss.NewStyle().AlignHorizontal(lipgloss.Left).Width(halfW + (maxW % 2)).Render(tVal))

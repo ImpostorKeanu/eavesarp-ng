@@ -68,7 +68,7 @@ func (b button) View() string {
 func main() {
 	zone.NewGlobal()
 	bR := buttonRow{
-		[]button{{text: "A"}, {text: "B"}, {text: "C"}},
+		[]button{{text: "A"}, {text: "B"}, {text: "c"}},
 		//[]button{{text: "A"}},
 	}
 	if _, err := tea.NewProgram(bR, tea.WithAltScreen(), tea.WithMouseCellMotion()).Run(); err != nil {

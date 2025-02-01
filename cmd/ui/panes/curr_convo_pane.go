@@ -114,12 +114,11 @@ func (c CurConvoPane) Init() tea.Cmd {
 	return nil
 }
 
-func (c *CurConvoPane) ResetTable() {
+func (c *CurConvoPane) GotoTop() {
 	c.tbl.GotoTop()
 }
 
-func (c CurConvoPane) Update(msg tea.Msg) (CurConvoPane, tea.Cmd) {
-	var cmd tea.Cmd
+func (c CurConvoPane) Update(msg tea.Msg) (_ CurConvoPane, cmd tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch msg.String() {
@@ -127,19 +126,13 @@ func (c CurConvoPane) Update(msg tea.Msg) (CurConvoPane, tea.Cmd) {
 			if c.tbl.Cursor() == 0 {
 				c.tbl.GotoBottom()
 			} else {
-				c.tbl, _ = c.tbl.Update(msg)
-			}
-			cmd = func() tea.Msg {
-				return c.GetContent(c.db, c.curConvoRow)
+				c.tbl, cmd = c.tbl.Update(msg)
 			}
 		case "down", "j":
 			if c.tbl.Cursor() == len(c.tbl.Rows())-1 {
 				c.tbl.GotoTop()
 			} else {
-				c.tbl, _ = c.tbl.Update(msg)
-			}
-			cmd = func() tea.Msg {
-				return c.GetContent(c.db, c.curConvoRow)
+				c.tbl, cmd = c.tbl.Update(msg)
 			}
 		}
 	}
@@ -362,6 +355,7 @@ func (c CurConvoPane) GetContent(db *sql.DB, curConvoRow CurConvoRowDetails) tea
 		longestDnsRow = len(dnsRows[1])
 	}
 
+	// Add DNS records to content
 	for i := 0; i < longestDnsRow; i++ {
 		var sender, target, head string
 		if i == 0 {
