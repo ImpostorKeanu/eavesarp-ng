@@ -2,7 +2,6 @@ package misc
 
 import (
 	"fmt"
-	eavesarp_ng "github.com/impostorkeanu/eavesarp-ng"
 	"slices"
 	"sync"
 )
@@ -48,21 +47,20 @@ type ActiveAttacks struct {
 	attacks []string
 }
 
-func (a *ActiveAttacks) Exists(senderIp, targetIp string) bool {
+func (a *ActiveAttacks) Exists(convoKey string) bool {
 	a.m.RLock()
 	defer a.m.RUnlock()
-	return slices.Contains(a.attacks, eavesarp_ng.FmtConvoKey(senderIp, targetIp))
+	return slices.Contains(a.attacks, convoKey)
 }
 
-func (a *ActiveAttacks) Remove(senderIp, targetIp string) {
+func (a *ActiveAttacks) Remove(convoKey string) {
 	a.m.Lock()
 	defer a.m.Unlock()
 	l := len(a.attacks)
 	if l == 0 {
 		return
 	}
-	s := eavesarp_ng.FmtConvoKey(senderIp, targetIp)
-	if ind := slices.Index(a.attacks, s); ind != -1 {
+	if ind := slices.Index(a.attacks, convoKey); ind != -1 {
 		if l == 1 {
 			a.attacks = make([]string, 0)
 			return
@@ -82,14 +80,13 @@ func (a *ActiveAttacks) Remove(senderIp, targetIp string) {
 	}
 }
 
-func (a *ActiveAttacks) Add(senderIp, targetIp string) (err error) {
+func (a *ActiveAttacks) Add(convoKey string) (err error) {
 	a.m.Lock()
 	defer a.m.Unlock()
-	s := eavesarp_ng.FmtConvoKey(senderIp, targetIp)
-	if !slices.Contains(a.attacks, s) {
-		a.attacks = append(a.attacks, s)
+	if !slices.Contains(a.attacks, convoKey) {
+		a.attacks = append(a.attacks, convoKey)
 	} else {
-		err = fmt.Errorf("%s already exists", s)
+		err = fmt.Errorf("already exists", convoKey)
 	}
 	return
 }

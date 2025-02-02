@@ -80,16 +80,17 @@ func runUi(db *sql.DB, startMainSniffer bool) (err error) {
 		convosTable: table.New(
 			table.WithStyles(convosTableStyle),
 			table.WithKeyMap(table.DefaultKeyMap())),
-		curConvoPane:  panes.NewCurConvoPane(db, zone.DefaultManager, CfgPoisonButtonId),
-		focusedId:     misc.ConvosPaneId,
-		eWriter:       misc.NewEventWriter(lCh),
-		mainSniff:     startMainSniffer,
-		activeAttacks: &misc.ActiveAttacks{},
+		convoPane: panes.NewCurConvoPane(db, zone.DefaultManager, CfgPoisonButtonId),
+		focusedId: misc.ConvosPaneId,
+		eWriter:   misc.NewEventWriter(lCh),
+		mainSniff: startMainSniffer,
 		convosSpinner: spinner.Model{
 			Spinner: spinner.Dot,
 			Style:   spinnerStyle,
 		},
-		logPane: lPane,
+		logPane:            lPane,
+		senderPoisonedChar: string(senderPoisonedChar),
+		snacChar:           string(snacChar),
 	}
 	ui.convosTable.Focus()
 

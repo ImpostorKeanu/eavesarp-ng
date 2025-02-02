@@ -1,7 +1,6 @@
 package stopwatch
 
 import (
-	"fmt"
 	tea "github.com/charmbracelet/bubbletea"
 	"time"
 )
@@ -36,9 +35,9 @@ type (
 	}
 )
 
-func NewStopwatch(srcIp, targetIp string, last time.Time, interval time.Duration) Model {
+func NewStopwatch(id string, last time.Time, interval time.Duration) Model {
 	return Model{
-		id:       fmt.Sprintf("%s:%s", srcIp, targetIp),
+		id:       id,
 		running:  false,
 		last:     last,
 		interval: interval,

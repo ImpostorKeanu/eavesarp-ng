@@ -44,14 +44,23 @@ const (
 )
 
 const (
-	startBtnMark      = "startBtn"
-	cancelBtnMark     = "cancelBtn"
-	CancelConfigEvent = "CancelConfigEvent"
-	CancelPoisonEvent = "CancelPoisonEvent"
-	StartPoisonEvent  = "StartPoisonEvent"
+	startBtnMark         = "startBtn"
+	cancelBtnMark        = "cancelBtn"
+	CancelConfigBtnEvent = "CancelConfigBtnEvent"
+	CancelPoisonBtnEvent = "CancelPoisonBtnEvent"
+	StartPoisonBtnEvent  = "StartPoisonBtnEvent"
+)
+
+const (
+	doneKey   = poisoningStatusCtxKey("done")
+	chKey     = poisoningStatusCtxKey("ch")
+	cancelKey = poisoningStatusCtxKey("cancel")
 )
 
 type (
+	// poisoningStatusCtxKey are keys used to set and retrieve values
+	// on the context of PoisoningStatusMsg.
+	poisoningStatusCtxKey string
 	// PoisonPane is the poisoning configuration form presented
 	// after the user has elected to begin poisoning a SNAC conversation.
 	//
@@ -78,7 +87,8 @@ type (
 		zoneM              *zone.Manager     // created by NewPoison
 		senderIp, targetIp string
 		packetCount        int
-		CancelPoisonCtx    context.CancelFunc
+		cancelPoisonCtx    context.CancelFunc
+		eWriter            *misc.EventWriter
 	}
 
 	// BtnPressMsg indicates a button has been pressed in a PoisonPane.
@@ -93,19 +103,23 @@ type (
 
 	validator func(string) error
 
-	PacketCountMessage struct {
-		Id    string
-		Count int
-		Ctx   context.Context
-		Ew    *misc.EventWriter
+	PoisoningStatusMsg struct {
+		Id          string
+		PacketCount int
+		ctx         context.Context
+		ew          *misc.EventWriter
 	}
 )
+
+func (p PoisoningStatusMsg) Done() bool {
+	return p.ctx.Value(doneKey) != nil
+}
 
 func (p PoisonPane) ConvoKey() string {
 	return eavesarp_ng.FmtConvoKey(p.senderIp, p.targetIp)
 }
 
-func NewPoison(z *zone.Manager, senderIp, targetIp string) PoisonPane {
+func NewPoison(z *zone.Manager, senderIp, targetIp string, eW *misc.EventWriter) PoisonPane {
 	id := z.NewPrefix()
 	return PoisonPane{
 		zoneM:         z,
@@ -115,6 +129,7 @@ func NewPoison(z *zone.Manager, senderIp, targetIp string) PoisonPane {
 		cancelBtnMark: fmt.Sprintf("%s-%s", id, cancelBtnMark),
 		senderIp:      senderIp,
 		targetIp:      targetIp,
+		eWriter:       eW,
 	}
 }
 
@@ -220,9 +235,14 @@ func (p PoisonPane) FormData() FormData {
 
 func (p PoisonPane) Update(msg tea.Msg) (_ PoisonPane, cmd tea.Cmd) {
 	switch msg := msg.(type) {
-	case PacketCountMessage:
+	case PoisoningStatusMsg:
 
-		p.packetCount = msg.Count
+		if msg.ctx.Value(doneKey) != nil {
+			return p, cmd
+		}
+
+		p.packetCount = msg.PacketCount
+		cmd = handlePoisoningStatusMsg(msg)
 		return p, cmd
 
 	case timer.TimeoutMsg:
@@ -255,7 +275,7 @@ func (p PoisonPane) Update(msg tea.Msg) (_ PoisonPane, cmd tea.Cmd) {
 					return p, func() tea.Msg {
 						// Notify that poisoning should be canceled
 						return BtnPressMsg{
-							Event:    CancelPoisonEvent,
+							Event:    CancelPoisonBtnEvent,
 							FormData: p.FormData(),
 						}
 					}
@@ -267,7 +287,7 @@ func (p PoisonPane) Update(msg tea.Msg) (_ PoisonPane, cmd tea.Cmd) {
 				return p, func() tea.Msg {
 					// Notify that configuration should stop
 					return BtnPressMsg{
-						Event:    CancelConfigEvent,
+						Event:    CancelConfigBtnEvent,
 						FormData: p.FormData(),
 					}
 				}
@@ -281,7 +301,7 @@ func (p PoisonPane) Update(msg tea.Msg) (_ PoisonPane, cmd tea.Cmd) {
 				return p, func() tea.Msg {
 					// Notify that poisoning should start
 					return BtnPressMsg{
-						Event:    StartPoisonEvent,
+						Event:    StartPoisonBtnEvent,
 						FormData: p.FormData(),
 					}
 				}
@@ -289,6 +309,7 @@ func (p PoisonPane) Update(msg tea.Msg) (_ PoisonPane, cmd tea.Cmd) {
 		}
 
 	case tea.KeyMsg:
+
 		switch msg.String() {
 		case "tab", "shift+tab":
 
@@ -329,10 +350,87 @@ func (p PoisonPane) Update(msg tea.Msg) (_ PoisonPane, cmd tea.Cmd) {
 			}
 
 			return p, tea.Batch(cmds...)
+
 		}
+
+	case BtnPressMsg:
+
+		cmd = p.handleBtnPressMsg(msg)
+		return p, cmd
+
 	}
 
 	return p, p.updateInputs(msg)
+}
+
+func (p *PoisonPane) handleBtnPressMsg(msg BtnPressMsg) (cmd tea.Cmd) {
+	switch msg.Event {
+	case StartPoisonBtnEvent:
+
+		// TODO this needs to be refactored
+		var ctx context.Context
+		var startCmd tea.Cmd
+		if len(p.CaptureDurationInput().Value()) > 0 {
+			// duration value was validated by poison pane
+			d, _ := time.ParseDuration(p.CaptureDurationInput().Value())
+			p.Timer = timer.New(p.ConvoKey(), d)
+			ctx, p.cancelPoisonCtx = context.WithTimeout(context.Background(), d)
+			startCmd = p.Timer.Start()
+		} else {
+			p.Stopwatch = stopwatch.NewStopwatch(p.ConvoKey(), time.Now(), time.Second)
+			ctx, p.cancelPoisonCtx = context.WithCancel(context.Background())
+			startCmd = p.Stopwatch.Start()
+		}
+
+		ctx = context.WithValue(ctx, chKey, make(chan int))
+		ctx = context.WithValue(ctx, cancelKey, p.cancelPoisonCtx)
+		cmd = tea.Batch(
+			startCmd,
+			// Start watching for reports of packet counts
+			func() tea.Msg {
+				return PoisoningStatusMsg{
+					Id:          p.ConvoKey(),
+					PacketCount: 0,
+					ctx:         ctx,
+					ew:          p.eWriter,
+				}
+			},
+			// Start poisoning attack
+			func() tea.Msg {
+				// TODO start poisoning here
+				// currently just simulating packets by sending to the channel
+				ch := ctx.Value(chKey).(chan int)
+			outer:
+				for i := 0; i < 100; i++ {
+					select {
+					case <-ctx.Done():
+						break outer
+					default:
+						ch <- i
+					}
+					time.Sleep(time.Second)
+				}
+				return nil
+			})
+
+	case CancelPoisonBtnEvent:
+
+		if p.cancelPoisonCtx != nil {
+			p.cancelPoisonCtx()
+		}
+
+	case CancelConfigBtnEvent:
+
+		// NOP
+
+	default:
+
+		// TODO
+		panic("unknown button press event emitted by poison configuration panel")
+
+	}
+
+	return
 }
 
 func (p *PoisonPane) updateInputs(msg tea.Msg) tea.Cmd {
@@ -458,4 +556,29 @@ func (p PoisonPane) View() string {
 	}
 
 	return p.Style.Width(p.width).Height(p.height).Render(centerStyle.Render(p.zoneM.Mark(p.paneHeadingZoneId, heading)), builder.String())
+}
+
+func handlePoisoningStatusMsg(msg PoisoningStatusMsg) tea.Cmd {
+	return func() tea.Msg {
+		ch := msg.ctx.Value(chKey).(chan int)
+		select {
+		case <-msg.ctx.Done():
+			msg.ctx = context.WithValue(msg.ctx, doneKey, true)
+			close(ch)
+			msg.ctx.Value(cancelKey).(context.CancelFunc)()
+			if err := msg.ctx.Err(); errors.Is(err, context.Canceled) {
+				msg.ew.WriteStringf("poisoning canceled: %s", msg.Id)
+			} else if errors.Is(err, context.DeadlineExceeded) {
+				msg.ew.WriteStringf("done poisoning: %s", msg.Id)
+			} else {
+				msg.ew.WriteStringf("unhandled exception while poisoning: %s", err.Error())
+			}
+			// Message indicating end of poisoning
+			return PoisoningStatusMsg{Id: msg.Id, PacketCount: 0, ew: msg.ew, ctx: msg.ctx}
+		case count := <-ch:
+			// Message indicating the current count of captured packets
+			return PoisoningStatusMsg{Id: msg.Id, PacketCount: count, ctx: msg.ctx, ew: msg.ew,
+			}
+		}
+	}
 }

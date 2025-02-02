@@ -3,9 +3,7 @@ package main
 import (
 	"fmt"
 	"github.com/charmbracelet/bubbles/table"
-	"github.com/enescakir/emoji"
 	eavesarp_ng "github.com/impostorkeanu/eavesarp-ng"
-	"strings"
 )
 
 const (
@@ -54,205 +52,11 @@ WHERE aitm_opt.snac_target_ip_id = ?;
 
 type (
 	convosTableContent struct {
-		cols       []table.Column
-		rows       []table.Row
-		rowSenders map[int]string
-		err        error
-	}
-
-	curConvoTableData struct {
 		cols []table.Column
 		rows []table.Row
 		err  error
 	}
 )
-
-func getSelectedConvoTableContent(m *model) (content curConvoTableData) {
-
-	rows, err := m.db.Query(convoTableSelectionQuery, m.curConvoRow.SenderIp, m.curConvoRow.TargetIp)
-	if err != nil {
-		content.err = fmt.Errorf("failed to get selected arp row content: %w", err)
-		return
-	}
-
-	//=====================================
-	// RETRIEVE SENDER AND TARGET IP FIELDS
-	//=====================================
-
-	var sender, target *eavesarp_ng.Ip
-
-	for rows.Next() {
-
-		var ip, ipDiscMeth, mac, macDiscMeth, dnsRecordKind, dnsName string
-		var ptrResolved bool
-		if err = rows.Scan(&ip, &ipDiscMeth, &ptrResolved, &mac, &macDiscMeth, &dnsRecordKind, &dnsName); err != nil {
-			content.err = fmt.Errorf("failed to read row: %w", err)
-			return
-		}
-
-		if ip == "" {
-			continue
-		}
-
-		var ipObj *eavesarp_ng.Ip
-		if ip == m.curConvoRow.SenderIp {
-
-			if sender == nil {
-
-				//======================
-				// INITIALIZE THE SENDER
-				//======================
-
-				ipObj = &eavesarp_ng.Ip{
-					Value: ip,
-					Mac: &eavesarp_ng.Mac{
-						Value:      mac,
-						DiscMethod: eavesarp_ng.DiscMethod(macDiscMeth),
-					},
-					PtrResolved: ptrResolved,
-					DiscMethod:  eavesarp_ng.DiscMethod(ipDiscMeth),
-				}
-				sender = ipObj
-
-			} else {
-				ipObj = sender
-			}
-
-		} else if ip == m.curConvoRow.TargetIp {
-
-			if target == nil {
-
-				//======================
-				// INITIALIZE THE TARGET
-				//======================
-
-				var m *eavesarp_ng.Mac
-				if mac != "" {
-					m = &eavesarp_ng.Mac{
-						Value:      mac,
-						DiscMethod: eavesarp_ng.DiscMethod(macDiscMeth),
-					}
-				}
-				ipObj = &eavesarp_ng.Ip{
-					Value:       ip,
-					Mac:         m,
-					DiscMethod:  eavesarp_ng.DiscMethod(ipDiscMeth),
-					PtrResolved: ptrResolved,
-				}
-				target = ipObj
-
-			} else {
-				ipObj = target
-			}
-
-		} else {
-			continue
-		}
-
-		if dnsRecordKind != "" {
-			dnsFields := eavesarp_ng.DnsRecordFields{
-				Ip:   *ipObj,
-				Name: eavesarp_ng.DnsName{Id: 0, IsNew: false, Value: dnsName},
-			}
-			switch dnsRecordKind {
-			case "a":
-				target.ARecords = append(target.ARecords, eavesarp_ng.ARecord{DnsRecordFields: dnsFields})
-			case "ptr":
-				target.PtrRecords = append(target.PtrRecords, eavesarp_ng.PtrRecord{DnsRecordFields: dnsFields})
-			default:
-				content.err = fmt.Errorf("unsupported dns record kind: %s", dnsRecordKind)
-				return
-			}
-		}
-	}
-
-	if err = rows.Close(); err != nil {
-		content.err = fmt.Errorf("failed to close rows after querying for selected arp row content: %w", err)
-		return
-	}
-
-	// TODO this should probably be handled more gracefully but it's technically
-	//   a fatal error that the user can't influence
-	if sender == nil {
-		panic("no sender for selected arp row found")
-	} else if target == nil {
-		panic("no target for selected row found")
-	}
-
-	//===================================
-	// RETRIEVE TARGET AITM OPPORTUNITIES
-	//===================================
-
-	var aitmValue string
-	rows, err = m.db.Query(snacAitmQuery, sender.Value)
-	if err != nil {
-		content.err = fmt.Errorf("failed to query aitm row content for selected arp: %w", err)
-		return
-	}
-
-	for rows.Next() {
-		var snacIp, upstreamIp, forwardDnsName string
-		if err = rows.Scan(&snacIp, &upstreamIp, &forwardDnsName); err != nil {
-			content.err = fmt.Errorf("failed to read aitm row: %w", err)
-			return
-		}
-		aitmValue += fmt.Sprintf("%s (%s)\n", upstreamIp, forwardDnsName)
-	}
-	aitmValue = strings.TrimSpace(aitmValue)
-
-	if err = rows.Close(); err != nil {
-		content.err = fmt.Errorf("failed to close rows after querying aitmValue for selected arp row: %w", err)
-		return
-	}
-
-	//===================
-	// PREPARE TABLE ROWS
-	//===================
-
-	// Cells for DNS values
-	var senderDnsCell, targetDnsCell string
-
-	// sender DNS values
-	for _, r := range sender.PtrRecords {
-		senderDnsCell += fmt.Sprintf("%s (%s)", r.Name.Value, "ptr")
-	}
-	for _, r := range sender.ARecords {
-		senderDnsCell += fmt.Sprintf("%s (%s)", r.Name.Value, "a")
-	}
-
-	// target DNS values
-	for _, r := range target.PtrRecords {
-		targetDnsCell += fmt.Sprintf("%s (%s)", r.Name.Value, "ptr")
-	}
-	for _, r := range target.ARecords {
-		targetDnsCell += fmt.Sprintf("%s (%s)", r.Name.Value, "a")
-	}
-
-	eavesarp_ng.EmptyOrDefault(&senderDnsCell, "---")
-	eavesarp_ng.EmptyOrDefault(&targetDnsCell, "---")
-	eavesarp_ng.EmptyOrDefault(&aitmValue, "---")
-
-	content.rows = append(content.rows,
-		table.Row{"IP", sender.Value, target.Value},
-		table.Row{"MAC", sender.Mac.Value, "---"},
-		table.Row{"DNS", senderDnsCell, targetDnsCell},
-		table.Row{"AITM", "---", aitmValue},
-		table.Row{"Ports", "---", "---"})
-
-	if target.Mac != nil {
-		content.rows[1][2] = target.Mac.Value
-	}
-
-	// TODO Why is this math for the sender and target columns so wonky?
-	//  Just can't seem to get the table to align correctly! wtf!?
-	w := (m.rightWidth - (5 + 6)) / 2
-	content.cols = append(content.cols,
-		table.Column{Title: "", Width: 5},
-		table.Column{Title: "Sender", Width: w},
-		table.Column{Title: "Target", Width: w})
-
-	return
-}
 
 func getConvosTableContent(m *model) (content convosTableContent) {
 
@@ -293,11 +97,8 @@ func getConvosTableContent(m *model) (content convosTableContent) {
 		}
 
 		var senderPoisoned string
-		if is := m.activeAttacks.Exists(sender.Value, target.Value); is {
-			senderPoisoned = string(emoji.FortuneCookie)
-			//senderPoisoned = string(emoji.GreenCircle)
-			//senderPoisoned = string(emoji.Skull)
-			//senderPoisoned = string(emoji.SkullAndCrossbones)
+		if is := activeAttacks.Exists(eavesarp_ng.FmtConvoKey(sender.Value, target.Value)); is {
+			senderPoisoned = m.senderPoisonedChar
 		}
 
 		// Determine if the SNAC column should be displayed
@@ -322,30 +123,13 @@ func getConvosTableContent(m *model) (content convosTableContent) {
 		tRow := table.Row{fmt.Sprintf("%d", rowInd)}
 
 		if hasSnac {
-			tRow = append(tRow, string(emoji.TakeoutBox), senderPoisoned)
-			//tRow = append(tRow, string(emoji.OrangeCircle), senderPoisoned)
-			//tRow = append(tRow, string(emoji.Dizzy), senderPoisoned)
-			//tRow = append(tRow, string(emoji.MagnifyingGlassTiltedRight), senderPoisoned)
-			//tRow = append(tRow, string(emoji.SatelliteAntenna), senderPoisoned)
-			//tRow = append(tRow, string(emoji.Collision), senderPoisoned)
-			//tRow = append(tRow, string(emoji.DirectHit), senderPoisoned)
+			tRow = append(tRow, m.snacChar, senderPoisoned)
 		} else {
 			tRow = append(tRow, "", senderPoisoned)
 		}
 
 		tRow = append(tRow, sender.Value)
 		content.rows = append(content.rows, append(tRow, target.Value, arpCountValue))
-	}
-
-	content.rowSenders = make(map[int]string)
-	var lastSender string
-	for i, r := range content.rows {
-		content.rowSenders[i] = content.rows[i][3]
-		if r[3] == lastSender {
-			content.rows[i][3] = strings.Repeat(" ", len(lastSender)-1) + "↖"
-		} else {
-			lastSender = r[3]
-		}
 	}
 
 	//======================

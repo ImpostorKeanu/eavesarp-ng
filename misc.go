@@ -1,6 +1,7 @@
 package eavesarp_ng
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"math/rand"
@@ -175,4 +176,14 @@ func Longest(s []string) (e string, i int) {
 // FmtConvoKey returns the IPs formatted for common lookups.
 func FmtConvoKey(senderIp, targetIp string) string {
 	return fmt.Sprintf("%s:%s", senderIp, targetIp)
+}
+
+func SplitConvoKey(v string) (senderIp string, targetIp string, err error) {
+	s := strings.Split(v, ":")
+	if len(v) >= 2 {
+		senderIp, targetIp = s[0], s[1]
+	} else {
+		err = errors.New("poorly formatted value supplied")
+	}
+	return
 }
