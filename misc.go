@@ -26,7 +26,7 @@ type (
 		mu    sync.RWMutex
 	}
 
-	// Sleeper is used to sleep a thread for a period of time.
+	// Sleeper is used to sleep a routine for a period of time.
 	// This type is used to throttle ARP and DNS name resolution
 	// requests/responses.
 	//

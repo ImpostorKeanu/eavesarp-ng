@@ -160,9 +160,10 @@ func (c CurConvoPane) View() string {
 		for _, r := range c.tbl.Rows() {
 			if len(r[0]) > c.tbl.Columns()[0].Width {
 				c.tbl.Columns()[0].Width = len(r[0])
-			} else if r[0] == "" {
-				break
 			}
+			//} else if r[0] == "" {
+			//	break
+			//}
 		}
 
 		// Calculate width for remaining columns
@@ -208,7 +209,9 @@ func (c CurConvoPane) GetContent(db *sql.DB, curConvoRow CurConvoRowDetails) tea
 
 	content := CurConvoTableData{
 		CurConvoRowDetails: curConvoRow,
+		Cols:               []table.Column{{Title: ""}, {Title: "Sender"}, {Title: "Target"}},
 	}
+
 	rows, err := db.Query(convoTableSelectionQuery, curConvoRow.SenderIp, curConvoRow.TargetIp)
 	if err != nil {
 		content.Err = fmt.Errorf("failed to get selected arp row content: %w", err)
@@ -334,6 +337,26 @@ func (c CurConvoPane) GetContent(db *sql.DB, curConvoRow CurConvoRowDetails) tea
 	// Cells for DNS values
 	dnsRows := make([][]string, 2)
 
+	// TODO delete this dummy content
+	for i := 0; i < 5; i++ {
+		sender.PtrRecords = append(sender.PtrRecords, eavesarp_ng.PtrRecord{
+			DnsRecordFields: eavesarp_ng.DnsRecordFields{
+				Ip:   *sender,
+				Name: eavesarp_ng.DnsName{Value: fmt.Sprintf("sender-%d.test.com", i)}}})
+		target.PtrRecords = append(target.PtrRecords, eavesarp_ng.PtrRecord{
+			DnsRecordFields: eavesarp_ng.DnsRecordFields{
+				Ip:   *target,
+				Name: eavesarp_ng.DnsName{Value: fmt.Sprintf("target-%d.test.com", i)}}})
+		sender.ARecords = append(sender.ARecords, eavesarp_ng.ARecord{
+			DnsRecordFields: eavesarp_ng.DnsRecordFields{
+				Ip:   *sender,
+				Name: eavesarp_ng.DnsName{Value: fmt.Sprintf("sender-%d.test.com", i)}}})
+		target.ARecords = append(target.ARecords, eavesarp_ng.ARecord{
+			DnsRecordFields: eavesarp_ng.DnsRecordFields{
+				Ip:   *sender,
+				Name: eavesarp_ng.DnsName{Value: fmt.Sprintf("target-%d.test.com", i)}}})
+	}
+
 	// sender DNS values
 	for _, r := range sender.PtrRecords {
 		dnsRows[0] = append(dnsRows[0], fmt.Sprintf("%s (%s)", r.Name.Value, "ptr"))
@@ -380,14 +403,14 @@ func (c CurConvoPane) GetContent(db *sql.DB, curConvoRow CurConvoRowDetails) tea
 		return content
 	}
 
-	head := "AITM"
+	head := "AITM Opts"
 	for rows.Next() {
 		var snacIp, upstreamIp, forwardDnsName string
 		if err = rows.Scan(&snacIp, &upstreamIp, &forwardDnsName); err != nil {
 			content.Err = fmt.Errorf("failed to read aitm row: %w", err)
 			return content
 		}
-		content.Rows = append(content.Rows, table.Row{head, "", fmt.Sprintf("%s (%s)", upstreamIp, forwardDnsName)})
+		content.Rows = append(content.Rows, table.Row{head, fmt.Sprintf("%s (%s)", upstreamIp, forwardDnsName), ""})
 		if head != "" {
 			head = ""
 		}
@@ -398,11 +421,18 @@ func (c CurConvoPane) GetContent(db *sql.DB, curConvoRow CurConvoRowDetails) tea
 		return content
 	}
 
+	// TODO delete this dummy content
+	head = "AITM Opts"
+	for i := 0; i < 10; i++ {
+		content.Rows = append(content.Rows, table.Row{head, fmt.Sprintf("%s%d (%d-%s)", "192.168.1.", i, i, "aitm-target.test.com"), ""})
+		head = ""
+	}
+
 	//=============
 	// HANDLE PORTS
 	//=============
 
-	//TODO query for ports
+	// TODO query for ports
 
 	var dbPorts []eavesarp_ng.Port
 	for n := 0; n < 100; n++ {
@@ -482,11 +512,6 @@ func (c CurConvoPane) GetContent(db *sql.DB, curConvoRow CurConvoRowDetails) tea
 		// initialize a new row
 		curRow = table.Row{""}
 	}
-
-	content.Cols = append(content.Cols,
-		table.Column{Title: ""},
-		table.Column{Title: "Sender"},
-		table.Column{Title: "Target"})
 
 	return content
 }
