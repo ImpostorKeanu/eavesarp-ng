@@ -273,6 +273,9 @@ func (m model) Update(msg tea.Msg) (_ tea.Model, cmd tea.Cmd) {
 		m.convoPane.SetColumns(msg.Cols)
 		m.convoPane.SetRows(msg.Rows)
 		m.curConvoRow = msg.CurConvoRowDetails
+		if msg.Err != nil {
+			m.eWriter.WriteString(msg.Err.Error())
+		}
 
 	case spinner.TickMsg:
 		// Spin the spinner

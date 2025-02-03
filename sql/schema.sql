@@ -141,12 +141,13 @@ CREATE TABLE IF NOT EXISTS attack(
     target_ip_id INTEGER NOT NULL REFERENCES ip ON DELETE CASCADE);
 
 CREATE TABLE IF NOT EXISTS port(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     number INTEGER NOT NULL CHECK(proto >= 0 AND proto <= 65535),
     proto TEXT NOT NULL CHECK (
         proto == 'tcp' OR
         proto == 'udp' OR
         proto == 'sctp'),
-    CONSTRAINT port_comp_key PRIMARY KEY (number, proto));
+    CONSTRAINT port_comp_key UNIQUE (number, proto));
 
 CREATE TABLE IF NOT EXISTS attack_port(
     attack_id INTEGER NOT NULL REFERENCES attack ON DELETE CASCADE,

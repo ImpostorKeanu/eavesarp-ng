@@ -27,6 +27,13 @@ LEFT JOIN dns_record ON dns_record.ip_id = ip.Id
 LEFT JOIN dns_name ON dns_name.Id = dns_record.dns_name_id
 WHERE ip.value IN (?,?);
 `
+	attackPortsQuery = `
+SELECT port.proto AS protocol, port.number AS number FROM attack
+INNER JOIN attack_port ON attack_port.attack_id = attack.id
+INNER JOIN port ON port.id = attack_port.port_id
+WHERE attack.sender_ip_id = ? AND attack.target_ip_id = ?
+ORDER BY port.number;
+`
 	snacAitmQuery = `
 SELECT snac_ip.value AS snac_ip, upstream_ip.value AS upstream_ip, dns_name.value AS forward_dns_name
 FROM aitm_opt
@@ -205,7 +212,7 @@ func (c *CurConvoPane) SetRows(rows []table.Row) {
 	c.tbl.SetRows(rows)
 }
 
-func (c CurConvoPane) GetContent(db *sql.DB, curConvoRow CurConvoRowDetails) tea.Msg {
+func (c CurConvoPane) GetContent(db *sql.DB, curConvoRow CurConvoRowDetails) CurConvoTableData {
 
 	content := CurConvoTableData{
 		CurConvoRowDetails: curConvoRow,
@@ -322,14 +329,12 @@ func (c CurConvoPane) GetContent(db *sql.DB, curConvoRow CurConvoRowDetails) tea
 		panic("no target for selected row found")
 	}
 
-	//===================
-	// PREPARE TABLE ROWS
-	//===================
-
+	// Manage the MAC address for the target
 	tMac := "---"
 	if target.Mac != nil {
 		tMac = target.Mac.Value
 	}
+
 	content.Rows = append(content.Rows,
 		table.Row{"IP", sender.Value, target.Value},
 		table.Row{"MAC", sender.Mac.Value, tMac})
@@ -338,24 +343,24 @@ func (c CurConvoPane) GetContent(db *sql.DB, curConvoRow CurConvoRowDetails) tea
 	dnsRows := make([][]string, 2)
 
 	// TODO delete this dummy content
-	for i := 0; i < 5; i++ {
-		sender.PtrRecords = append(sender.PtrRecords, eavesarp_ng.PtrRecord{
-			DnsRecordFields: eavesarp_ng.DnsRecordFields{
-				Ip:   *sender,
-				Name: eavesarp_ng.DnsName{Value: fmt.Sprintf("sender-%d.test.com", i)}}})
-		target.PtrRecords = append(target.PtrRecords, eavesarp_ng.PtrRecord{
-			DnsRecordFields: eavesarp_ng.DnsRecordFields{
-				Ip:   *target,
-				Name: eavesarp_ng.DnsName{Value: fmt.Sprintf("target-%d.test.com", i)}}})
-		sender.ARecords = append(sender.ARecords, eavesarp_ng.ARecord{
-			DnsRecordFields: eavesarp_ng.DnsRecordFields{
-				Ip:   *sender,
-				Name: eavesarp_ng.DnsName{Value: fmt.Sprintf("sender-%d.test.com", i)}}})
-		target.ARecords = append(target.ARecords, eavesarp_ng.ARecord{
-			DnsRecordFields: eavesarp_ng.DnsRecordFields{
-				Ip:   *sender,
-				Name: eavesarp_ng.DnsName{Value: fmt.Sprintf("target-%d.test.com", i)}}})
-	}
+	//for i := 0; i < 5; i++ {
+	//	sender.PtrRecords = append(sender.PtrRecords, eavesarp_ng.PtrRecord{
+	//		DnsRecordFields: eavesarp_ng.DnsRecordFields{
+	//			Ip:   *sender,
+	//			Name: eavesarp_ng.DnsName{Value: fmt.Sprintf("sender-%d.test.com", i)}}})
+	//	target.PtrRecords = append(target.PtrRecords, eavesarp_ng.PtrRecord{
+	//		DnsRecordFields: eavesarp_ng.DnsRecordFields{
+	//			Ip:   *target,
+	//			Name: eavesarp_ng.DnsName{Value: fmt.Sprintf("target-%d.test.com", i)}}})
+	//	sender.ARecords = append(sender.ARecords, eavesarp_ng.ARecord{
+	//		DnsRecordFields: eavesarp_ng.DnsRecordFields{
+	//			Ip:   *sender,
+	//			Name: eavesarp_ng.DnsName{Value: fmt.Sprintf("sender-%d.test.com", i)}}})
+	//	target.ARecords = append(target.ARecords, eavesarp_ng.ARecord{
+	//		DnsRecordFields: eavesarp_ng.DnsRecordFields{
+	//			Ip:   *sender,
+	//			Name: eavesarp_ng.DnsName{Value: fmt.Sprintf("target-%d.test.com", i)}}})
+	//}
 
 	// sender DNS values
 	for _, r := range sender.PtrRecords {
@@ -410,7 +415,7 @@ func (c CurConvoPane) GetContent(db *sql.DB, curConvoRow CurConvoRowDetails) tea
 			content.Err = fmt.Errorf("failed to read aitm row: %w", err)
 			return content
 		}
-		content.Rows = append(content.Rows, table.Row{head, fmt.Sprintf("%s (%s)", upstreamIp, forwardDnsName), ""})
+		content.Rows = append(content.Rows, table.Row{head, "", fmt.Sprintf("%s (%s)", upstreamIp, forwardDnsName)})
 		if head != "" {
 			head = ""
 		}
@@ -422,24 +427,48 @@ func (c CurConvoPane) GetContent(db *sql.DB, curConvoRow CurConvoRowDetails) tea
 	}
 
 	// TODO delete this dummy content
-	head = "AITM Opts"
-	for i := 0; i < 10; i++ {
-		content.Rows = append(content.Rows, table.Row{head, fmt.Sprintf("%s%d (%d-%s)", "192.168.1.", i, i, "aitm-target.test.com"), ""})
-		head = ""
+	//head = "AITM Opts"
+	//for i := 0; i < 10; i++ {
+	//	content.Rows = append(content.Rows, table.Row{head, fmt.Sprintf("%s%d (%d-%s)", "192.168.1.", i, i, "aitm-target.test.com"), ""})
+	//	head = ""
+	//}
+
+	//====================
+	// QUERY PORTS FROM DB
+	//====================
+
+	rows, err = db.Query(attackPortsQuery, sender.Id, target.Id)
+	if err != nil {
+		content.Err = fmt.Errorf("failed to query ports from database: %w", err)
+		return content
 	}
-
-	//=============
-	// HANDLE PORTS
-	//=============
-
-	// TODO query for ports
 
 	var dbPorts []eavesarp_ng.Port
-	for n := 0; n < 100; n++ {
-		dbPorts = append(dbPorts, eavesarp_ng.Port{Number: n, Protocol: "sctp"})
-		dbPorts = append(dbPorts, eavesarp_ng.Port{Number: n, Protocol: "udp"})
-		dbPorts = append(dbPorts, eavesarp_ng.Port{Number: n, Protocol: "tcp"})
+	for rows.Next() {
+		var number int
+		var proto string
+		if err = rows.Scan(&proto, &number); err != nil {
+			content.Err = fmt.Errorf("failed to read database row: %w", err)
+			return content
+		}
+		dbPorts = append(dbPorts, eavesarp_ng.Port{Number: number, Protocol: proto})
 	}
+
+	if err = rows.Close(); err != nil {
+		content.Err = fmt.Errorf("failed to close Rows after querying ports from database: %w", err)
+		return content
+	}
+
+	// TODO Delete test data
+	//for n := 0; n < 100; n++ {
+	//	dbPorts = append(dbPorts, eavesarp_ng.Port{Number: n, Protocol: "sctp"})
+	//	dbPorts = append(dbPorts, eavesarp_ng.Port{Number: n, Protocol: "udp"})
+	//	dbPorts = append(dbPorts, eavesarp_ng.Port{Number: n, Protocol: "tcp"})
+	//}
+
+	//====================
+	// FORMAT PORT RECORDS
+	//====================
 
 	// Example formatting:
 	//

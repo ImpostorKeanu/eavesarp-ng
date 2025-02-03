@@ -96,7 +96,7 @@ func runUi(db *sql.DB, startMainSniffer bool) (err error) {
 
 	// TODO delete this
 	go func() {
-		for n := 1; n <= 100; n++ {
+		for n := 1; n <= 10; n++ {
 			time.Sleep(50 * time.Millisecond)
 			lCh <- fmt.Sprintf("event %d", n)
 		}
