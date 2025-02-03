@@ -54,7 +54,7 @@ func getInterface(name string, eWriters *EventWriters) (iface *net.Interface, ip
 //
 // - ifaceName is the name of the network interface to sniff on.
 // - eventWriters is any number of writers that will receive general
-//   event emitted by Eavesarp.
+//   events.
 func MainSniff(db *sql.DB, ifaceName string, eventWriters ...io.StringWriter) (err error) {
 	// SOURCE: https://github.com/google/gopacket/blob/master/examples/arpscan/arpscan.go
 
@@ -330,6 +330,7 @@ outer:
 	for {
 		select {
 		case <-ctx.Done():
+			// TODO handle gracefully
 			return nil
 		case packetData := <-c:
 			if err = handle.WritePacketData(packetData); err != nil {

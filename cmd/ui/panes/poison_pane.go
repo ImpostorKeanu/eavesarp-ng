@@ -2,17 +2,20 @@ package panes
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/enescakir/emoji"
+	"github.com/google/gopacket"
 	eavesarp_ng "github.com/impostorkeanu/eavesarp-ng"
 	"github.com/impostorkeanu/eavesarp-ng/cmd/ui/misc"
 	"github.com/impostorkeanu/eavesarp-ng/cmd/ui/panes/stopwatch"
 	"github.com/impostorkeanu/eavesarp-ng/cmd/ui/panes/timer"
 	zone "github.com/lrstanley/bubblezone"
+	"net"
 	"os"
 	"path"
 	"strconv"
@@ -52,9 +55,9 @@ const (
 )
 
 const (
-	doneKey   = poisoningStatusCtxKey("done")
-	chKey     = poisoningStatusCtxKey("ch")
-	cancelKey = poisoningStatusCtxKey("cancel")
+	doneKey       = poisoningStatusCtxKey("done")
+	pktCountChKey = poisoningStatusCtxKey("ch")
+	cancelKey     = poisoningStatusCtxKey("cancel")
 )
 
 type (
@@ -89,6 +92,8 @@ type (
 		packetCount        int
 		cancelPoisonCtx    context.CancelFunc
 		eWriter            *misc.EventWriter
+		ifaceName          string // name of the network interface to monitor while poisoning
+		db                 *sql.DB
 	}
 
 	// BtnPressMsg indicates a button has been pressed in a PoisonPane.
@@ -119,7 +124,7 @@ func (p PoisonPane) ConvoKey() string {
 	return eavesarp_ng.FmtConvoKey(p.senderIp, p.targetIp)
 }
 
-func NewPoison(z *zone.Manager, senderIp, targetIp string, eW *misc.EventWriter) PoisonPane {
+func NewPoison(db *sql.DB, ifaceName, senderIp, targetIp string, z *zone.Manager, eW *misc.EventWriter) PoisonPane {
 	id := z.NewPrefix()
 	return PoisonPane{
 		zoneM:         z,
@@ -130,6 +135,8 @@ func NewPoison(z *zone.Manager, senderIp, targetIp string, eW *misc.EventWriter)
 		senderIp:      senderIp,
 		targetIp:      targetIp,
 		eWriter:       eW,
+		ifaceName:     ifaceName,
+		db:            db,
 	}
 }
 
@@ -242,8 +249,7 @@ func (p PoisonPane) Update(msg tea.Msg) (_ PoisonPane, cmd tea.Cmd) {
 		}
 
 		p.packetCount = msg.PacketCount
-		cmd = handlePoisoningStatusMsg(msg)
-		return p, cmd
+		return p, handlePoisoningStatusMsg(msg)
 
 	case timer.TimeoutMsg:
 
@@ -367,23 +373,69 @@ func (p *PoisonPane) handleBtnPressMsg(msg BtnPressMsg) (cmd tea.Cmd) {
 	switch msg.Event {
 	case StartPoisonBtnEvent:
 
-		// TODO this needs to be refactored
-		var ctx context.Context
-		var startCmd tea.Cmd
+		//=======================================
+		// CREATE NEW ATTACK FOR THE CONVERSATION
+		//=======================================
+
+		var sIp, tIp eavesarp_ng.Ip
+		var err error
+
+		sIp, err = eavesarp_ng.GetOrCreateIp(p.db, p.senderIp, nil, "", false, false)
+		if err != nil {
+			p.eWriter.WriteStringf("failed to retrieve sender ip from database: %s", err.Error())
+			return nil
+		}
+		tIp, err = eavesarp_ng.GetOrCreateIp(p.db, p.targetIp, nil, "", false, false)
+		if err != nil {
+			p.eWriter.WriteStringf("failed to retrieve target ip from database: %s", err.Error())
+			return nil
+		}
+
+		var attack eavesarp_ng.Attack
+		attack, err = eavesarp_ng.GetOrCreateAttack(p.db, nil, sIp.Id, tIp.Id)
+		if err != nil {
+			p.eWriter.WriteStringf("failed to create new attack in database: %s", err.Error())
+			return nil
+		}
+
+		//=============================
+		// PREPARE ADDITIONAL VARIABLES
+		//=============================
+
+		// Maximum number of packets to capture
+		// Note: Value is validated prior to this event
+		packetLimit, _ := strconv.Atoi(p.PacketLimitInput().Value())
+
+		// Get an IP value for sniff function later
+		senderIp := net.ParseIP(p.senderIp)
+		if senderIp == nil {
+			p.eWriter.WriteString("failed to parse sender ip for poisoning initialization")
+			p.eWriter.WriteStringf("sender ip value: %s", p.senderIp)
+			return nil
+		}
+
+		eWriters := eavesarp_ng.NewEventWriters(p.eWriter) // Let eavesarp write to the log pane
+		handlerCountCh := make(chan int)                   // Channel used by packet handlers to send packet count updates
+		var ctx context.Context                            // Context to enable cross-routine attack timeout/cancellation
+		var startCmd tea.Cmd                               // Start command for the UI timers/stopwatch
+
+		// Update ctx with cancellation and/or timeout
 		if len(p.CaptureDurationInput().Value()) > 0 {
-			// duration value was validated by poison pane
+			// Apply a timeout on the attack
+			// Note: duration value was validated by poison pane
 			d, _ := time.ParseDuration(p.CaptureDurationInput().Value())
 			p.Timer = timer.New(p.ConvoKey(), d)
 			ctx, p.cancelPoisonCtx = context.WithTimeout(context.Background(), d)
 			startCmd = p.Timer.Start()
 		} else {
+			// Attack will run until cancelled
 			p.Stopwatch = stopwatch.NewStopwatch(p.ConvoKey(), time.Now(), time.Second)
 			ctx, p.cancelPoisonCtx = context.WithCancel(context.Background())
 			startCmd = p.Stopwatch.Start()
 		}
 
-		ctx = context.WithValue(ctx, chKey, make(chan int))
-		ctx = context.WithValue(ctx, cancelKey, p.cancelPoisonCtx)
+		ctx = context.WithValue(ctx, pktCountChKey, make(chan int)) // Total packet count written here to emit status msg
+		ctx = context.WithValue(ctx, cancelKey, p.cancelPoisonCtx)  // Bind the cancel function to make it accessible to routines
 		cmd = tea.Batch(
 			startCmd,
 			// Start watching for reports of packet counts
@@ -395,21 +447,42 @@ func (p *PoisonPane) handleBtnPressMsg(msg BtnPressMsg) (cmd tea.Cmd) {
 					ew:          p.eWriter,
 				}
 			},
-			// Start poisoning attack
+			// Start process to watch for packet count updates
 			func() tea.Msg {
-				// TODO start poisoning here
-				// currently just simulating packets by sending to the channel
-				ch := ctx.Value(chKey).(chan int)
+				ch := ctx.Value(pktCountChKey).(chan int)
+				var count int
 			outer:
-				for i := 0; i < 100; i++ {
+				for {
 					select {
 					case <-ctx.Done():
 						break outer
-					default:
-						ch <- i
+					case i := <-handlerCountCh:
+						count += i
+						ch <- count
 					}
-					time.Sleep(time.Second)
 				}
+				return nil
+			},
+			// Start poisoning
+			func() tea.Msg {
+				eavesarp_ng.SnacSniff(ctx,
+					p.ifaceName, senderIp, packetLimit, eWriters,
+					func(pkt gopacket.Packet) {
+						// TODO writing to the handlerCountCh should probably be handled in batches
+						// Increment the packet count by 1
+						handlerCountCh <- 1
+						// Get and save transport layer info to db
+						if proto, dstPort, err := eavesarp_ng.GetPacketTransportLayerInfo(pkt, eWriters); err != nil {
+							p.eWriter.WriteStringf("failed to retrieve packet transport layer info: %s", err.Error())
+						} else {
+							// Create the port and associate with attack in the db
+							if port, err := eavesarp_ng.GetOrCreatePort(p.db, nil, dstPort, proto); err != nil {
+								p.eWriter.WriteStringf("failed to create port in db: %v", err.Error())
+							} else if _, err := eavesarp_ng.GetOrCreateAttackPort(p.db, attack.Id, port.Id); err != nil {
+								p.eWriter.WriteStringf("failed to associate port with attack in db: %v", err.Error())
+							}
+						}
+					})
 				return nil
 			})
 
@@ -560,11 +633,11 @@ func (p PoisonPane) View() string {
 
 func handlePoisoningStatusMsg(msg PoisoningStatusMsg) tea.Cmd {
 	return func() tea.Msg {
-		ch := msg.ctx.Value(chKey).(chan int)
+		countCh := msg.ctx.Value(pktCountChKey).(chan int)
 		select {
 		case <-msg.ctx.Done():
 			msg.ctx = context.WithValue(msg.ctx, doneKey, true)
-			close(ch)
+			close(countCh)
 			msg.ctx.Value(cancelKey).(context.CancelFunc)()
 			if err := msg.ctx.Err(); errors.Is(err, context.Canceled) {
 				msg.ew.WriteStringf("poisoning canceled: %s", msg.Id)
@@ -575,7 +648,7 @@ func handlePoisoningStatusMsg(msg PoisoningStatusMsg) tea.Cmd {
 			}
 			// Message indicating end of poisoning
 			return PoisoningStatusMsg{Id: msg.Id, PacketCount: 0, ew: msg.ew, ctx: msg.ctx}
-		case count := <-ch:
+		case count := <-countCh:
 			// Message indicating the current count of captured packets
 			return PoisoningStatusMsg{Id: msg.Id, PacketCount: count, ctx: msg.ctx, ew: msg.ew,
 			}

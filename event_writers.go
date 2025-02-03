@@ -14,6 +14,10 @@ type EventWriters struct {
 	mu      sync.Mutex
 }
 
+func NewEventWriters(writers ...io.StringWriter) *EventWriters {
+	return &EventWriters{writers: writers}
+}
+
 func (e *EventWriters) Write(s string) (errs map[io.StringWriter]error) {
 	e.write(s, &errs)
 	return

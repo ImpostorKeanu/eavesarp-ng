@@ -540,7 +540,7 @@ func (m *model) handleMouseMsg(msg tea.MouseMsg) (cmd tea.Cmd) {
 		m.focusedId = misc.PoisonCfgPaneId
 		if poisonPane == nil {
 			// Create a new poison pane for the conversation
-			buff := panes.NewPoison(zone.DefaultManager, m.curConvoRow.SenderIp, m.curConvoRow.TargetIp, m.eWriter)
+			buff := panes.NewPoison(m.db, ifaceName, m.curConvoRow.SenderIp, m.curConvoRow.TargetIp, zone.DefaultManager, m.eWriter)
 			buff.SetWidth(m.rightWidth)
 			buff.SetHeight(m.bottomRightHeight)
 			poisonPane = &buff

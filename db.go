@@ -115,6 +115,7 @@ type (
 	}
 
 	Port struct {
+		Id       int
 		IsNew    bool
 		Number   int
 		Protocol string
@@ -184,6 +185,7 @@ func GetSnacs(db *sql.DB) (ips []Ip, err error) {
 }
 
 func GetOrCreateAttack(db *sql.DB, id *int, senderIpId int, targetIpId int) (attack Attack, err error) {
+	// This works because 0 is never used as a row id
 	if id == nil {
 		buff := 0
 		id = &buff
@@ -199,12 +201,16 @@ func GetOrCreateAttack(db *sql.DB, id *int, senderIpId int, targetIpId int) (att
 	return
 }
 
-func GetOrCreatePort(db *sql.DB, number int, proto string) (port Port, err error) {
+func GetOrCreatePort(db *sql.DB, id *int, number int, proto string) (port Port, err error) {
+	if id == nil {
+		buff := 0
+		id = &buff
+	}
 	port.IsNew, err = GetOrCreate(db, GoCArgs{
-		GetStmt:      "SELECT * FROM port WHERE number=?",
+		GetStmt:      "SELECT * FROM port WHERE id=? OR number=?",
 		CreateStmt:   "INSERT INTO port (number, protocol) VALUES (?, ?) RETURNING *",
-		Params:       map[string]any{"number": number, "protocol": proto},
-		GetParams:    []string{"number"},
+		Params:       map[string]any{"id": *id, "number": number, "protocol": proto},
+		GetParams:    []string{"id", "number"},
 		CreateParams: []string{"number", "protocol"},
 		Outputs:      []any{&port.Number, &port.Protocol},
 	})
