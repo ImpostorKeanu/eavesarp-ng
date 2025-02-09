@@ -25,13 +25,7 @@ var (
 	arpSleeper          = NewSleeper(1, 5, 30)
 )
 
-const (
-	ArpReqOperation ArpOperation = layers.ARPRequest
-	ArpRepOperation ArpOperation = layers.ARPReply
-)
-
 type (
-	ArpOperation uint16
 	// ActiveArp represents an ARP request.
 	ActiveArp struct {
 		DstIp  *Ip
@@ -56,7 +50,7 @@ type (
 	// ArpSenderArgs represent values needed to send an ARP request.
 	ArpSenderArgs struct {
 		handle    *pcap.Handle
-		operation ArpOperation
+		operation uint64
 		srcHw     net.HardwareAddr
 		srcIp     net.IP
 		dstHw     net.HardwareAddr
@@ -148,8 +142,7 @@ func newUnpackedArp(arp *layers.ARP) unpackedArp {
 	}
 }
 
-// ArpSender runs as a background process and receives ARP request
-// tasks via arpSenderC.
+// ArpSender runs as a background process and sends ARP traffic.
 func ArpSender(eWriters *EventWriters) {
 
 	eWriters.Write("starting arp sender routine")
@@ -162,7 +155,7 @@ func ArpSender(eWriters *EventWriters) {
 		case sA := <-arpSenderC:
 
 			if sA.dstHw == nil {
-				if sA.operation == ArpRepOperation {
+				if sA.operation == layers.ARPReply {
 					eWriters.Write("arp replies require a dstHw value")
 					continue
 				}
@@ -181,9 +174,9 @@ func ArpSender(eWriters *EventWriters) {
 				ProtAddressSize:   4,
 				Operation:         uint16(sA.operation),
 				SourceHwAddress:   sA.srcHw,
-				SourceProtAddress: sA.srcIp,
+				SourceProtAddress: sA.srcIp.To4(),
 				DstHwAddress:      sA.dstHw,
-				DstProtAddress:    sA.dstIp,
+				DstProtAddress:    sA.dstIp.To4(),
 			}
 			opts := gopacket.SerializeOptions{
 				FixLengths:       true,
@@ -193,7 +186,7 @@ func ArpSender(eWriters *EventWriters) {
 			buff := gopacket.NewSerializeBuffer()
 			err := gopacket.SerializeLayers(buff, opts, &eth, &arp)
 			if err != nil {
-				eWriters.Writef("build arp request packet: %v", err.Error())
+				eWriters.Writef("failed to build arp packet: %v", err.Error())
 				continue
 			}
 

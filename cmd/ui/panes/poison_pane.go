@@ -407,10 +407,15 @@ func (p *PoisonPane) handleBtnPressMsg(msg BtnPressMsg) (cmd tea.Cmd) {
 		packetLimit, _ := strconv.Atoi(p.PacketLimitInput().Value())
 
 		// Get an IP value for sniff function later
-		senderIp := net.ParseIP(p.senderIp)
-		if senderIp == nil {
+		var senderIp, targetIp net.IP
+		if senderIp = net.ParseIP(p.senderIp); senderIp == nil {
 			p.eWriter.WriteString("failed to parse sender ip for poisoning initialization")
 			p.eWriter.WriteStringf("sender ip value: %s", p.senderIp)
+			return nil
+		}
+		if targetIp = net.ParseIP(p.targetIp); targetIp == nil {
+			p.eWriter.WriteString("failed to parse target ip for poisoning initialization")
+			p.eWriter.WriteStringf("target ip value: %s", p.senderIp)
 			return nil
 		}
 
@@ -465,14 +470,17 @@ func (p *PoisonPane) handleBtnPressMsg(msg BtnPressMsg) (cmd tea.Cmd) {
 			},
 			// Start poisoning
 			func() tea.Msg {
+				p.eWriter.WriteStringf("starting poisoning attack: %s -> %s", sIp.Value, tIp.Value)
 				eavesarp_ng.SnacSniff(ctx,
-					p.ifaceName, senderIp, packetLimit, eWriters,
+					p.ifaceName, senderIp, targetIp, packetLimit, eWriters,
 					func(pkt gopacket.Packet) {
 						// TODO writing to the handlerCountCh should probably be handled in batches
 						// Increment the packet count by 1
 						handlerCountCh <- 1
 						// Get and save transport layer info to db
-						if proto, dstPort, err := eavesarp_ng.GetPacketTransportLayerInfo(pkt, eWriters); err != nil {
+						if proto, dstPort, err := eavesarp_ng.GetPacketTransportLayerInfo(pkt, eWriters); errors.Is(err, eavesarp_ng.NoTransportLayerErr) {
+							// NOP
+						} else if err != nil {
 							p.eWriter.WriteStringf("failed to retrieve packet transport layer info: %s", err.Error())
 						} else {
 							// Create the port and associate with attack in the db
@@ -483,6 +491,7 @@ func (p *PoisonPane) handleBtnPressMsg(msg BtnPressMsg) (cmd tea.Cmd) {
 							}
 						}
 					})
+				p.eWriter.WriteStringf("ending poisoning attack: %s -> %s", sIp.Value, tIp.Value)
 				return nil
 			})
 

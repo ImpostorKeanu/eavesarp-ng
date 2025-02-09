@@ -15,7 +15,6 @@ import (
 	"github.com/spf13/cobra"
 	_ "modernc.org/sqlite"
 	"os"
-	"time"
 )
 
 var (
@@ -89,18 +88,20 @@ func runUi(db *sql.DB, startMainSniffer bool) (err error) {
 			Style:   spinnerStyle,
 		},
 		logPane:            lPane,
-		senderPoisonedChar: string(senderPoisonedChar),
-		snacChar:           string(snacChar),
+		senderPoisonedChar: senderPoisonedChar,
+		snacChar:           snacChar,
 	}
 	ui.convosTable.Focus()
 
+	//ui.mainSniff = false
+
 	// TODO delete this
-	go func() {
-		for n := 1; n <= 10; n++ {
-			time.Sleep(50 * time.Millisecond)
-			lCh <- fmt.Sprintf("event %d", n)
-		}
-	}()
+	//go func() {
+	//	for n := 1; n <= 10; n++ {
+	//		time.Sleep(50 * time.Millisecond)
+	//		lCh <- fmt.Sprintf("event %d", n)
+	//	}
+	//}()
 
 	// Initialize the ARP table
 	//c := getConvosTableContent(ui.db, 100, 0)
@@ -133,7 +134,7 @@ func start(cmd *cobra.Command, args []string) {
 		}
 	}()
 
-	if err = runUi(db, false); err != nil {
+	if err = runUi(db, true); err != nil {
 		fmt.Printf("error running the ui: %v", err.Error())
 		panic(err)
 	}

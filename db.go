@@ -196,7 +196,7 @@ func GetOrCreateAttack(db *sql.DB, id *int, senderIpId int, targetIpId int) (att
 		Params:       map[string]any{"id": *id, "sender_ip_id": senderIpId, "target_ip_id": targetIpId},
 		GetParams:    []string{"id"},
 		CreateParams: []string{"sender_ip_id", "target_ip_id"},
-		Outputs:      []any{&attack.Id, &attack.SenderIpId, &attack.TargetIp},
+		Outputs:      []any{&attack.Id, &attack.SenderIpId, &attack.TargetIpId},
 	})
 	return
 }
@@ -207,20 +207,20 @@ func GetOrCreatePort(db *sql.DB, id *int, number int, proto string) (port Port, 
 		id = &buff
 	}
 	port.IsNew, err = GetOrCreate(db, GoCArgs{
-		GetStmt:      "SELECT * FROM port WHERE id=? OR number=?",
-		CreateStmt:   "INSERT INTO port (number, protocol) VALUES (?, ?) RETURNING *",
-		Params:       map[string]any{"id": *id, "number": number, "protocol": proto},
-		GetParams:    []string{"id", "number"},
-		CreateParams: []string{"number", "protocol"},
-		Outputs:      []any{&port.Number, &port.Protocol},
+		GetStmt:      "SELECT * FROM port WHERE id=? OR (number=? AND proto=?)",
+		CreateStmt:   "INSERT INTO port (number, proto) VALUES (?, ?) RETURNING *",
+		Params:       map[string]any{"id": *id, "number": number, "proto": proto},
+		GetParams:    []string{"id", "number", "proto"},
+		CreateParams: []string{"number", "proto"},
+		Outputs:      []any{&port.Id, &port.Number, &port.Protocol},
 	})
 	return
 }
 
 func GetOrCreateAttackPort(db *sql.DB, attackId, portId int) (aP AttackPort, err error) {
 	aP.IsNew, err = GetOrCreate(db, GoCArgs{
-		GetStmt:      "SELECT * FROM attack_port WHERE attack_id=? AND port_id=?",
-		CreateStmt:   "INSERT INTO attack_port (attack_id, port_id) VALUES (?, ?)",
+		GetStmt:      "SELECT attack_id, port_id FROM attack_port WHERE attack_id=? AND port_id=?",
+		CreateStmt:   "INSERT INTO attack_port (attack_id, port_id) VALUES (?, ?) RETURNING *",
 		Params:       map[string]any{"attack_id": attackId, "port_id": portId},
 		GetParams:    []string{"attack_id", "port_id"},
 		CreateParams: []string{"attack_id", "port_id"},

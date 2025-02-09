@@ -142,7 +142,7 @@ CREATE TABLE IF NOT EXISTS attack(
 
 CREATE TABLE IF NOT EXISTS port(
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    number INTEGER NOT NULL CHECK(proto >= 0 AND proto <= 65535),
+    number INTEGER NOT NULL CHECK(number >= 0 AND number <= 65535),
     proto TEXT NOT NULL CHECK (
         proto == 'tcp' OR
         proto == 'udp' OR
@@ -150,8 +150,8 @@ CREATE TABLE IF NOT EXISTS port(
     CONSTRAINT port_comp_key UNIQUE (number, proto));
 
 CREATE TABLE IF NOT EXISTS attack_port(
-    attack_id INTEGER NOT NULL REFERENCES attack ON DELETE CASCADE,
-    port_id INTEGER NOT NULL REFERENCES port,
+    attack_id INTEGER NOT NULL REFERENCES attack(id) ON DELETE CASCADE,
+    port_id INTEGER NOT NULL REFERENCES port(id),
     CONSTRAINT attack_port_comp_key PRIMARY KEY (attack_id, port_id));
 
 -- prevent orphaned mac addresses

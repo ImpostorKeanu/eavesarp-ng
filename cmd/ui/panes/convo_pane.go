@@ -15,6 +15,7 @@ import (
 const (
 	convoTableSelectionQuery = `
 SELECT ip.value AS ip,
+       ip.id AS ip_id,
        ip.disc_meth AS ip_disc_meth,
        ip.ptr_resolved AS ip_ptr_resolved,
        COALESCE(mac.value, '') AS mac,
@@ -28,7 +29,7 @@ LEFT JOIN dns_name ON dns_name.Id = dns_record.dns_name_id
 WHERE ip.value IN (?,?);
 `
 	attackPortsQuery = `
-SELECT port.proto AS protocol, port.number AS number FROM attack
+SELECT DISTINCT port.proto AS protocol, port.number AS number FROM attack
 INNER JOIN attack_port ON attack_port.attack_id = attack.id
 INNER JOIN port ON port.id = attack_port.port_id
 WHERE attack.sender_ip_id = ? AND attack.target_ip_id = ?
@@ -233,9 +234,12 @@ func (c CurConvoPane) GetContent(db *sql.DB, curConvoRow CurConvoRowDetails) Cur
 
 	for rows.Next() {
 
-		var ip, ipDiscMeth, mac, macDiscMeth, dnsRecordKind, dnsName string
-		var ptrResolved bool
-		if err = rows.Scan(&ip, &ipDiscMeth, &ptrResolved, &mac, &macDiscMeth, &dnsRecordKind, &dnsName); err != nil {
+		var (
+			ip, ipDiscMeth, mac, macDiscMeth, dnsRecordKind, dnsName string
+			ipId                                                     int
+			ptrResolved                                              bool
+		)
+		if err = rows.Scan(&ip, &ipId, &ipDiscMeth, &ptrResolved, &mac, &macDiscMeth, &dnsRecordKind, &dnsName); err != nil {
 			content.Err = fmt.Errorf("failed to read row: %w", err)
 			return content
 		}
@@ -254,6 +258,7 @@ func (c CurConvoPane) GetContent(db *sql.DB, curConvoRow CurConvoRowDetails) Cur
 				//======================
 
 				ipObj = &eavesarp_ng.Ip{
+					Id:    ipId,
 					Value: ip,
 					Mac: &eavesarp_ng.Mac{
 						Value:      mac,
@@ -284,6 +289,7 @@ func (c CurConvoPane) GetContent(db *sql.DB, curConvoRow CurConvoRowDetails) Cur
 					}
 				}
 				ipObj = &eavesarp_ng.Ip{
+					Id:          ipId,
 					Value:       ip,
 					Mac:         m,
 					DiscMethod:  eavesarp_ng.DiscMethod(ipDiscMeth),
@@ -426,13 +432,6 @@ func (c CurConvoPane) GetContent(db *sql.DB, curConvoRow CurConvoRowDetails) Cur
 		return content
 	}
 
-	// TODO delete this dummy content
-	//head = "AITM Opts"
-	//for i := 0; i < 10; i++ {
-	//	content.Rows = append(content.Rows, table.Row{head, fmt.Sprintf("%s%d (%d-%s)", "192.168.1.", i, i, "aitm-target.test.com"), ""})
-	//	head = ""
-	//}
-
 	//====================
 	// QUERY PORTS FROM DB
 	//====================
@@ -458,13 +457,6 @@ func (c CurConvoPane) GetContent(db *sql.DB, curConvoRow CurConvoRowDetails) Cur
 		content.Err = fmt.Errorf("failed to close Rows after querying ports from database: %w", err)
 		return content
 	}
-
-	// TODO Delete test data
-	//for n := 0; n < 100; n++ {
-	//	dbPorts = append(dbPorts, eavesarp_ng.Port{Number: n, Protocol: "sctp"})
-	//	dbPorts = append(dbPorts, eavesarp_ng.Port{Number: n, Protocol: "udp"})
-	//	dbPorts = append(dbPorts, eavesarp_ng.Port{Number: n, Protocol: "tcp"})
-	//}
 
 	//====================
 	// FORMAT PORT RECORDS
@@ -513,11 +505,10 @@ func (c CurConvoPane) GetContent(db *sql.DB, curConvoRow CurConvoRowDetails) Cur
 
 		for _, proto := range protocols {
 			var v string
-			if i >= len(portsByProto[proto]) {
-				continue
+			if i < len(portsByProto[proto]) {
+				// retrieve the port value
+				v = portsByProto[proto][i]
 			}
-			// retrieve the port value
-			v = portsByProto[proto][i]
 			if maxPortWidth-len(v) > 0 {
 				// pad the value to the right
 				v += strings.Repeat(" ", maxPortWidth-len(v))

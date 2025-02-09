@@ -140,6 +140,7 @@ func newConvoRow(r table.Row) (_ panes.CurConvoRowDetails, err error) {
 }
 
 func (m model) Init() tea.Cmd {
+
 	cmds := []tea.Cmd{
 		m.logPane.Init(),
 		func() tea.Msg {
@@ -179,7 +180,6 @@ func (m model) Update(msg tea.Msg) (_ tea.Model, cmd tea.Cmd) {
 				panic(err)
 			}
 		} else {
-			//m.convosRowSenders = msg.rowSenders
 			m.doConvoTableContent(msg)
 		}
 
@@ -254,16 +254,25 @@ func (m model) Update(msg tea.Msg) (_ tea.Model, cmd tea.Cmd) {
 
 	case panes.BtnPressMsg:
 
+		if !m.hasConvoRows() {
+			return m, nil
+		}
 		cmd = m.handleBtnPressMsg(msg)
 		return m, cmd
 
 	case tea.MouseMsg:
 
+		if !m.hasConvoRows() {
+			return m, nil
+		}
 		cmd = m.handleMouseMsg(msg)
 		return m, cmd
 
 	case tea.KeyMsg:
 
+		if !m.hasConvoRows() {
+			return m, nil
+		}
 		cmd = m.handleKeyMsg(msg)
 		return m, cmd
 
@@ -285,6 +294,20 @@ func (m model) Update(msg tea.Msg) (_ tea.Model, cmd tea.Cmd) {
 
 		if len(m.convosTable.Rows()) == 0 {
 			m.convosSpinner, cmd = m.convosSpinner.Update(msg)
+			cmd = tea.Batch(cmd,
+				func() tea.Msg {
+					return getConvosTableContent(&m)
+				})
+		} else {
+			cmd = tea.Sequence(
+				//m.logPane.Init(),
+				func() tea.Msg {
+					return getConvosTableContent(&m)
+				},
+				func() tea.Msg {
+					m.doCurrConvoRow()
+					return m.convoPane.GetContent(m.db, m.curConvoRow)
+				})
 		}
 
 	case tea.WindowSizeMsg:
@@ -335,6 +358,11 @@ func (m model) Update(msg tea.Msg) (_ tea.Model, cmd tea.Cmd) {
 
 func (m model) View() string {
 
+	if !m.hasConvoRows() {
+		s := m.convosSpinner.View() + " Capturing ARP traffic" + "\n\n" + m.logPane.View()
+		return s
+	}
+
 	poisonPane := poisonPaneLm.Get(m.curConvoRow.ConvoKey())
 	hasActiveAttack := activeAttacks.Exists(m.curConvoRow.ConvoKey())
 	var rightPanes []string
@@ -378,15 +406,9 @@ func (m model) View() string {
 		convosTblStyle = convosTblStyle.BorderForeground(selectedPaneBorderColor)
 	}
 
-	if len(m.convosTable.Rows()) == 0 {
-		leftPane = lipgloss.JoinVertical(lipgloss.Center,
-			convosTblHeading,
-			convosTblStyle.Render(m.convosSpinner.View()+" Capturing ARP traffic"))
-	} else {
-		leftPane = lipgloss.JoinVertical(lipgloss.Center,
-			convosTblHeading,
-			convosTblStyle.Render(lipgloss.JoinHorizontal(lipgloss.Center, convosTbl.View())))
-	}
+	leftPane = lipgloss.JoinVertical(lipgloss.Center,
+		convosTblHeading,
+		convosTblStyle.Render(lipgloss.JoinHorizontal(lipgloss.Center, convosTbl.View())))
 
 	//==========================
 	// CURRENT CONVERSATION PANE
@@ -555,6 +577,10 @@ func (m *model) handleMouseMsg(msg tea.MouseMsg) (cmd tea.Cmd) {
 	}
 
 	return
+}
+
+func (m *model) hasConvoRows() bool {
+	return len(m.convosTable.Rows()) > 0
 }
 
 func (m *model) handleKeyMsg(msg tea.KeyMsg) (cmd tea.Cmd) {
