@@ -21,7 +21,7 @@ type (
 )
 
 func NewLogsPane(maxEventLength, maxEventCount int, headingZoneId string) (chan string, LogsPane) {
-	ch := make(chan string)
+	ch := make(chan string, 100)
 	return ch, LogsPane{
 		vp:             viewport.New(0, 0),
 		headingZoneId:  headingZoneId,
@@ -71,7 +71,7 @@ func (l LogsPane) Update(msg tea.Msg) (LogsPane, tea.Cmd) {
 			l.vp.GotoBottom()
 		}
 
-		// Return the model and start a new process to catch the
+		// Return the model and start a new routine to catch the
 		// next event, which is handled by the event loop managed
 		// by charmbracelet.
 		return l, func() tea.Msg {
@@ -86,7 +86,7 @@ func (l LogsPane) View() string {
 	return l.vp.View()
 }
 
-func EmitEvent(c chan string) tea.Msg {
+func EmitEvent(c chan string) LogEvent {
 	return LogEvent(<-c)
 }
 

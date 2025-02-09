@@ -88,8 +88,6 @@ func MainSniff(db *sql.DB, ifaceName string, eventWriters ...io.StringWriter) (e
 	// PERPETUALLY CAPTURE PACKETS
 	//============================
 
-	eWriters.Write("starting packet capture")
-
 	handle, err := pcap.OpenLive(iface.Name, 65536, true, pcap.BlockForever)
 	if err != nil {
 		eWriters.Writef("error opening packet capture: %v", err.Error())
@@ -103,12 +101,6 @@ func MainSniff(db *sql.DB, ifaceName string, eventWriters ...io.StringWriter) (e
 
 	src := gopacket.NewPacketSource(handle, layers.LayerTypeEthernet)
 	in := src.Packets()
-
-	ifaceByteIp, err := ifaceAddr.IP.MarshalText()
-	if err != nil {
-		eWriters.Writef("error marshalling ip address: %v", err.Error())
-		return err
-	}
 
 outer:
 	for {
@@ -131,27 +123,26 @@ outer:
 				// HANDLE PASSIVELY CAPTURED ARP REQUEST
 				//======================================
 
-				if bytes.Equal(ifaceByteIp, arp.DstProtAddress) {
+				if bytes.Equal(iface.HardwareAddr, arp.SourceHwAddress) {
+					continue outer
+				} else if ifaceAddr.IP.Equal(net.IPv4(arp.DstProtAddress[0], arp.DstProtAddress[1], arp.DstProtAddress[2], arp.DstProtAddress[3])) {
 					// Capture ARP requests for senders wanting our MAC address
 					if _, srcIp, e := u.getOrCreateSourceDbValues(db, PassiveArpMeth, &eWriters); e != nil {
 						err = e
 						return
-					} else {
-						eWriters.Writef("new ip passively discovered: %v", srcIp.Value)
+					} else if srcIp.IsNew {
+						eWriters.Writef("new ip requested our mac: %v", srcIp.Value)
 					}
-					continue outer
-				} else if bytes.Equal(iface.HardwareAddr, arp.SourceHwAddress) {
-					// Ignore ARP requests we have generated
 					continue outer
 				}
 
 				_, srcIp, dstIp, err := u.getOrCreateSnifferDbValues(db, PassiveArpMeth, &eWriters)
 
 				if srcIp.IsNew {
-					eWriters.Writef("new ip passively discovered: %v", srcIp.Value)
+					eWriters.Writef("new sender ip passively discovered: %v", srcIp.Value)
 				}
 				if dstIp.IsNew {
-					eWriters.Writef("new ip passively discovered: %v", dstIp.Value)
+					eWriters.Writef("new target ip passively discovered: %v", dstIp.Value)
 				}
 
 				if dstIp.MacId == nil && !activeArps.Has(dstIp.Value) && !dstIp.ArpResolved {
@@ -172,6 +163,7 @@ outer:
 								eWriters.Writef("error: failed to watch for active arp response: %v", err.Error())
 								return
 							} else if err != nil {
+								// TODO
 								err = nil
 							}
 							return

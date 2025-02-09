@@ -7,6 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	eavesarp_ng "github.com/impostorkeanu/eavesarp-ng"
+	"github.com/impostorkeanu/eavesarp-ng/cmd/ui/misc"
 	zone "github.com/lrstanley/bubblezone"
 	"slices"
 	"strings"
@@ -17,6 +18,7 @@ const (
 SELECT ip.value AS ip,
        ip.id AS ip_id,
        ip.disc_meth AS ip_disc_meth,
+	   ip.arp_resolved AS ip_arp_resolved,
        ip.ptr_resolved AS ip_ptr_resolved,
        COALESCE(mac.value, '') AS mac,
        COALESCE(mac.disc_meth, '') AS mac_disc_meth,
@@ -80,6 +82,8 @@ type (
 		curConvoRow            CurConvoRowDetails
 		tbl                    table.Model
 		poisonCfgBtnId         string
+		activeAttacks          *misc.ActiveAttacks
+		poisonPaneLm           *eavesarp_ng.ConvoLockMap[PoisonPane]
 		IsSnac                 bool
 		IsPoisoning            bool
 		IsConfiguringPoisoning bool
@@ -109,11 +113,13 @@ func (c CurConvoRowDetails) IsZero() bool {
 	return c.SenderIp == "" && c.TargetIp == "" && c.ArpCount == 0
 }
 
-func NewCurConvoPane(db *sql.DB, zone *zone.Manager, poisonCfgBtnId string) CurConvoPane {
+func NewCurConvoPane(db *sql.DB, zone *zone.Manager, activeAttacks *misc.ActiveAttacks, poisonPaneLm *eavesarp_ng.ConvoLockMap[PoisonPane], poisonCfgBtnId string) CurConvoPane {
 	return CurConvoPane{
 		db:             db,
 		zone:           zone,
 		poisonCfgBtnId: poisonCfgBtnId,
+		poisonPaneLm:   poisonPaneLm,
+		activeAttacks:  activeAttacks,
 		tbl:            table.New(table.WithKeyMap(table.DefaultKeyMap()), table.WithStyles(curConvoTableStyle)),
 	}
 }
@@ -128,6 +134,12 @@ func (c *CurConvoPane) GotoTop() {
 
 func (c CurConvoPane) Update(msg tea.Msg) (_ CurConvoPane, cmd tea.Cmd) {
 	switch msg := msg.(type) {
+	case CurConvoRowDetails:
+		if err := c.getContent(msg); err != nil {
+			// TODO handle this error
+		}
+		c.IsPoisoning = c.activeAttacks.Exists(msg.ConvoKey())
+		c.IsConfiguringPoisoning = !c.IsPoisoning && c.poisonPaneLm.Get(msg.ConvoKey()) != nil
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "up", "k":
@@ -213,17 +225,18 @@ func (c *CurConvoPane) SetRows(rows []table.Row) {
 	c.tbl.SetRows(rows)
 }
 
-func (c CurConvoPane) GetContent(db *sql.DB, curConvoRow CurConvoRowDetails) CurConvoTableData {
+func (c *CurConvoPane) getContent(curConvoRow CurConvoRowDetails) (err error) {
 
-	content := CurConvoTableData{
-		CurConvoRowDetails: curConvoRow,
-		Cols:               []table.Column{{Title: ""}, {Title: "Sender"}, {Title: "Target"}},
-	}
+	var (
+		tblCols = []table.Column{{Title: ""}, {Title: "Sender"}, {Title: "Target"}}
+		tblRows []table.Row
+		rows    *sql.Rows
+	)
 
-	rows, err := db.Query(convoTableSelectionQuery, curConvoRow.SenderIp, curConvoRow.TargetIp)
+	rows, err = c.db.Query(convoTableSelectionQuery, curConvoRow.SenderIp, curConvoRow.TargetIp)
 	if err != nil {
-		content.Err = fmt.Errorf("failed to get selected arp row content: %w", err)
-		return content
+		err = fmt.Errorf("failed to get selected arp row content: %w", err)
+		return
 	}
 
 	//=====================================
@@ -237,11 +250,11 @@ func (c CurConvoPane) GetContent(db *sql.DB, curConvoRow CurConvoRowDetails) Cur
 		var (
 			ip, ipDiscMeth, mac, macDiscMeth, dnsRecordKind, dnsName string
 			ipId                                                     int
-			ptrResolved                                              bool
+			arpResolved, ptrResolved                                 bool
 		)
-		if err = rows.Scan(&ip, &ipId, &ipDiscMeth, &ptrResolved, &mac, &macDiscMeth, &dnsRecordKind, &dnsName); err != nil {
-			content.Err = fmt.Errorf("failed to read row: %w", err)
-			return content
+		if err = rows.Scan(&ip, &ipId, &ipDiscMeth, &arpResolved, &ptrResolved, &mac, &macDiscMeth, &dnsRecordKind, &dnsName); err != nil {
+			err = fmt.Errorf("failed to read row: %w", err)
+			return
 		}
 
 		if ip == "" {
@@ -293,6 +306,7 @@ func (c CurConvoPane) GetContent(db *sql.DB, curConvoRow CurConvoRowDetails) Cur
 					Value:       ip,
 					Mac:         m,
 					DiscMethod:  eavesarp_ng.DiscMethod(ipDiscMeth),
+					ArpResolved: arpResolved,
 					PtrResolved: ptrResolved,
 				}
 				target = ipObj
@@ -316,15 +330,15 @@ func (c CurConvoPane) GetContent(db *sql.DB, curConvoRow CurConvoRowDetails) Cur
 			case "ptr":
 				target.PtrRecords = append(target.PtrRecords, eavesarp_ng.PtrRecord{DnsRecordFields: dnsFields})
 			default:
-				content.Err = fmt.Errorf("unsupported dns record kind: %s", dnsRecordKind)
-				return content
+				err = fmt.Errorf("unsupported dns record kind: %s", dnsRecordKind)
+				return
 			}
 		}
 	}
 
 	if err = rows.Close(); err != nil {
-		content.Err = fmt.Errorf("failed to close Rows after querying for selected arp row content: %w", err)
-		return content
+		err = fmt.Errorf("failed to close Rows after querying for selected arp row content: %w", err)
+		return
 	}
 
 	// TODO this should probably be handled more gracefully but it's technically
@@ -341,7 +355,7 @@ func (c CurConvoPane) GetContent(db *sql.DB, curConvoRow CurConvoRowDetails) Cur
 		tMac = target.Mac.Value
 	}
 
-	content.Rows = append(content.Rows,
+	tblRows = append(tblRows,
 		table.Row{"IP", sender.Value, target.Value},
 		table.Row{"MAC", sender.Mac.Value, tMac})
 
@@ -401,45 +415,45 @@ func (c CurConvoPane) GetContent(db *sql.DB, curConvoRow CurConvoRowDetails) Cur
 		if len(dnsRows[1]) > 0 && i < len(dnsRows[1]) {
 			target = dnsRows[1][i]
 		}
-		content.Rows = append(content.Rows, table.Row{head, sender, target})
+		tblRows = append(tblRows, table.Row{head, sender, target})
 	}
 
 	//===================================
 	// RETRIEVE TARGET AITM OPPORTUNITIES
 	//===================================
 
-	rows, err = db.Query(snacAitmQuery, sender.Value)
+	rows, err = c.db.Query(snacAitmQuery, sender.Value)
 	if err != nil {
-		content.Err = fmt.Errorf("failed to query aitm row content for selected arp: %w", err)
-		return content
+		err = fmt.Errorf("failed to query aitm row content for selected arp: %w", err)
+		return
 	}
 
 	head := "AITM Opts"
 	for rows.Next() {
 		var snacIp, upstreamIp, forwardDnsName string
 		if err = rows.Scan(&snacIp, &upstreamIp, &forwardDnsName); err != nil {
-			content.Err = fmt.Errorf("failed to read aitm row: %w", err)
-			return content
+			err = fmt.Errorf("failed to read aitm row: %w", err)
+			return
 		}
-		content.Rows = append(content.Rows, table.Row{head, "", fmt.Sprintf("%s (%s)", upstreamIp, forwardDnsName)})
+		tblRows = append(tblRows, table.Row{head, "", fmt.Sprintf("%s (%s)", upstreamIp, forwardDnsName)})
 		if head != "" {
 			head = ""
 		}
 	}
 
 	if err = rows.Close(); err != nil {
-		content.Err = fmt.Errorf("failed to close Rows after querying aitmValues for selected arp row: %w", err)
-		return content
+		err = fmt.Errorf("failed to close Rows after querying aitmValues for selected arp row: %w", err)
+		return
 	}
 
 	//====================
 	// QUERY PORTS FROM DB
 	//====================
 
-	rows, err = db.Query(attackPortsQuery, sender.Id, target.Id)
+	rows, err = c.db.Query(attackPortsQuery, sender.Id, target.Id)
 	if err != nil {
-		content.Err = fmt.Errorf("failed to query ports from database: %w", err)
-		return content
+		err = fmt.Errorf("failed to query ports from database: %w", err)
+		return
 	}
 
 	var dbPorts []eavesarp_ng.Port
@@ -447,15 +461,15 @@ func (c CurConvoPane) GetContent(db *sql.DB, curConvoRow CurConvoRowDetails) Cur
 		var number int
 		var proto string
 		if err = rows.Scan(&proto, &number); err != nil {
-			content.Err = fmt.Errorf("failed to read database row: %w", err)
-			return content
+			err = fmt.Errorf("failed to read database row: %w", err)
+			return
 		}
 		dbPorts = append(dbPorts, eavesarp_ng.Port{Number: number, Protocol: proto})
 	}
 
 	if err = rows.Close(); err != nil {
-		content.Err = fmt.Errorf("failed to close Rows after querying ports from database: %w", err)
-		return content
+		err = fmt.Errorf("failed to close Rows after querying ports from database: %w", err)
+		return
 	}
 
 	//====================
@@ -527,11 +541,14 @@ func (c CurConvoPane) GetContent(db *sql.DB, curConvoRow CurConvoRowDetails) Cur
 		// capture the row
 		buff := make(table.Row, 3)
 		copy(buff, curRow)
-		content.Rows = append(content.Rows, buff)
+		tblRows = append(tblRows, buff)
 
 		// initialize a new row
 		curRow = table.Row{""}
 	}
 
-	return content
+	c.tbl.SetColumns(tblCols)
+	c.tbl.SetRows(tblRows)
+	c.IsSnac = target.ArpResolved && target.Mac == nil
+	return
 }

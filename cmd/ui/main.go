@@ -79,7 +79,7 @@ func runUi(db *sql.DB, startMainSniffer bool) (err error) {
 		convosTable: table.New(
 			table.WithStyles(convosTableStyle),
 			table.WithKeyMap(table.DefaultKeyMap())),
-		convoPane: panes.NewCurConvoPane(db, zone.DefaultManager, CfgPoisonButtonId),
+		convoPane: panes.NewCurConvoPane(db, zone.DefaultManager, &activeAttacks, poisonPaneLm, CfgPoisonButtonId),
 		focusedId: misc.ConvosPaneId,
 		eWriter:   misc.NewEventWriter(lCh),
 		mainSniff: startMainSniffer,
@@ -103,15 +103,15 @@ func runUi(db *sql.DB, startMainSniffer bool) (err error) {
 	//	}
 	//}()
 
-	// Initialize the ARP table
+	// Initialize the conversations table
 	//c := getConvosTableContent(ui.db, 100, 0)
-	c := getConvosTableContent(&ui)
-	if c.err != nil {
-		fmt.Println("failed to get initial conversations content")
-		return c.err
-	}
-	ui.doConvoTableContent(c)
-	ui.doCurrConvoRow()
+	//c := getConvosTableContent(&ui)
+	//if c.err != nil {
+	//	fmt.Println("failed to get initial conversations content")
+	//	return c.err
+	//}
+	//ui.doConvoTableContent(c)
+	//ui.curConvoRow = ui.doCurrConvoRow()
 
 	if _, err = tea.NewProgram(ui, tea.WithAltScreen(), tea.WithMouseCellMotion()).Run(); err != nil {
 		fmt.Printf("error starting the ui: %v", err.Error())
