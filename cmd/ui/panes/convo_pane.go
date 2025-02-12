@@ -181,9 +181,6 @@ func (c CurConvoPane) View() string {
 			if len(r[0]) > c.tbl.Columns()[0].Width {
 				c.tbl.Columns()[0].Width = len(r[0])
 			}
-			//} else if r[0] == "" {
-			//	break
-			//}
 		}
 
 		// Calculate width for remaining columns
@@ -200,11 +197,12 @@ func (c CurConvoPane) View() string {
 		// RENDER WITH POISONING CONFIG BUTTON
 		//====================================
 
+		btnTxt := "Configure Poisoning"
 		s := lipgloss.NewStyle().
-			Width(c.Style.GetWidth() / 4).
+			Width(len(btnTxt) + 2).
 			AlignHorizontal(lipgloss.Center).
 			Background(lipgloss.Color("240"))
-		btn = zone.Mark(c.poisonCfgBtnId, s.Render("Configure Poisoning"))
+		btn = zone.Mark(c.poisonCfgBtnId, s.Render(btnTxt))
 
 	}
 
