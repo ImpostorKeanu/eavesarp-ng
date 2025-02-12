@@ -20,6 +20,7 @@ import (
 	"time"
 )
 
+// ui styling variables
 var (
 	deselectedPaneBorderColor = lipgloss.Color("240")
 	selectedPaneBorderColor   = lipgloss.Color("248")
@@ -37,18 +38,26 @@ var (
 	senderPoisonedChar = string(emoji.GreenCircle)  // Character displayed when a sender is poisoned
 )
 
+// headers for the conversation table that are used as keys
+// to map back to their proper index in a row.
+// (see convosTblColInds).
+//
+// NOTE: these _do not_ indicate ordering.
 const (
 	convosTblIndHeader      = "#"
-	convosTblSNACHeader     = "SNAC"
-	convosTblPoisonedHeader = "Poisoned"
 	convosTblSenderHeader   = "Sender"
 	convosTblTargetHeader   = "Target"
 	convosTblARPCountHeader = "ARP #"
+	convosTblSNACHeader     = "SNAC"
+	convosTblPoisonedHeader = "Poisoned"
 )
 
 var (
-	convosTblColInds = make(map[string]int)
-	convosTblCols    = []table.Column{
+	convosTblColInds = make(map[string]int) // map column header strings to their index
+	// convosTblCols establishes column headers and ordering.
+	//
+	// It's copied later when generating content for rows.
+	convosTblCols = []table.Column{
 		{convosTblIndHeader, 0},
 		{convosTblSenderHeader, 0},
 		{convosTblTargetHeader, 0},
@@ -58,8 +67,10 @@ var (
 	}
 )
 
+const CfgPoisonButtonId = "poisonBtn"
+
+// SQL queries for the conversations table
 const (
-	CfgPoisonButtonId = "poisonBtn"
 	// TODO we may need to add a limit & offset to this
 	//    unknown how large these rows are going to become
 	convosTableQuery = `
@@ -818,7 +829,6 @@ func getConvosTableContent(m *model) (content convosTableContent) {
 	// Variables to track information about row content
 	// - these are used to format convosTable columns later
 	var senderIpWidth, targetIpWidth int
-	//arpCountHeader := "ARP #"
 	arpCountWidth := len(convosTblARPCountHeader)
 
 	defer rows.Close()
@@ -833,7 +843,6 @@ func getConvosTableContent(m *model) (content convosTableContent) {
 		var sender, target eavesarp_ng.Ip
 		var arpCount int
 		var hasSnac bool
-		//var senderChanged bool
 
 		// Get data from the sql row
 		err = rows.Scan(&sender.Id, &sender.Value,
@@ -869,16 +878,13 @@ func getConvosTableContent(m *model) (content convosTableContent) {
 		//======================================
 
 		tRow := make(table.Row, len(convosTblCols))
+		content.rows = append(content.rows, tRow)
 		tRow[convosTblColInds[convosTblIndHeader]] = fmt.Sprintf("%d", rowInd)
 		tRow[convosTblColInds[convosTblSNACHeader]] = sC
 		tRow[convosTblColInds[convosTblPoisonedHeader]] = senderPoisoned
 		tRow[convosTblColInds[convosTblSenderHeader]] = sender.Value
 		tRow[convosTblColInds[convosTblTargetHeader]] = target.Value
 		tRow[convosTblColInds[convosTblARPCountHeader]] = arpCountValue
-		content.rows = append(content.rows, tRow)
-
-		//tRow = append(tRow, sender.Value)
-		//content.rows = append(content.rows, append(tRow, target.Value, arpCountValue))
 	}
 
 	//======================
