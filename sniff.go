@@ -191,7 +191,7 @@ outer:
 					go func() {
 						eWriters.Writef("initiating active arp request for %v", tarIp.Value)
 
-						ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+						ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 						context.AfterFunc(ctx, func() {
 							cancel()
 							if err := SetArpResolved(db, tarIp.Id); err != nil {
@@ -253,7 +253,7 @@ outer:
 							}
 						}
 					}()
-				
+
 				}
 
 			case layers.ARPReply:
@@ -371,9 +371,9 @@ func GetArpLayer(packet gopacket.Packet) *layers.ARP {
 	return nil
 }
 
-// SnacSniffWriter should be run as a background process to receive
+// SnacSniffWriter should run as a background routine to receive
 // packets that are written to a pcap file.
-func SnacSniffWriter(ctx context.Context, c chan []byte, fileName string) (err error) {
+func SnacSniffWriter(ctx context.Context, c chan gopacket.Packet, fileName string) (err error) {
 	var handle *pcap.Handle
 	if handle, err = pcap.OpenOffline(fileName); err != nil {
 		return err
@@ -385,8 +385,8 @@ outer:
 		case <-ctx.Done():
 			// TODO handle
 			return nil
-		case packetData := <-c:
-			if err = handle.WritePacketData(packetData); err != nil {
+		case pkt := <-c:
+			if err = handle.WritePacketData(pkt.Data()); err != nil {
 				// TODO handle
 				break outer
 			}
@@ -423,8 +423,6 @@ func SnacSniff(ctx context.Context, iName, iAddr string, srcIp net.IP, dstIp net
 	src := gopacket.NewPacketSource(handle, layers.LayerTypeEthernet)
 	in := src.Packets()
 
-	var pCount int
-
 outer:
 	for {
 		select {
@@ -448,16 +446,12 @@ outer:
 			// Run handlers
 			go func() {
 				for _, h := range handlers {
-					h(packet)
+					if h != nil {
+						h(packet)
+					}
 				}
 			}()
 
-			if maxPackets > 0 {
-				if pCount >= maxPackets {
-					break outer
-				}
-				pCount++
-			}
 		}
 	}
 

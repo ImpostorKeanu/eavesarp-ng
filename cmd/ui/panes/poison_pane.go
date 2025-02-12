@@ -10,6 +10,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/enescakir/emoji"
 	"github.com/google/gopacket"
+	"github.com/google/gopacket/layers"
+	"github.com/google/gopacket/pcapgo"
 	eavesarp_ng "github.com/impostorkeanu/eavesarp-ng"
 	"github.com/impostorkeanu/eavesarp-ng/cmd/ui/misc"
 	"github.com/impostorkeanu/eavesarp-ng/cmd/ui/panes/stopwatch"
@@ -55,9 +57,9 @@ const (
 )
 
 const (
-	doneKey       = poisoningStatusCtxKey("done")
-	pktCountChKey = poisoningStatusCtxKey("ch")
-	cancelKey     = poisoningStatusCtxKey("cancel")
+	doneKey          = poisoningStatusCtxKey("done")
+	statusPktCountCh = poisoningStatusCtxKey("count-ch")
+	cancelKey        = poisoningStatusCtxKey("cancel")
 )
 
 type (
@@ -420,9 +422,11 @@ func (p *PoisonPane) handleBtnPressMsg(msg BtnPressMsg) (cmd tea.Cmd) {
 		}
 
 		eWriters := eavesarp_ng.NewEventWriters(p.eWriter) // Let eavesarp write to the log pane
-		handlerCountCh := make(chan int)                   // Channel used by packet handlers to send packet count updates
-		var ctx context.Context                            // Context to enable cross-routine attack timeout/cancellation
-		var startCmd tea.Cmd                               // Start command for the UI timers/stopwatch
+		handlerCountCh := make(chan int, 100)              // Channel used by packet handlers to send packet count updates
+		statusCountCh := make(chan int, 100)
+		var cancel context.CancelFunc
+		var ctx context.Context // Context to enable cross-routine attack timeout/cancellation
+		var startCmd tea.Cmd    // Start command for the UI timers/stopwatch
 
 		// Update ctx with cancellation and/or timeout
 		if len(p.CaptureDurationInput().Value()) > 0 {
@@ -430,17 +434,109 @@ func (p *PoisonPane) handleBtnPressMsg(msg BtnPressMsg) (cmd tea.Cmd) {
 			// Note: duration value was validated by poison pane
 			d, _ := time.ParseDuration(p.CaptureDurationInput().Value())
 			p.Timer = timer.New(p.ConvoKey(), d)
-			ctx, p.cancelPoisonCtx = context.WithTimeout(context.Background(), d)
+			ctx, cancel = context.WithTimeout(context.Background(), d)
 			startCmd = p.Timer.Start()
 		} else {
 			// Attack will run until cancelled
 			p.Stopwatch = stopwatch.NewStopwatch(p.ConvoKey(), time.Now(), time.Second)
-			ctx, p.cancelPoisonCtx = context.WithCancel(context.Background())
+			ctx, cancel = context.WithCancel(context.Background())
 			startCmd = p.Stopwatch.Start()
 		}
 
-		ctx = context.WithValue(ctx, pktCountChKey, make(chan int)) // Total packet count written here to emit status msg
-		ctx = context.WithValue(ctx, cancelKey, p.cancelPoisonCtx)  // Bind the cancel function to make it accessible to routines
+		var hasClosed bool
+		p.cancelPoisonCtx = func() {
+			cancel()
+			if !hasClosed {
+				hasClosed = true
+				close(handlerCountCh)
+				close(statusCountCh)
+			}
+		}
+
+		ctx = context.WithValue(ctx, statusPktCountCh, statusCountCh) // Total packet count written here to emit status msg
+		ctx = context.WithValue(ctx, cancelKey, p.cancelPoisonCtx)    // Bind the cancel function to make it accessible to routines
+
+		//========================
+		// DEFINE CAPTURE HANDLERS
+		//========================
+
+		// nil = noop here
+		var packetCountHandler, pcapWriterHandler eavesarp_ng.SnacSniffHandler
+
+		// always track the packet count
+		packetCountHandler = func(pkt gopacket.Packet) {
+			// TODO writing to the handlerCountCh should probably be handled in batches
+			// Increment the packet count by 1
+			handlerCountCh <- 1
+			// Get and save transport layer info to db
+			if proto, dstPort, err := eavesarp_ng.GetPacketTransportLayerInfo(pkt, eWriters); errors.Is(err, eavesarp_ng.NoTransportLayerErr) {
+				// NOP
+			} else if err != nil {
+				p.eWriter.WriteStringf("failed to retrieve packet transport layer info: %s", err.Error())
+			} else {
+				// Create the port and associate with attack in the db
+				if port, err := eavesarp_ng.GetOrCreatePort(p.db, nil, dstPort, proto); err != nil {
+					p.eWriter.WriteStringf("failed to create port in db: %v", err.Error())
+				} else if _, err := eavesarp_ng.GetOrCreateAttackPort(p.db, attack.Id, port.Id); err != nil {
+					p.eWriter.WriteStringf("failed to associate port with attack in db: %v", err.Error())
+				}
+			}
+		}
+
+		// packet count background routine
+		packetCountWatcher := func() tea.Msg {
+			statusCh := ctx.Value(statusPktCountCh).(chan int)
+			var count int
+		outer:
+			for {
+				select {
+				case <-ctx.Done():
+					break outer
+				case i := <-handlerCountCh:
+					count += i
+					statusCh <- count // update status count
+					if packetLimit > 0 && count >= packetLimit {
+						// packet limit met
+						cancel()
+					}
+				}
+			}
+			return nil
+		}
+
+		// handle writing to output file
+		if p.OutputFileInput().Value() != "" {
+			ch := make(chan gopacket.Packet, 100)
+
+			// start routine to receive and write the packet
+			go func() {
+				f, _ := os.Create(p.OutputFileInput().Value())
+				defer f.Close()
+				writer := pcapgo.NewWriter(f)
+				writer.WriteFileHeader(1600, layers.LinkTypeEthernet)
+			outer:
+				for {
+					select {
+					case <-ctx.Done():
+						// TODO handle
+						break outer
+					case pkt := <-ch:
+						if err = writer.WritePacket(pkt.Metadata().CaptureInfo, pkt.Data()); err != nil {
+							p.eWriter.WriteStringf("error while writing to capture output file: %v", err.Error())
+							p.cancelPoisonCtx()
+							break outer
+						}
+					}
+				}
+			}()
+
+			// handler that will send the packet to the routine that
+			// will write the packet to file
+			pcapWriterHandler = func(p gopacket.Packet) {
+				ch <- p
+			}
+		}
+
 		cmd = tea.Batch(
 			startCmd,
 			// Start watching for reports of packet counts
@@ -452,46 +548,20 @@ func (p *PoisonPane) handleBtnPressMsg(msg BtnPressMsg) (cmd tea.Cmd) {
 					ew:          p.eWriter,
 				}
 			},
-			// Start process to watch for packet count updates
-			func() tea.Msg {
-				ch := ctx.Value(pktCountChKey).(chan int)
-				var count int
-			outer:
-				for {
-					select {
-					case <-ctx.Done():
-						break outer
-					case i := <-handlerCountCh:
-						count += i
-						ch <- count
-					}
-				}
-				return nil
-			},
+			packetCountWatcher,
 			// Start poisoning
 			func() tea.Msg {
+
 				p.eWriter.WriteStringf("starting poisoning attack: %s -> %s", sIp.Value, tIp.Value)
 				// TODO update for ip address specification on interface
-				eavesarp_ng.SnacSniff(ctx,
-					p.ifaceName, "", senderIp, targetIp, packetLimit, eWriters,
-					func(pkt gopacket.Packet) {
-						// TODO writing to the handlerCountCh should probably be handled in batches
-						// Increment the packet count by 1
-						handlerCountCh <- 1
-						// Get and save transport layer info to db
-						if proto, dstPort, err := eavesarp_ng.GetPacketTransportLayerInfo(pkt, eWriters); errors.Is(err, eavesarp_ng.NoTransportLayerErr) {
-							// NOP
-						} else if err != nil {
-							p.eWriter.WriteStringf("failed to retrieve packet transport layer info: %s", err.Error())
-						} else {
-							// Create the port and associate with attack in the db
-							if port, err := eavesarp_ng.GetOrCreatePort(p.db, nil, dstPort, proto); err != nil {
-								p.eWriter.WriteStringf("failed to create port in db: %v", err.Error())
-							} else if _, err := eavesarp_ng.GetOrCreateAttackPort(p.db, attack.Id, port.Id); err != nil {
-								p.eWriter.WriteStringf("failed to associate port with attack in db: %v", err.Error())
-							}
-						}
-					})
+
+				// Packet will be passed to each handler
+				handlers := []eavesarp_ng.SnacSniffHandler{
+					packetCountHandler,
+					pcapWriterHandler, // nil is FINE here since it's a NOP
+				}
+
+				eavesarp_ng.SnacSniff(ctx, p.ifaceName, "", senderIp, targetIp, packetLimit, eWriters, handlers...)
 				p.eWriter.WriteStringf("ending poisoning attack: %s -> %s", sIp.Value, tIp.Value)
 				return nil
 			})
@@ -643,12 +713,12 @@ func (p PoisonPane) View() string {
 
 func handlePoisoningStatusMsg(msg PoisoningStatusMsg) tea.Cmd {
 	return func() tea.Msg {
-		countCh := msg.ctx.Value(pktCountChKey).(chan int)
+		statusCh := msg.ctx.Value(statusPktCountCh).(chan int)
+		cancel := msg.ctx.Value(cancelKey).(context.CancelFunc)
 		select {
 		case <-msg.ctx.Done():
 			msg.ctx = context.WithValue(msg.ctx, doneKey, true)
-			close(countCh)
-			msg.ctx.Value(cancelKey).(context.CancelFunc)()
+			cancel()
 			if err := msg.ctx.Err(); errors.Is(err, context.Canceled) {
 				msg.ew.WriteStringf("poisoning canceled: %s", msg.Id)
 			} else if errors.Is(err, context.DeadlineExceeded) {
@@ -658,7 +728,7 @@ func handlePoisoningStatusMsg(msg PoisoningStatusMsg) tea.Cmd {
 			}
 			// Message indicating end of poisoning
 			return PoisoningStatusMsg{Id: msg.Id, PacketCount: 0, ew: msg.ew, ctx: msg.ctx}
-		case count := <-countCh:
+		case count := <-statusCh:
 			// Message indicating the current count of captured packets
 			return PoisoningStatusMsg{Id: msg.Id, PacketCount: count, ctx: msg.ctx, ew: msg.ew,
 			}
