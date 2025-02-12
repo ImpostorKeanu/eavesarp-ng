@@ -12,17 +12,14 @@ import (
 )
 
 var (
-	// activeArps tracks active ARP requests initiated by the application
-	// when an ARP target is passively detected, allowing us to monitor for
-	// desired responses.
+	// activeArps tracks active ARP requests initiated by the application.
 	activeArps = ActiveArps{sync.RWMutex{}, make(map[string]*ActiveArp)}
-	// arpSenderC is used to initiate ARP requests when an ARP target is
-	// passively detected.
+	// arpSenderC is used to send ARP requests to a bacground routine.
 	arpSenderC = make(chan ArpSenderArgs)
-	// stopArpSenderC is used to stop ArpSender process.
-	stopArpSenderC      = make(chan bool)
-	activeArpAlreadySet = errors.New("already set")
-	arpSleeper          = NewSleeper(1, 5, 30)
+	// stopArpSenderC is used to stop the ArpSender routine.
+	stopArpSenderC           = make(chan bool)
+	activeArpAlreadySetError = errors.New("already set")
+	arpSleeper               = NewSleeper(1, 5, 30)
 )
 
 type (
@@ -95,7 +92,7 @@ func (a *ActiveArps) Has(ip string) bool {
 // afterFuncs are executed after the active ARP instance
 // times out.
 //
-// activeArpAlreadySet is returned when an outstanding request
+// activeArpAlreadySetError is returned when an outstanding request
 // is already in activeArps.
 func (a *ActiveArps) Add(i *Ip, eWriters *EventWriters, afterFuncs ...func() error) (err error) {
 	if !a.Has(i.Value) {
@@ -119,7 +116,7 @@ func (a *ActiveArps) Add(i *Ip, eWriters *EventWriters, afterFuncs ...func() err
 		return
 	}
 
-	return activeArpAlreadySet
+	return activeArpAlreadySetError
 }
 
 // Del removes an active ARP job for the ip.

@@ -185,7 +185,7 @@ outer:
 						dstIp:     arpL.DstProtAddress,
 						addActiveArp: func() (err error) {
 							err = activeArps.Add(tarIp, &eWriters, func() error { return SetArpResolved(db, tarIp.Id) })
-							if err != nil && !errors.Is(err, activeArpAlreadySet) {
+							if err != nil && !errors.Is(err, activeArpAlreadySetError) {
 								eWriters.Writef("error: failed to watch for active arp response: %v", err.Error())
 								return
 							} else if err != nil {
