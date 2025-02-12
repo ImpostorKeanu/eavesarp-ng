@@ -95,24 +95,6 @@ func runUi(db *sql.DB, startMainSniffer bool) (err error) {
 
 	//ui.mainSniff = false
 
-	// TODO delete this
-	//go func() {
-	//	for n := 1; n <= 10; n++ {
-	//		time.Sleep(50 * time.Millisecond)
-	//		lCh <- fmt.Sprintf("event %d", n)
-	//	}
-	//}()
-
-	// Initialize the conversations table
-	//c := getConvosTableContent(ui.db, 100, 0)
-	//c := getConvosTableContent(&ui)
-	//if c.err != nil {
-	//	fmt.Println("failed to get initial conversations content")
-	//	return c.err
-	//}
-	//ui.doConvoTableContent(c)
-	//ui.curConvoRow = ui.doCurrConvoRow()
-
 	if _, err = tea.NewProgram(ui, tea.WithAltScreen(), tea.WithMouseCellMotion()).Run(); err != nil {
 		fmt.Printf("error starting the ui: %v", err.Error())
 	}
