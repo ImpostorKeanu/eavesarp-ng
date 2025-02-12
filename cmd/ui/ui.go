@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/table"
@@ -37,9 +38,30 @@ var (
 )
 
 const (
+	convosTblIndHeader      = "#"
+	convosTblSNACHeader     = "SNAC"
+	convosTblPoisonedHeader = "Poisoned"
+	convosTblSenderHeader   = "Sender"
+	convosTblTargetHeader   = "Target"
+	convosTblARPCountHeader = "ARP #"
+)
+
+var (
+	convosTblColInds = make(map[string]int)
+	convosTblCols    = []table.Column{
+		{convosTblIndHeader, 0},
+		{convosTblSenderHeader, 0},
+		{convosTblTargetHeader, 0},
+		{convosTblARPCountHeader, 0},
+		{convosTblSNACHeader, 0},
+		{convosTblPoisonedHeader, 0},
+	}
+)
+
+const (
 	CfgPoisonButtonId = "poisonBtn"
 	// TODO we may need to add a limit & offset to this
-	//    unknown how large these queries are going to become
+	//    unknown how large these rows are going to become
 	convosTableQuery = `
 SELECT sender.id AS sender_ip_id,
        sender.value AS sender_ip_value,
@@ -71,6 +93,12 @@ func init() {
 		//UnsetForeground().
 		Foreground(lipgloss.Color("255")).
 		Bold(true)
+
+	// Assign index offsets to conversations table headers
+	// so we can pull values from the row reliably.
+	for i, r := range convosTblCols {
+		convosTblColInds[r.Title] = i
+	}
 }
 
 type (
@@ -133,18 +161,21 @@ type (
 
 func newConvoRow(r table.Row) (_ panes.CurConvoRowDetails, err error) {
 	var ind, arpCount int
-	if ind, err = strconv.Atoi(r[0]); err != nil {
+	if ind, err = strconv.Atoi(r[convosTblColInds[convosTblIndHeader]]); err != nil {
 		return
-	} else if arpCount, err = strconv.Atoi(r[5]); err != nil {
+	} else if arpCount, err = strconv.Atoi(r[convosTblColInds[convosTblARPCountHeader]]); err != nil {
 		return
 	}
-	return panes.CurConvoRowDetails{ind, r[1] != "", r[3], r[4], arpCount}, err
+	return panes.CurConvoRowDetails{ind,
+		r[convosTblColInds[convosTblSNACHeader]] != "",
+		r[convosTblColInds[convosTblSenderHeader]],
+		r[convosTblColInds[convosTblTargetHeader]], arpCount}, err
 }
 
 func (m model) ConvoKey() (k string) {
 	if len(m.convosTable.SelectedRow()) > 0 {
 		r := m.convosTable.SelectedRow()
-		return eavesarp_ng.FmtConvoKey(r[3], r[4])
+		return eavesarp_ng.FmtConvoKey(r[convosTblColInds[convosTblSenderHeader]], r[convosTblColInds[convosTblTargetHeader]])
 	}
 	return
 }
@@ -182,16 +213,22 @@ func (m model) Init() tea.Cmd {
 
 func (m model) Update(msg tea.Msg) (_ tea.Model, cmd tea.Cmd) {
 
+	// initialize last sender and target ip values
+	//
+	// this allows ensures that the currently selected
+	// row remains selected when new conversations are
+	// discovered, which will change the index of the row
+	// should the new conversation have a lesser index
 	if m.lastSender == "" && m.lastTarget == "" {
-		m.lastSender = m.getSelectedSenderIp()
-		m.lastTarget = m.getSelectedTargetIp()
+		m.lastSender = m.getRowSenderIp()
+		m.lastTarget = m.getRowTargetIp()
 	}
 
 	switch msg := msg.(type) {
 
 	case convosTableContent:
 
-		m.setCursor(m.lastSender, m.lastTarget)
+		m.setConvosCursor(m.lastSender, m.lastTarget)
 
 		if msg.err != nil {
 			_, err := m.eWriter.WriteStringf("failed update conversations content: %v", msg.err.Error())
@@ -405,6 +442,8 @@ func (m model) View() string {
 	// Make a new slice of rows
 	rows := make([]table.Row, len(m.convosTable.Rows()))
 
+	senderIpInd := convosTblColInds[convosTblSenderHeader]
+
 	// Iterate over each row and copy the values
 	// Note: we can't copy the set of rows directly because
 	//       it's a multidimensional slice, meaning references
@@ -415,10 +454,10 @@ func (m model) View() string {
 		row := make(table.Row, len(r))
 		copy(row, r)
 		rows[i] = row
-		if r[3] == lastSender {
-			rows[i][3] = strings.Repeat(" ", len(lastSender)-1) + "↖"
+		if r[senderIpInd] == lastSender {
+			rows[i][senderIpInd] = strings.Repeat(" ", len(lastSender)-1) + "↖"
 		} else {
-			lastSender = r[3]
+			lastSender = r[senderIpInd]
 		}
 	}
 	convosTbl.SetRows(rows)
@@ -643,8 +682,8 @@ func (m *model) handleKeyMsg(msg tea.KeyMsg) (cmd tea.Cmd) {
 				m.convosTable, _ = m.convosTable.Update(msg)
 			}
 			m.convoPane.GotoTop()
-			m.lastSender = m.getSelectedSenderIp()
-			m.lastTarget = m.getSelectedTargetIp()
+			m.lastSender = m.getRowSenderIp()
+			m.lastTarget = m.getRowTargetIp()
 		case "down", "j":
 			if m.convosTable.Cursor() == len(m.convosTable.Rows())-1 {
 				m.convosTable.GotoTop()
@@ -652,8 +691,8 @@ func (m *model) handleKeyMsg(msg tea.KeyMsg) (cmd tea.Cmd) {
 				m.convosTable, _ = m.convosTable.Update(msg)
 			}
 			m.convoPane.GotoTop()
-			m.lastSender = m.getSelectedSenderIp()
-			m.lastTarget = m.getSelectedTargetIp()
+			m.lastSender = m.getRowSenderIp()
+			m.lastTarget = m.getRowTargetIp()
 		case "ctrl+shift+up", "ctrl+shift+right":
 			m.focusedId = misc.CurConvoPaneId
 			m.convoPane.FocusTable()
@@ -735,30 +774,37 @@ func (m *model) handleKeyMsg(msg tea.KeyMsg) (cmd tea.Cmd) {
 	return
 }
 
-func (m *model) getSelectedSenderIp() (s string) {
+// getRowSenderIp gets the string IP address for the sender column
+// of the currently selected row of the conversations table.
+func (m *model) getRowSenderIp() (s string) {
 	if m.convosTable.SelectedRow() != nil {
 		s = m.convosTable.SelectedRow()[3]
 	}
 	return
 }
 
-func (m *model) getSelectedTargetIp() (t string) {
+// getRowTargetIp gets the string IP address for the target column
+// of the currently selected row of the conversations table.
+func (m *model) getRowTargetIp() (t string) {
 	if m.convosTable.SelectedRow() != nil {
 		t = m.convosTable.SelectedRow()[4]
 	}
 	return
 }
 
-func (m *model) setCursor(s, t string) {
-	if m.convosTable.SelectedRow() == nil || (m.getSelectedSenderIp() == s && m.getSelectedTargetIp() == t) {
+// setConvoCursor sets the convos table cursor to the row matching
+// the sender and the target.
+func (m *model) setConvosCursor(sender, target string) (e error) {
+	if m.convosTable.SelectedRow() == nil || (m.getRowSenderIp() == sender && m.getRowTargetIp() == target) {
 		return
 	}
 	for i, r := range m.convosTable.Rows() {
-		if r[3] == s && r[4] == t {
+		if r[3] == sender && r[4] == target {
 			m.convosTable.SetCursor(i)
 			return
 		}
 	}
+	return errors.New("not found")
 }
 
 func getConvosTableContent(m *model) (content convosTableContent) {
@@ -772,9 +818,8 @@ func getConvosTableContent(m *model) (content convosTableContent) {
 	// Variables to track information about row content
 	// - these are used to format convosTable columns later
 	var senderIpWidth, targetIpWidth int
-	var snacsSeen bool
-	arpCountHeader := "ARP #"
-	arpCountWidth := len(arpCountHeader)
+	//arpCountHeader := "ARP #"
+	arpCountWidth := len(convosTblARPCountHeader)
 
 	defer rows.Close()
 
@@ -799,14 +844,14 @@ func getConvosTableContent(m *model) (content convosTableContent) {
 			return
 		}
 
+		var sC string
+		if hasSnac {
+			sC = m.snacChar
+		}
+
 		var senderPoisoned string
 		if is := activeAttacks.Exists(eavesarp_ng.FmtConvoKey(sender.Value, target.Value)); is {
 			senderPoisoned = m.senderPoisonedChar
-		}
-
-		// Determine if the SNAC column should be displayed
-		if hasSnac && !snacsSeen {
-			snacsSeen = true
 		}
 
 		arpCountValue := fmt.Sprintf("%d", arpCount)
@@ -823,30 +868,41 @@ func getConvosTableContent(m *model) (content convosTableContent) {
 		// CONSTRUCT AND CAPTURE THE CURRENT ROW
 		//======================================
 
-		tRow := table.Row{fmt.Sprintf("%d", rowInd)}
+		tRow := make(table.Row, len(convosTblCols))
+		tRow[convosTblColInds[convosTblIndHeader]] = fmt.Sprintf("%d", rowInd)
+		tRow[convosTblColInds[convosTblSNACHeader]] = sC
+		tRow[convosTblColInds[convosTblPoisonedHeader]] = senderPoisoned
+		tRow[convosTblColInds[convosTblSenderHeader]] = sender.Value
+		tRow[convosTblColInds[convosTblTargetHeader]] = target.Value
+		tRow[convosTblColInds[convosTblARPCountHeader]] = arpCountValue
+		content.rows = append(content.rows, tRow)
 
-		if hasSnac {
-			tRow = append(tRow, m.snacChar, senderPoisoned)
-		} else {
-			tRow = append(tRow, "", senderPoisoned)
-		}
-
-		tRow = append(tRow, sender.Value)
-		content.rows = append(content.rows, append(tRow, target.Value, arpCountValue))
+		//tRow = append(tRow, sender.Value)
+		//content.rows = append(content.rows, append(tRow, target.Value, arpCountValue))
 	}
 
 	//======================
 	// PREPARE TABLE COLUMNS
 	//======================
 
-	// Include the snacs column if snacs were seen
-	content.cols = append(content.cols,
-		table.Column{"#", len(fmt.Sprintf("%d", len(content.rows)))},
-		table.Column{"SNAC", 4},
-		table.Column{"Poisoned", 8},
-		table.Column{"Sender", senderIpWidth},
-		table.Column{"Target", targetIpWidth},
-		table.Column{arpCountHeader, arpCountWidth})
+	// copy convosTblCols and set the width for each column
+	for _, col := range convosTblCols {
+		switch col.Title {
+		case convosTblIndHeader:
+			col.Width = len(fmt.Sprintf("%d", len(content.rows)))
+		case convosTblSNACHeader, convosTblPoisonedHeader:
+			col.Width = len(col.Title)
+		case convosTblSenderHeader:
+			col.Width = senderIpWidth
+		case convosTblTargetHeader:
+			col.Width = targetIpWidth
+		case convosTblARPCountHeader:
+			col.Width = arpCountWidth
+		default:
+			panic("unexpected convos table header")
+		}
+		content.cols = append(content.cols, col)
+	}
 
 	return
 
