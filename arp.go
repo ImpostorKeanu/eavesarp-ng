@@ -7,7 +7,6 @@ import (
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
 	"net"
-	"sync"
 )
 
 var (
@@ -30,14 +29,6 @@ type (
 		cancel context.CancelFunc
 	}
 
-	// ActiveArps map string IPv4 addresses to ActiveArp records.
-	//
-	// ActiveArp instances are
-	ActiveArps struct {
-		mu sync.RWMutex
-		v  map[string]*ActiveArp
-	}
-
 	// arpStringAddrs consists of network addresses in string format that
 	// were extracted from an ARP packet.
 	arpStringAddrs struct {
@@ -48,19 +39,10 @@ type (
 	ArpSenderArgs struct {
 		handle    *pcap.Handle
 		operation uint64
-		srcHw     net.HardwareAddr
-		srcIp     net.IP
-		dstHw     net.HardwareAddr
-		dstIp     net.IP
-		// addActiveArp allows the caller to define a function that
-		// adds the request to activeArps, which is used to monitor for
-		// expected ARP responses.
-		//
-		// The function should call ActiveArps.Add, the afterFuncs argument
-		// for which should have a function that calls SetArpResolved.
-		//
-		// We do this to avoid database queries in ArpSender.
-		//addActiveArp func() error
+		senHw     net.HardwareAddr
+		senIp     net.IP
+		tarHw     net.HardwareAddr
+		tarIp     net.IP
 	}
 )
 
@@ -86,17 +68,17 @@ func ArpSender(eWriters *EventWriters) {
 			break
 		case sA := <-arpSenderC:
 
-			if sA.dstHw == nil {
+			if sA.tarHw == nil {
 				if sA.operation == layers.ARPReply {
-					eWriters.Write("arp replies require a dstHw value")
+					eWriters.Write("arp replies require a tarHw value")
 					continue
 				}
-				sA.dstHw = net.HardwareAddr{0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
+				sA.tarHw = net.HardwareAddr{0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
 			}
 
 			eth := layers.Ethernet{
-				SrcMAC:       sA.srcHw,
-				DstMAC:       sA.dstHw,
+				SrcMAC:       sA.senHw,
+				DstMAC:       sA.tarHw,
 				EthernetType: layers.EthernetTypeARP,
 			}
 			arp := layers.ARP{
@@ -105,10 +87,10 @@ func ArpSender(eWriters *EventWriters) {
 				HwAddressSize:     6,
 				ProtAddressSize:   4,
 				Operation:         uint16(sA.operation),
-				SourceHwAddress:   sA.srcHw,
-				SourceProtAddress: sA.srcIp.To4(),
-				DstHwAddress:      sA.dstHw,
-				DstProtAddress:    sA.dstIp.To4(),
+				SourceHwAddress:   sA.senHw,
+				SourceProtAddress: sA.senIp.To4(),
+				DstHwAddress:      sA.tarHw,
+				DstProtAddress:    sA.tarIp.To4(),
 			}
 			opts := gopacket.SerializeOptions{
 				FixLengths:       true,

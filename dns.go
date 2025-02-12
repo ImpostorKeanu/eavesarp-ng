@@ -19,6 +19,7 @@ const (
 )
 
 var (
+	activeDns = NewLockMap(make(map[string]*DnsSenderArgs))
 	// stopDnsSenderC is used to stop the DnsSender process.
 	stopDnsSenderC = make(chan bool)
 	// dnsSenderC receives DnsSenderArgs and runs DNS jobs based
@@ -77,7 +78,7 @@ func DnsSender(eWriters *EventWriters) {
 			var err error
 			var resolved []string
 
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			dnsKind := string(dA.kind)
 			switch dA.kind {
 			case PtrDnsKind:
@@ -108,6 +109,10 @@ func DnsSender(eWriters *EventWriters) {
 			// Handle the output
 			if dA.after != nil {
 				dA.after(resolved)
+			}
+
+			if dA.failure != nil {
+				dA.failure(err)
 			}
 		}
 	}
@@ -144,14 +149,17 @@ func handlePtrName(db *sql.DB, eWriters *EventWriters, ip *Ip, name string, dept
 	}
 
 	// Avoid duplicate forward name resolution
-	if !dnsName.IsNew || dnsFailCounter.Exceeded() {
+	if !dnsName.IsNew || dnsFailCounter.Exceeded() || activeDns.Get(FmtDnsKey(name, ADnsKind)) != nil {
 		return
 	}
 
 	// Do forward lookups for each newly discovered name
-	dnsSenderC <- DnsSenderArgs{
+	dArgs := DnsSenderArgs{
 		kind:   ADnsKind,
 		target: name,
+		failure: func(err error) {
+			activeDns.Delete(FmtDnsKey(name, ADnsKind))
+		},
 		after: func(newIpStrings []string) {
 			for _, newIpS := range newIpStrings {
 
@@ -161,44 +169,53 @@ func handlePtrName(db *sql.DB, eWriters *EventWriters, ip *Ip, name string, dept
 				if err != nil {
 					eWriters.Writef("failed to create new ip: %v", err.Error())
 					return
-				}
-
-				if _, err = GetOrCreateDnsARecord(db, newIp, dnsName); err != nil {
+				} else if _, err = GetOrCreateDnsARecord(db, newIp, dnsName); err != nil {
 					eWriters.Writef("failed to create dns a record: %v", err.Error())
 					return
-				}
-
-				if _, err := db.Exec(`INSERT OR IGNORE INTO aitm_opt (snac_target_ip_id, upstream_ip_id) VALUES (?,?)`,
+				} else if _, err = db.Exec(`INSERT OR IGNORE INTO aitm_opt (snac_target_ip_id, upstream_ip_id) VALUES (?,?)`,
 					ip.Id, newIp.Id); err != nil {
 					eWriters.Writef("failed to create aitm_opt record: ", err.Error())
 					return
 				}
 
-				if *depth > 0 && !newIp.PtrResolved {
-
-					dnsSenderC <- DnsSenderArgs{
-						kind:   PtrDnsKind,
-						target: newIp.Value,
-						failure: func(e error) {
-							if err := SetPtrResolved(db, *ip); err != nil {
-								eWriters.Writef("failed to set ptr to resolved: %v", err.Error())
-								return
-							}
-						},
-						after: func(names []string) {
-							if err := SetPtrResolved(db, *ip); err != nil {
-								eWriters.Writef("failed to set ptr to resolved: %v", err.Error())
-								return
-							}
-							for _, name := range names {
-								d := *depth - 1
-								handlePtrName(db, eWriters, &newIp, name, &d)
-							}
-						},
-					}
-
+				shouldReslove := *depth > 0 && !newIp.PtrResolved && activeDns.Get(FmtDnsKey(newIp.Value, PtrDnsKind)) == nil
+				if !shouldReslove {
+					return
 				}
+
+				dArgs := DnsSenderArgs{
+					kind:   PtrDnsKind,
+					target: newIp.Value,
+					failure: func(e error) {
+						if err := SetPtrResolved(db, *ip); err != nil {
+							eWriters.Writef("failed to set ptr to resolved: %v", err.Error())
+						}
+						activeDns.Delete(FmtDnsKey(newIp.Value, PtrDnsKind))
+					},
+					after: func(names []string) {
+						if err := SetPtrResolved(db, *ip); err != nil {
+							eWriters.Writef("failed to set ptr to resolved: %v", err.Error())
+							activeDns.Delete(FmtDnsKey(newIp.Value, PtrDnsKind))
+							return
+						}
+						// call recursively for each friendly name
+						for _, name := range names {
+							d := *depth - 1
+							handlePtrName(db, eWriters, &newIp, name, &d)
+						}
+						activeDns.Delete(FmtDnsKey(newIp.Value, PtrDnsKind))
+					},
+				}
+
+				activeDns.Set(FmtDnsKey(newIp.Value, PtrDnsKind), &dArgs)
+				dnsSenderC <- dArgs
+
 			}
+
+			activeDns.Delete(FmtDnsKey(name, ADnsKind))
 		},
 	}
+
+	activeDns.Set(FmtDnsKey(name, ADnsKind), &dArgs)
+	dnsSenderC <- dArgs
 }

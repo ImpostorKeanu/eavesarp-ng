@@ -172,38 +172,6 @@ outer:
 					eWriters.Writef("new target ip passively discovered: %v", tarIp.Value)
 				}
 
-				if tarIp.MacId == nil && activeArps.Get(tarIp.Value) == nil && !tarIp.ArpResolved {
-
-					//=================
-					// SEND ARP REQUEST
-					//=================
-
-					eWriters.Writef("initiating active arp request for %v", tarIp.Value)
-
-					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-					context.AfterFunc(ctx, func() {
-						cancel()
-						if err := SetArpResolved(db, tarIp.Id); err != nil {
-							eWriters.Writef("failed to set arp as resolved: %v", err.Error())
-						}
-						if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-							eWriters.Writef("never received active arp response for %v", tarIp.Value)
-						}
-						activeArps.Delete(tarIp.Value)
-					})
-
-					activeArps.Set(tarIp.Value, &ActiveArp{TarIp: tarIp, ctx: ctx, cancel: cancel})
-
-					arpSenderC <- ArpSenderArgs{
-						operation: layers.ARPRequest,
-						handle:    handle,
-						srcHw:     iface.HardwareAddr,
-						srcIp:     ifaceAddr.IP,
-						dstIp:     arpL.DstProtAddress,
-					}
-
-				}
-
 				//====================
 				// INCREMENT ARP COUNT
 				//====================
@@ -214,34 +182,78 @@ outer:
 					continue
 				}
 
+				//=================
+				// SEND ARP REQUEST
+				//=================
+
+				if tarIp.MacId == nil && activeArps.Get(tarIp.Value) == nil && !tarIp.ArpResolved {
+
+					go func() {
+						eWriters.Writef("initiating active arp request for %v", tarIp.Value)
+
+						ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+						context.AfterFunc(ctx, func() {
+							cancel()
+							if err := SetArpResolved(db, tarIp.Id); err != nil {
+								eWriters.Writef("failed to set arp as resolved: %v", err.Error())
+							}
+							if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+								eWriters.Writef("never received active arp response for %v", tarIp.Value)
+							}
+							activeArps.Delete(tarIp.Value)
+						})
+
+						activeArps.Set(tarIp.Value, &ActiveArp{TarIp: tarIp, ctx: ctx, cancel: cancel})
+
+						arpSenderC <- ArpSenderArgs{
+							operation: layers.ARPRequest,
+							handle:    handle,
+							senHw:     iface.HardwareAddr,
+							senIp:     ifaceAddr.IP,
+							tarIp:     arpL.DstProtAddress,
+						}
+					}()
+
+				}
+
 				//===================
 				// DO NAME RESOLUTION
 				//===================
 
-				if !dnsFailCounter.Exceeded() {
-					for _, ip := range []*Ip{senIp, tarIp} {
-						if !ip.PtrResolved {
-							dnsSenderC <- DnsSenderArgs{
-								kind:   PtrDnsKind,
-								target: ip.Value,
-								failure: func(e error) {
-									if err := SetPtrResolved(db, *ip); err != nil {
-										eWriters.Writef("failed to set ptr to resolved: %v", err.Error())
-										return
-									}
-								},
-								after: func(names []string) {
-									if err := SetPtrResolved(db, *ip); err != nil {
-										eWriters.Writef("failed to set ptr to resolved: %v", err.Error())
-										return
-									}
-									for _, name := range names {
-										handlePtrName(db, &eWriters, ip, name, nil)
-									}
-								},
+				if !dnsFailCounter.Exceeded() && activeDns.Get(FmtDnsKey(tarIp.Value, PtrDnsKind)) == nil {
+
+					go func() {
+						for _, ip := range []*Ip{senIp, tarIp} {
+							if !ip.PtrResolved {
+								dArgs := DnsSenderArgs{
+									kind:   PtrDnsKind,
+									target: ip.Value,
+									failure: func(e error) {
+										if err := SetPtrResolved(db, *ip); err != nil {
+											activeDns.Delete(FmtDnsKey(ip.Value, PtrDnsKind))
+											eWriters.Writef("failed to set ptr to resolved: %v", err.Error())
+											return
+										}
+										activeDns.Delete(FmtDnsKey(ip.Value, PtrDnsKind))
+									},
+									after: func(names []string) {
+										if err := SetPtrResolved(db, *ip); err != nil {
+											activeDns.Delete(FmtDnsKey(ip.Value, PtrDnsKind))
+											eWriters.Writef("failed to set ptr to resolved: %v", err.Error())
+											return
+										}
+										for _, name := range names {
+											handlePtrName(db, &eWriters, ip, name, nil)
+										}
+										activeDns.Delete(FmtDnsKey(ip.Value, PtrDnsKind))
+									},
+								}
+								activeDns.Set(FmtDnsKey(ip.Value, PtrDnsKind), &dArgs)
+								dnsSenderC <- dArgs
 							}
 						}
-					}
+					}()
+				
 				}
 
 			case layers.ARPReply:
@@ -384,7 +396,7 @@ outer:
 }
 
 // SnacSniff is used to initiate a standalone packet capture for a
-// specific source IP (srcIp) while passing each captured packet to
+// specific source IP (senIp) while passing each captured packet to
 // a series of handler functions.
 func SnacSniff(ctx context.Context, iName, iAddr string, srcIp net.IP, dstIp net.IP, maxPackets int, eWriters *EventWriters,
   handlers ...SnacSniffHandler) (err error) {
@@ -425,10 +437,10 @@ outer:
 				arpSenderC <- ArpSenderArgs{
 					handle:    handle,
 					operation: layers.ARPReply,
-					srcHw:     iface.HardwareAddr,
-					srcIp:     dstIp,
-					dstHw:     arp.SourceHwAddress,
-					dstIp:     arp.SourceProtAddress,
+					senHw:     iface.HardwareAddr,
+					senIp:     dstIp,
+					tarHw:     arp.SourceHwAddress,
+					tarIp:     arp.SourceProtAddress,
 				}
 				continue
 			}

@@ -75,9 +75,9 @@ func (l *LockMap[T]) Get(key string) *T {
 
 func (l *LockMap[T]) Extract(key string) (v *T) {
 	l.mu.Lock()
-	defer l.mu.Unlock()
 	v = l.m[key]
 	delete(l.m, key)
+	l.mu.Unlock()
 	return
 }
 
@@ -206,4 +206,8 @@ func SplitConvoKey(v string) (senderIp string, targetIp string, err error) {
 		err = errors.New("poorly formatted value supplied")
 	}
 	return
+}
+
+func FmtDnsKey(target string, kind DnsKind) string {
+	return fmt.Sprintf("%s:%s", target, kind)
 }
