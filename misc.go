@@ -49,35 +49,51 @@ type (
 		jitterMax int
 	}
 
-	ConvoLockMap[T any] struct {
+	LockMap[T any] struct {
 		mu sync.RWMutex
 		m  map[string]*T
 	}
+
+	ConvoLockMap[T any] struct {
+		LockMap[T]
+	}
 )
 
-func NewConvoLockMap[T any](m map[string]*T) *ConvoLockMap[T] {
-	return &ConvoLockMap[T]{m: m}
+func NewLockMap[T any](m map[string]*T) *LockMap[T] {
+	return &LockMap[T]{m: m}
 }
 
-func (l *ConvoLockMap[T]) Get(key string) *T {
+func NewConvoLockMap[T any](m map[string]*T) *ConvoLockMap[T] {
+	return &ConvoLockMap[T]{LockMap[T]{m: m}}
+}
+
+func (l *LockMap[T]) Get(key string) *T {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 	return l.m[key]
 }
 
-func (l *ConvoLockMap[T]) Set(key string, value *T) {
+func (l *LockMap[T]) Extract(key string) (v *T) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	v = l.m[key]
+	delete(l.m, key)
+	return
+}
+
+func (l *LockMap[T]) Set(key string, value *T) {
 	l.mu.Lock()
 	l.m[key] = value
 	l.mu.Unlock()
 }
 
-func (l *ConvoLockMap[T]) Delete(key string) {
+func (l *LockMap[T]) Delete(key string) {
 	l.mu.Lock()
 	delete(l.m, key)
 	l.mu.Unlock()
 }
 
-func (l *ConvoLockMap[T]) Update(key string, f func(*T)) {
+func (l *LockMap[T]) Update(key string, f func(*T)) {
 	l.mu.Lock()
 	f(l.m[key])
 	l.mu.Unlock()
@@ -85,6 +101,10 @@ func (l *ConvoLockMap[T]) Update(key string, f func(*T)) {
 
 func (l *ConvoLockMap[T]) CGet(sIp, tIp string) *T {
 	return l.Get(FmtConvoKey(sIp, tIp))
+}
+
+func (l *ConvoLockMap[T]) CExtract(sIp, tIp string) *T {
+	return l.Extract(FmtConvoKey(sIp, tIp))
 }
 
 func (l *ConvoLockMap[T]) CSet(sIp, tIp string, v *T) {

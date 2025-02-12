@@ -11,6 +11,7 @@ import (
 	"github.com/google/gopacket/pcap"
 	"io"
 	"net"
+	"time"
 )
 
 type (
@@ -171,11 +172,27 @@ outer:
 					eWriters.Writef("new target ip passively discovered: %v", tarIp.Value)
 				}
 
-				if tarIp.MacId == nil && !activeArps.Has(tarIp.Value) && !tarIp.ArpResolved {
+				if tarIp.MacId == nil && activeArps.Get(tarIp.Value) == nil && !tarIp.ArpResolved {
 
 					//=================
 					// SEND ARP REQUEST
 					//=================
+
+					eWriters.Writef("initiating active arp request for %v", tarIp.Value)
+
+					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					context.AfterFunc(ctx, func() {
+						cancel()
+						if err := SetArpResolved(db, tarIp.Id); err != nil {
+							eWriters.Writef("failed to set arp as resolved: %v", err.Error())
+						}
+						if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+							eWriters.Writef("never received active arp response for %v", tarIp.Value)
+						}
+						activeArps.Delete(tarIp.Value)
+					})
+
+					activeArps.Set(tarIp.Value, &ActiveArp{TarIp: tarIp, ctx: ctx, cancel: cancel})
 
 					arpSenderC <- ArpSenderArgs{
 						operation: layers.ARPRequest,
@@ -183,21 +200,8 @@ outer:
 						srcHw:     iface.HardwareAddr,
 						srcIp:     ifaceAddr.IP,
 						dstIp:     arpL.DstProtAddress,
-						addActiveArp: func() (err error) {
-							err = activeArps.Add(tarIp, &eWriters, func() error { return SetArpResolved(db, tarIp.Id) })
-							if err != nil && !errors.Is(err, activeArpAlreadySetError) {
-								eWriters.Writef("error: failed to watch for active arp response: %v", err.Error())
-								return
-							} else if err != nil {
-								// TODO
-								eWriters.Writef("error: unhandled exception: %v", err.Error())
-								err = nil
-							}
-							return
-						},
 					}
 
-					eWriters.Writef("initiated active arp request for %v", tarIp.Value)
 				}
 
 				//====================
@@ -246,7 +250,8 @@ outer:
 				// HANDLE ARP REPLIES
 				//===================
 
-				if activeArpIp := activeArps.Get(sAddrs.SenIp); activeArpIp != nil {
+				if aa := activeArps.Get(sAddrs.SenIp); aa != nil {
+					aa.cancel()
 					var srcIp *Ip
 					var srcMac *Mac
 					srcMac, srcIp, _, err = sAddrs.getOrCreateSnifferDbValues(db, ActiveArpMeth, &eWriters)

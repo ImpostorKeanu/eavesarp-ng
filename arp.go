@@ -8,12 +8,12 @@ import (
 	"github.com/google/gopacket/pcap"
 	"net"
 	"sync"
-	"time"
 )
 
 var (
 	// activeArps tracks active ARP requests initiated by the application.
-	activeArps = ActiveArps{sync.RWMutex{}, make(map[string]*ActiveArp)}
+	//activeArps = ActiveArps{sync.RWMutex{}, make(map[string]*ActiveArp)}
+	activeArps = NewLockMap(make(map[string]*ActiveArp))
 	// arpSenderC is used to send ARP requests to a bacground routine.
 	arpSenderC = make(chan ArpSenderArgs)
 	// stopArpSenderC is used to stop the ArpSender routine.
@@ -25,7 +25,7 @@ var (
 type (
 	// ActiveArp represents an ARP request.
 	ActiveArp struct {
-		DstIp  *Ip
+		TarIp  *Ip
 		ctx    context.Context
 		cancel context.CancelFunc
 	}
@@ -60,73 +60,9 @@ type (
 		// for which should have a function that calls SetArpResolved.
 		//
 		// We do this to avoid database queries in ArpSender.
-		addActiveArp func() error
+		//addActiveArp func() error
 	}
 )
-
-// Get the IP for an active arp.
-//
-// Note: This method has side effects! It removes the requested
-//       ip, cancels the context, and removes it from the container.
-func (a *ActiveArps) Get(ip string) *Ip {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if v, ok := a.v[ip]; ok {
-		v.cancel()
-		delete(a.v, ip)
-		return v.DstIp
-	}
-	return nil
-}
-
-// Has determines if ActiveArps has a job for the ip.
-func (a *ActiveArps) Has(ip string) bool {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	_, ok := a.v[ip]
-	return ok
-}
-
-// Add a new active ARP job for the ip.
-//
-// afterFuncs are executed after the active ARP instance
-// times out.
-//
-// activeArpAlreadySetError is returned when an outstanding request
-// is already in activeArps.
-func (a *ActiveArps) Add(i *Ip, eWriters *EventWriters, afterFuncs ...func() error) (err error) {
-	if !a.Has(i.Value) {
-		eWriters.Writef("making active arp request for %v", i.Value)
-		a.mu.Lock()
-		defer a.mu.Unlock()
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		context.AfterFunc(ctx, func() {
-			for _, f := range afterFuncs {
-				if err := f(); err != nil {
-					eWriters.Writef("failed to execute afterfunc: %v", err.Error())
-				}
-			}
-			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				eWriters.Writef("never received active arp response for %v", i.Value)
-				cancel()
-				a.Del(i.Value)
-			}
-		})
-		a.v[i.Value] = &ActiveArp{DstIp: i, ctx: ctx, cancel: cancel}
-		return
-	}
-
-	return activeArpAlreadySetError
-}
-
-// Del removes an active ARP job for the ip.
-func (a *ActiveArps) Del(ip string) (v *Ip) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	v = a.v[ip].DstIp
-	delete(a.v, ip)
-	return
-}
 
 // newUnpackedArp converts binary address values to string.
 func newUnpackedArp(arp *layers.ARP) arpStringAddrs {
@@ -184,19 +120,6 @@ func ArpSender(eWriters *EventWriters) {
 			if err != nil {
 				eWriters.Writef("failed to build arp packet: %v", err.Error())
 				continue
-			}
-
-			//=====================
-			// SEND THE ARP REQUEST
-			//=====================
-
-			// Add an active ARP record _before_ sending the request to
-			// avoid a race condition
-			if sA.addActiveArp != nil {
-				if err = sA.addActiveArp(); err != nil {
-					eWriters.Writef("failed to add active arp: %v", err.Error())
-					continue
-				}
 			}
 
 			// Write the ARP request to the wire
