@@ -22,7 +22,19 @@ var (
 	NoTransportLayerErr = errors.New("no transport layer found")
 )
 
-func getInterface(name string, eWriters *EventWriters) (iface *net.Interface, ipnet *net.IPNet, err error) {
+// getInterface gets the network interface described by name and addr.
+//
+// addr is optional (can be empty) and is used to specify which address
+// to listen for when multiple IPv4 addresses are assigned to the interface.
+func getInterface(name string, addr string, eWriters *EventWriters) (iface *net.Interface, ipnet *net.IPNet, err error) {
+
+	var iAddr net.IP
+	if addr != "" {
+		if iAddr = net.ParseIP(addr); iAddr == nil {
+			err = errors.New("invalid addr")
+			return
+		}
+	}
 
 	iface, err = net.InterfaceByName(name)
 	if err != nil {
@@ -39,6 +51,9 @@ func getInterface(name string, eWriters *EventWriters) (iface *net.Interface, ip
 		for _, a := range addrs {
 			if n, ok := a.(*net.IPNet); ok && !n.IP.IsLoopback() {
 				if ip4 := n.IP.To4(); ip4 != nil {
+					if addr != "" && ip4.String() != addr {
+						continue
+					}
 					ipnet = &net.IPNet{
 						IP:   ip4,
 						Mask: n.Mask[len(n.Mask)-4:],
@@ -48,20 +63,30 @@ func getInterface(name string, eWriters *EventWriters) (iface *net.Interface, ip
 		}
 	}
 
+	if ipnet == nil {
+		err = fmt.Errorf("failed to find network interface %v", name)
+		if addr != "" {
+			err = fmt.Errorf("%v with ip address %v", err, addr)
+		}
+	}
+
 	return
 }
 
 // MainSniff starts sniffer subprocesses.
 //
-// - ifaceName is the name of the network interface to sniff on.
-// - eventWriters is any number of writers that will receive general
-//   events.
-func MainSniff(db *sql.DB, ifaceName string, eventWriters ...io.StringWriter) (err error) {
+// - iName is the name of the network interface to sniff on.
+// - iAddr optionally (empty string) specifies the ipv4 address
+//    on the interface to sniff for.
+func MainSniff(db *sql.DB, iName, iAddr string, eventWriters ...io.StringWriter) (err error) {
 	// SOURCE: https://github.com/google/gopacket/blob/master/examples/arpscan/arpscan.go
 
 	eWriters := EventWriters{writers: eventWriters}
 
-	defer db.Close()
+	//==========================
+	// START BACKGROUND ROUTINES
+	//==========================
+
 	go ArpSender(&eWriters)
 	defer func() {
 		eWriters.Write("killing arp sender routine")
@@ -78,9 +103,9 @@ func MainSniff(db *sql.DB, ifaceName string, eventWriters ...io.StringWriter) (e
 	// PREPARE NETWORK INTERFACE
 	//==========================
 
-	iface, ifaceAddr, err := getInterface(ifaceName, &eWriters)
+	iface, ifaceAddr, err := getInterface(iName, iAddr, &eWriters)
 	if err != nil {
-		eWriters.Writef("failed to obtain interface and ifaceAddr: %s", err.Error())
+		eWriters.Writef("failed to obtain interface: %s", err.Error())
 		return err
 	}
 
@@ -110,24 +135,25 @@ outer:
 			break outer
 		case packet = <-in:
 
-			arp := GetArpLayer(packet)
-			if arp == nil {
+			arpL := GetArpLayer(packet)
+			if arpL == nil {
 				continue
 			}
-			u := newUnpackedArp(arp)
+			sAddrs := newUnpackedArp(arpL)
 
-			switch arp.Operation {
+			switch arpL.Operation {
 			case layers.ARPRequest:
 
 				//======================================
 				// HANDLE PASSIVELY CAPTURED ARP REQUEST
 				//======================================
 
-				if bytes.Equal(iface.HardwareAddr, arp.SourceHwAddress) {
+				if bytes.Equal(iface.HardwareAddr, arpL.SourceHwAddress) {
+					// ignore arp requests from our nic
 					continue outer
-				} else if ifaceAddr.IP.Equal(net.IPv4(arp.DstProtAddress[0], arp.DstProtAddress[1], arp.DstProtAddress[2], arp.DstProtAddress[3])) {
-					// Capture ARP requests for senders wanting our MAC address
-					if _, srcIp, e := u.getOrCreateSourceDbValues(db, PassiveArpMeth, &eWriters); e != nil {
+				} else if ifaceAddr.IP.Equal(arpL.DstProtAddress) {
+					// capture ARP requests for senders wanting our mac address
+					if _, srcIp, e := sAddrs.getOrCreateSourceDbValues(db, PassiveArpMeth, &eWriters); e != nil {
 						err = e
 						return
 					} else if srcIp.IsNew {
@@ -136,16 +162,16 @@ outer:
 					continue outer
 				}
 
-				_, srcIp, dstIp, err := u.getOrCreateSnifferDbValues(db, PassiveArpMeth, &eWriters)
+				_, senIp, tarIp, err := sAddrs.getOrCreateSnifferDbValues(db, PassiveArpMeth, &eWriters)
 
-				if srcIp.IsNew {
-					eWriters.Writef("new sender ip passively discovered: %v", srcIp.Value)
+				if senIp.IsNew {
+					eWriters.Writef("new sender ip passively discovered: %v", senIp.Value)
 				}
-				if dstIp.IsNew {
-					eWriters.Writef("new target ip passively discovered: %v", dstIp.Value)
+				if tarIp.IsNew {
+					eWriters.Writef("new target ip passively discovered: %v", tarIp.Value)
 				}
 
-				if dstIp.MacId == nil && !activeArps.Has(dstIp.Value) && !dstIp.ArpResolved {
+				if tarIp.MacId == nil && !activeArps.Has(tarIp.Value) && !tarIp.ArpResolved {
 
 					//=================
 					// SEND ARP REQUEST
@@ -156,28 +182,29 @@ outer:
 						handle:    handle,
 						srcHw:     iface.HardwareAddr,
 						srcIp:     ifaceAddr.IP,
-						dstIp:     arp.DstProtAddress,
+						dstIp:     arpL.DstProtAddress,
 						addActiveArp: func() (err error) {
-							err = activeArps.Add(dstIp, &eWriters, func() error { return SetArpResolved(db, dstIp.Id) })
+							err = activeArps.Add(tarIp, &eWriters, func() error { return SetArpResolved(db, tarIp.Id) })
 							if err != nil && !errors.Is(err, activeArpAlreadySet) {
 								eWriters.Writef("error: failed to watch for active arp response: %v", err.Error())
 								return
 							} else if err != nil {
 								// TODO
+								eWriters.Writef("error: unhandled exception: %v", err.Error())
 								err = nil
 							}
 							return
 						},
 					}
 
-					eWriters.Writef("initiated active arp request for %v", dstIp.Value)
+					eWriters.Writef("initiated active arp request for %v", tarIp.Value)
 				}
 
 				//====================
 				// INCREMENT ARP COUNT
 				//====================
 
-				_, err = IncArpCount(db, srcIp.Id, dstIp.Id)
+				_, err = IncArpCount(db, senIp.Id, tarIp.Id)
 				if err != nil {
 					eWriters.Writef("failed to increment arp count: %v", err.Error())
 					continue
@@ -188,7 +215,7 @@ outer:
 				//===================
 
 				if !dnsFailCounter.Exceeded() {
-					for _, ip := range []*Ip{srcIp, dstIp} {
+					for _, ip := range []*Ip{senIp, tarIp} {
 						if !ip.PtrResolved {
 							dnsSenderC <- DnsSenderArgs{
 								kind:   PtrDnsKind,
@@ -200,6 +227,10 @@ outer:
 									}
 								},
 								after: func(names []string) {
+									if err := SetPtrResolved(db, *ip); err != nil {
+										eWriters.Writef("failed to set ptr to resolved: %v", err.Error())
+										return
+									}
 									for _, name := range names {
 										handlePtrName(db, &eWriters, ip, name, nil)
 									}
@@ -215,10 +246,10 @@ outer:
 				// HANDLE ARP REPLIES
 				//===================
 
-				if activeArpIp := activeArps.Get(u.SrcIp); activeArpIp != nil {
+				if activeArpIp := activeArps.Get(sAddrs.SenIp); activeArpIp != nil {
 					var srcIp *Ip
 					var srcMac *Mac
-					srcMac, srcIp, _, err = u.getOrCreateSnifferDbValues(db, ActiveArpMeth, &eWriters)
+					srcMac, srcIp, _, err = sAddrs.getOrCreateSnifferDbValues(db, ActiveArpMeth, &eWriters)
 					if err != nil {
 						eWriters.Writef("failed to handle arp reply: %v", err.Error())
 						return err
@@ -233,13 +264,13 @@ outer:
 	return
 }
 
-func (u unpackedArp) getOrCreateSourceDbValues(db *sql.DB, arpMethod DiscMethod, eWriters *EventWriters) (srcMac *Mac, srcIp *Ip, err error) {
+func (u arpStringAddrs) getOrCreateSourceDbValues(db *sql.DB, arpMethod DiscMethod, eWriters *EventWriters) (srcMac *Mac, srcIp *Ip, err error) {
 	//===========
 	// HANDLE SRC
 	//===========
 
 	// MAC
-	srcMacBuff, err := GetOrCreateMac(db, u.SrcHw, arpMethod)
+	srcMacBuff, err := GetOrCreateMac(db, u.SenHw, arpMethod)
 	if err != nil {
 		eWriters.Writef("failed to create mac: %v", err.Error())
 		return
@@ -247,7 +278,7 @@ func (u unpackedArp) getOrCreateSourceDbValues(db *sql.DB, arpMethod DiscMethod,
 	srcMac = &srcMacBuff
 
 	// IP
-	srcIpBuff, err := GetOrCreateIp(db, u.SrcIp, &srcMacBuff.Id, arpMethod, true, false)
+	srcIpBuff, err := GetOrCreateIp(db, u.SenIp, &srcMacBuff.Id, arpMethod, true, false)
 	if err != nil {
 		eWriters.Writef("failed to create mac: %v", err.Error())
 		return
@@ -270,7 +301,7 @@ func (u unpackedArp) getOrCreateSourceDbValues(db *sql.DB, arpMethod DiscMethod,
 	return
 }
 
-func (u unpackedArp) getOrCreateSnifferDbValues(db *sql.DB, arpMethod DiscMethod, eWriters *EventWriters) (srcMac *Mac, srcIp *Ip,
+func (u arpStringAddrs) getOrCreateSnifferDbValues(db *sql.DB, arpMethod DiscMethod, eWriters *EventWriters) (srcMac *Mac, srcIp *Ip,
   dstIp *Ip, err error) {
 
 	if srcMac, srcIp, err = u.getOrCreateSourceDbValues(db, arpMethod, eWriters); err != nil {
@@ -279,7 +310,7 @@ func (u unpackedArp) getOrCreateSnifferDbValues(db *sql.DB, arpMethod DiscMethod
 
 	if arpMethod == PassiveArpMeth {
 		var dstIpBuff Ip
-		dstIpBuff, err = GetOrCreateIp(db, u.DstIp, nil, arpMethod, false, false)
+		dstIpBuff, err = GetOrCreateIp(db, u.TarIp, nil, arpMethod, false, false)
 		if err != nil {
 			eWriters.Writef("failed to create mac: %v", err.Error())
 			return
@@ -335,10 +366,11 @@ outer:
 	for {
 		select {
 		case <-ctx.Done():
-			// TODO handle gracefully
+			// TODO handle
 			return nil
 		case packetData := <-c:
 			if err = handle.WritePacketData(packetData); err != nil {
+				// TODO handle
 				break outer
 			}
 		}
@@ -349,10 +381,10 @@ outer:
 // SnacSniff is used to initiate a standalone packet capture for a
 // specific source IP (srcIp) while passing each captured packet to
 // a series of handler functions.
-func SnacSniff(ctx context.Context, ifaceName string, srcIp net.IP, dstIp net.IP, maxPackets int, eWriters *EventWriters,
+func SnacSniff(ctx context.Context, iName, iAddr string, srcIp net.IP, dstIp net.IP, maxPackets int, eWriters *EventWriters,
   handlers ...SnacSniffHandler) (err error) {
 
-	iface, _, err := getInterface(ifaceName, eWriters)
+	iface, _, err := getInterface(iName, iAddr, eWriters)
 	if err != nil {
 		eWriters.Writef("failed to retrive interface and addr: %v", err.Error())
 		return

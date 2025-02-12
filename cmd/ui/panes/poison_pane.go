@@ -471,8 +471,9 @@ func (p *PoisonPane) handleBtnPressMsg(msg BtnPressMsg) (cmd tea.Cmd) {
 			// Start poisoning
 			func() tea.Msg {
 				p.eWriter.WriteStringf("starting poisoning attack: %s -> %s", sIp.Value, tIp.Value)
+				// TODO update for ip address specification on interface
 				eavesarp_ng.SnacSniff(ctx,
-					p.ifaceName, senderIp, targetIp, packetLimit, eWriters,
+					p.ifaceName, "", senderIp, targetIp, packetLimit, eWriters,
 					func(pkt gopacket.Packet) {
 						// TODO writing to the handlerCountCh should probably be handled in batches
 						// Increment the packet count by 1

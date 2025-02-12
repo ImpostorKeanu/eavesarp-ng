@@ -326,9 +326,9 @@ func (c *CurConvoPane) getContent(curConvoRow CurConvoRowDetails) (err error) {
 			}
 			switch dnsRecordKind {
 			case "a":
-				target.ARecords = append(target.ARecords, eavesarp_ng.ARecord{DnsRecordFields: dnsFields})
+				ipObj.ARecords = append(ipObj.ARecords, eavesarp_ng.ARecord{DnsRecordFields: dnsFields})
 			case "ptr":
-				target.PtrRecords = append(target.PtrRecords, eavesarp_ng.PtrRecord{DnsRecordFields: dnsFields})
+				ipObj.PtrRecords = append(ipObj.PtrRecords, eavesarp_ng.PtrRecord{DnsRecordFields: dnsFields})
 			default:
 				err = fmt.Errorf("unsupported dns record kind: %s", dnsRecordKind)
 				return

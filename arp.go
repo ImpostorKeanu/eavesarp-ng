@@ -41,10 +41,10 @@ type (
 		v  map[string]*ActiveArp
 	}
 
-	// unpackedArp consists of network addresses in string format that
+	// arpStringAddrs consists of network addresses in string format that
 	// were extracted from an ARP packet.
-	unpackedArp struct {
-		SrcIp, SrcHw, DstIp, DstHw string
+	arpStringAddrs struct {
+		SenIp, SenHw, TarIp, TarHw string
 	}
 
 	// ArpSenderArgs represent values needed to send an ARP request.
@@ -131,14 +131,13 @@ func (a *ActiveArps) Del(ip string) (v *Ip) {
 	return
 }
 
-// newUnpackedArp converts binary address values to string and
-// returns an unpackedArp instance.
-func newUnpackedArp(arp *layers.ARP) unpackedArp {
-	return unpackedArp{
-		SrcIp: net.IP(arp.SourceProtAddress).String(),
-		SrcHw: net.HardwareAddr(arp.SourceHwAddress).String(),
-		DstIp: net.IP(arp.DstProtAddress).String(),
-		DstHw: net.HardwareAddr(arp.DstHwAddress).String(),
+// newUnpackedArp converts binary address values to string.
+func newUnpackedArp(arp *layers.ARP) arpStringAddrs {
+	return arpStringAddrs{
+		SenIp: net.IP(arp.SourceProtAddress).String(),
+		SenHw: net.HardwareAddr(arp.SourceHwAddress).String(),
+		TarIp: net.IP(arp.DstProtAddress).String(),
+		TarHw: net.HardwareAddr(arp.DstHwAddress).String(),
 	}
 }
 

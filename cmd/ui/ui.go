@@ -118,6 +118,8 @@ type (
 		// be started. As it allows the UI to run without root,
 		// it's sometimes useful to disable this while debugging.
 		mainSniff bool
+
+		lastSender, lastTarget string
 	}
 
 	eavesarpError error
@@ -162,18 +164,13 @@ func (m model) Init() tea.Cmd {
 		func() tea.Msg {
 			return m.convosSpinner.Tick()
 		},
-		//func() tea.Msg {
-		//	return getConvosTableContent(&m)
-		//},
-		//func() tea.Msg {
-		//	return m.doCurrConvoRow()
-		//},
 	}
 
 	if m.mainSniff {
 		cmds = append(cmds, func() tea.Msg {
-			m.eWriter.WriteStringf("starting arp sniffer process")
-			if err := eavesarp_ng.MainSniff(m.db, ifaceName, m.eWriter); err != nil {
+			m.eWriter.WriteStringf("starting arp sniffer routine")
+			// TODO update to support address specification for interface
+			if err := eavesarp_ng.MainSniff(m.db, ifaceName, "", m.eWriter); err != nil {
 				return eavesarpError(err)
 			}
 			return nil
@@ -185,9 +182,16 @@ func (m model) Init() tea.Cmd {
 
 func (m model) Update(msg tea.Msg) (_ tea.Model, cmd tea.Cmd) {
 
+	if m.lastSender == "" && m.lastTarget == "" {
+		m.lastSender = m.getSelectedSenderIp()
+		m.lastTarget = m.getSelectedTargetIp()
+	}
+
 	switch msg := msg.(type) {
 
 	case convosTableContent:
+
+		m.setCursor(m.lastSender, m.lastTarget)
 
 		if msg.err != nil {
 			_, err := m.eWriter.WriteStringf("failed update conversations content: %v", msg.err.Error())
@@ -199,22 +203,23 @@ func (m model) Update(msg tea.Msg) (_ tea.Model, cmd tea.Cmd) {
 			m.doConvoTableContent(msg)
 		}
 
-		// Periodically update the conversations table
+		// periodically update the conversations table
 		cmd = func() tea.Msg {
-			// TODO we may want to make the update frequency configurable
+			// may want to make the update frequency configurable
 			time.Sleep(2 * time.Second)
 			return getConvosTableContent(&m)
 		}
 
 	case *panes.CurConvoRowDetails:
 
+		// accept updates only for the currently selected row
 		if !m.hasConvoRows() || msg == nil || msg.ConvoKey() != m.ConvoKey() {
 			break
 		}
-
 		m.convoPane, cmd = m.convoPane.Update(*msg)
+		// periodically update the conversation to reflect new
+		// information like ports and dns records
 		cmd = tea.Batch(cmd, func() tea.Msg {
-			// Periodically update the current conversation
 			time.Sleep(2 * time.Second)
 			return m.doCurrConvoRow()
 		})
@@ -638,6 +643,8 @@ func (m *model) handleKeyMsg(msg tea.KeyMsg) (cmd tea.Cmd) {
 				m.convosTable, _ = m.convosTable.Update(msg)
 			}
 			m.convoPane.GotoTop()
+			m.lastSender = m.getSelectedSenderIp()
+			m.lastTarget = m.getSelectedTargetIp()
 		case "down", "j":
 			if m.convosTable.Cursor() == len(m.convosTable.Rows())-1 {
 				m.convosTable.GotoTop()
@@ -645,6 +652,8 @@ func (m *model) handleKeyMsg(msg tea.KeyMsg) (cmd tea.Cmd) {
 				m.convosTable, _ = m.convosTable.Update(msg)
 			}
 			m.convoPane.GotoTop()
+			m.lastSender = m.getSelectedSenderIp()
+			m.lastTarget = m.getSelectedTargetIp()
 		case "ctrl+shift+up", "ctrl+shift+right":
 			m.focusedId = misc.CurConvoPaneId
 			m.convoPane.FocusTable()
@@ -724,6 +733,32 @@ func (m *model) handleKeyMsg(msg tea.KeyMsg) (cmd tea.Cmd) {
 	}
 
 	return
+}
+
+func (m *model) getSelectedSenderIp() (s string) {
+	if m.convosTable.SelectedRow() != nil {
+		s = m.convosTable.SelectedRow()[3]
+	}
+	return
+}
+
+func (m *model) getSelectedTargetIp() (t string) {
+	if m.convosTable.SelectedRow() != nil {
+		t = m.convosTable.SelectedRow()[4]
+	}
+	return
+}
+
+func (m *model) setCursor(s, t string) {
+	if m.convosTable.SelectedRow() == nil || (m.getSelectedSenderIp() == s && m.getSelectedTargetIp() == t) {
+		return
+	}
+	for i, r := range m.convosTable.Rows() {
+		if r[3] == s && r[4] == t {
+			m.convosTable.SetCursor(i)
+			return
+		}
+	}
 }
 
 func getConvosTableContent(m *model) (content convosTableContent) {

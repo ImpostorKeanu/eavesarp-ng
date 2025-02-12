@@ -265,11 +265,11 @@ SELECT ip_id, dns_name_id
 FROM dns_record
 INNER JOIN ip ON ip.id=dns_record.ip_id
 INNER JOIN dns_name ON dns_record.dns_name_id=dns_name.id
-WHERE ip.id=? AND dns_name.id=? AND kind=RECORD_KIND
+WHERE ip.id=? AND dns_name.id=? AND dns_record.kind="RECORD_KIND"
 LIMIT 1`, "RECORD_KIND", kind, -1)
 	insStmt = strings.Replace(`
-INSERT INTO dns_record (ip_id, dns_name_id, RECORD_KIND)
-VALUES (?,?,?) RETURNING id`, "RECORD_KIND", kind, -1)
+INSERT INTO dns_record (ip_id, dns_name_id, kind)
+VALUES (?,?,"RECORD_KIND") RETURNING ip_id, dns_name_id`, "RECORD_KIND", kind, -1)
 	return
 }
 

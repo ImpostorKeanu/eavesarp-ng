@@ -23,7 +23,7 @@ var (
 	stopDnsSenderC = make(chan bool)
 	// dnsSenderC receives DnsSenderArgs and runs DNS jobs based
 	// on their values.
-	dnsSenderC = make(chan DnsSenderArgs)
+	dnsSenderC = make(chan DnsSenderArgs, 100)
 	// dnsResolver allows us to configure a custom context for name
 	// resolution, enabling a custom timeout.
 	//
@@ -77,7 +77,7 @@ func DnsSender(eWriters *EventWriters) {
 			var err error
 			var resolved []string
 
-			ctx, cancel := context.WithTimeout(context.Background(), 7*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			dnsKind := string(dA.kind)
 			switch dA.kind {
 			case PtrDnsKind:
@@ -90,7 +90,9 @@ func DnsSender(eWriters *EventWriters) {
 			cancel()
 
 			if e, ok := err.(*net.DNSError); ok && e.IsNotFound {
-				dA.failure(err)
+				if dA.failure != nil {
+					dA.failure(err)
+				}
 				eWriters.Writef("no %v record found for %v", dnsKind, dA.target)
 				continue
 			} else if ok {
@@ -104,7 +106,9 @@ func DnsSender(eWriters *EventWriters) {
 			}
 
 			// Handle the output
-			dA.after(resolved)
+			if dA.after != nil {
+				dA.after(resolved)
+			}
 		}
 	}
 }
@@ -182,6 +186,10 @@ func handlePtrName(db *sql.DB, eWriters *EventWriters, ip *Ip, name string, dept
 							}
 						},
 						after: func(names []string) {
+							if err := SetPtrResolved(db, *ip); err != nil {
+								eWriters.Writef("failed to set ptr to resolved: %v", err.Error())
+								return
+							}
 							for _, name := range names {
 								d := *depth - 1
 								handlePtrName(db, eWriters, &newIp, name, &d)
