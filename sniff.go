@@ -371,30 +371,6 @@ func GetArpLayer(packet gopacket.Packet) *layers.ARP {
 	return nil
 }
 
-// SnacSniffWriter should run as a background routine to receive
-// packets that are written to a pcap file.
-func SnacSniffWriter(ctx context.Context, c chan gopacket.Packet, fileName string) (err error) {
-	var handle *pcap.Handle
-	if handle, err = pcap.OpenOffline(fileName); err != nil {
-		return err
-	}
-	defer handle.Close()
-outer:
-	for {
-		select {
-		case <-ctx.Done():
-			// TODO handle
-			return nil
-		case pkt := <-c:
-			if err = handle.WritePacketData(pkt.Data()); err != nil {
-				// TODO handle
-				break outer
-			}
-		}
-	}
-	return
-}
-
 // SnacSniff is used to initiate a standalone packet capture for a
 // specific source IP (senIp) while passing each captured packet to
 // a series of handler functions.

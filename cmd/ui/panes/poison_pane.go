@@ -479,6 +479,9 @@ func (p *PoisonPane) startPoisoning(msg BtnPressMsg) tea.Cmd {
 			hasClosed = true
 			close(packetReceiverCh)
 			close(statusCountCh)
+			if outputFileCh != nil {
+				close(outputFileCh)
+			}
 		}
 	}
 
@@ -538,7 +541,8 @@ func (p *PoisonPane) startPoisoning(msg BtnPressMsg) tea.Cmd {
 
 				// handle packet limit
 				if packetLimit > 0 && count >= packetLimit {
-					cancel()
+					p.eWriter.WriteString("packet limit met")
+					p.cancelPoisonCtx()
 				}
 			}
 		}
@@ -735,17 +739,15 @@ func handlePoisoningStatusMsg(msg PoisoningStatusMsg) tea.Cmd {
 		case <-msg.ctx.Done():
 			msg.ctx = context.WithValue(msg.ctx, doneKey, true)
 			cancel()
-			if err := msg.ctx.Err(); errors.Is(err, context.Canceled) {
-				msg.ew.WriteStringf("done poisoning: %s", msg.Id)
-			} else if errors.Is(err, context.DeadlineExceeded) {
+			if err := msg.ctx.Err(); errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				msg.ew.WriteStringf("done poisoning: %s", msg.Id)
 			} else {
 				msg.ew.WriteStringf("unhandled exception while poisoning: %s", err.Error())
 			}
-			// Message indicating end of poisoning
+			// message indicating end of poisoning
 			return PoisoningStatusMsg{Id: msg.Id, PacketCount: 0, ew: msg.ew, ctx: msg.ctx}
 		case count := <-statusCh:
-			// Message indicating the current count of captured packets
+			// message indicating the current count of captured packets
 			return PoisoningStatusMsg{Id: msg.Id, PacketCount: count, ctx: msg.ctx, ew: msg.ew,
 			}
 		}
