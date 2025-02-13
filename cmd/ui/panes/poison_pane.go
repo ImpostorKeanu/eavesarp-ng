@@ -441,12 +441,15 @@ func (p *PoisonPane) startPoisoning(msg BtnPressMsg) tea.Cmd {
 	}
 
 	var (
-		ctx            context.Context                          // Context to enable cross-routine attack timeout/cancellation
-		cancel         context.CancelFunc                       // cancel function that will be used to stop the attack
-		startClockCmd  tea.Cmd                                  // Start command for the ui timer/stopwatch
-		handlerCountCh = make(chan int, 100)                    // channel used by packet handler to send packet count update
-		statusCountCh  = make(chan int, 100)                    // channel used to send the packet count to the ui
-		eWriters       = eavesarp_ng.NewEventWriters(p.eWriter) // let eavesarp write to the log pane
+		ctx               context.Context                          // context to enable cross-routine attack timeout/cancellation
+		cancel            context.CancelFunc                       // cancel function that will be used to stop the attack
+		startClockCmd     tea.Cmd                                  // start command for the ui timer/stopwatch
+		packetReceiverCmd tea.Cmd                                  // background routine that receives packets from a handler function
+		packetReceiverCh  = make(chan gopacket.Packet, 100)        // sends packets to packetReceiverCmd
+		outputFileCmd     tea.Cmd                                  // background routine that writes packets to disk
+		outputFileCh      chan gopacket.Packet                     // sends packets to outputFileCmd
+		statusCountCh     = make(chan int, 100)                    // channel used to send the packet count to the ui
+		eWriters          = eavesarp_ng.NewEventWriters(p.eWriter) // let eavesarp write to the log pane
 	)
 
 	//====================================================
@@ -474,7 +477,7 @@ func (p *PoisonPane) startPoisoning(msg BtnPressMsg) tea.Cmd {
 		cancel()
 		if !hasClosed {
 			hasClosed = true
-			close(handlerCountCh)
+			close(packetReceiverCh)
 			close(statusCountCh)
 		}
 	}
@@ -487,13 +490,17 @@ func (p *PoisonPane) startPoisoning(msg BtnPressMsg) tea.Cmd {
 	//========================
 	// handlers are functions that receive each packet for handling
 
-	var packetCountHandler, pcapWriterHandler eavesarp_ng.SnacSniffHandler
+	var packetCountHandler eavesarp_ng.SnacSniffHandler
 
 	// always track the packet count
 	packetCountHandler = func(pkt gopacket.Packet) {
-		// Increment the packet count by 1
-		handlerCountCh <- 1
-		// Get and save transport layer info to db
+		// send packet to the receiver
+		packetReceiverCh <- pkt
+
+		//=======================================
+		// SAVE TRANSPORT LAYER INFOR TO DATABASE
+		//=======================================
+
 		if proto, dstPort, err := eavesarp_ng.GetPacketTransportLayerInfo(pkt, eWriters); errors.Is(err, eavesarp_ng.NoTransportLayerErr) {
 			// NOP
 		} else if err != nil {
@@ -508,37 +515,41 @@ func (p *PoisonPane) startPoisoning(msg BtnPressMsg) tea.Cmd {
 		}
 	}
 
-	// packet count background routine enforces packet
-	// count limit and sends the current count to the
+	// packet count background routine enforces packet count limit and sends the current count to the
 	// status panel
-	packetCountWatcherCmd := func() tea.Msg {
+	packetReceiverCmd = func() tea.Msg {
 		var count int
 		for {
 			select {
 			case <-ctx.Done():
 				// TODO handle
 				return nil
-			case i := <-handlerCountCh:
-				count += i
-				// TODO writing to the statusCh should probably be handled in batches
+			case pkt := <-packetReceiverCh:
+				count++
+
+				// TODO writing to the statusCh should probably be batched
 				//  to avoid flooding the ui
 				statusCountCh <- count // update status count
+
+				// handle file writing
+				if outputFileCh != nil {
+					outputFileCh <- pkt
+				}
+
+				// handle packet limit
 				if packetLimit > 0 && count >= packetLimit {
-					// packet limit met
 					cancel()
 				}
 			}
 		}
 	}
 
-	var outputFileWriterCmd tea.Cmd
-
 	// handle writing to output file
 	if p.OutputFileInput().Value() != "" {
-		ch := make(chan gopacket.Packet, 100)
+		outputFileCh = make(chan gopacket.Packet, 100)
 
 		// start routine to receive and write the packet
-		outputFileWriterCmd = func() tea.Msg {
+		outputFileCmd = func() tea.Msg {
 			f, _ := os.Create(p.OutputFileInput().Value())
 			defer f.Close()
 			writer := pcapgo.NewWriter(f)
@@ -549,7 +560,7 @@ func (p *PoisonPane) startPoisoning(msg BtnPressMsg) tea.Cmd {
 				case <-ctx.Done():
 					// TODO handle
 					return nil
-				case pkt := <-ch:
+				case pkt := <-outputFileCh:
 					err := writer.WritePacket(pkt.Metadata().CaptureInfo, pkt.Data())
 					if err != nil {
 						p.eWriter.WriteStringf("error while writing to capture output file: %v", err.Error())
@@ -557,12 +568,6 @@ func (p *PoisonPane) startPoisoning(msg BtnPressMsg) tea.Cmd {
 					}
 				}
 			}
-		}
-
-		// handler that will send the packet to the routine that
-		// will write the packet to file
-		pcapWriterHandler = func(p gopacket.Packet) {
-			ch <- p
 		}
 	}
 
@@ -572,7 +577,7 @@ func (p *PoisonPane) startPoisoning(msg BtnPressMsg) tea.Cmd {
 		// TODO update for ip address specification on interface
 		eavesarp_ng.SnacSniff(ctx, p.ifaceName, "",
 			senderIp, targetIp, packetLimit, eWriters,
-			packetCountHandler, pcapWriterHandler)
+			packetCountHandler)
 		p.eWriter.WriteStringf("ending poisoning attack: %s -> %s", sIp.Value, tIp.Value)
 		return nil
 	}
@@ -588,8 +593,8 @@ func (p *PoisonPane) startPoisoning(msg BtnPressMsg) tea.Cmd {
 		}
 	}
 
-	return tea.Batch(startClockCmd, poisoningStatusCmd, outputFileWriterCmd,
-		packetCountWatcherCmd, poisonerCmd)
+	return tea.Batch(startClockCmd, poisoningStatusCmd, outputFileCmd,
+		packetReceiverCmd, poisonerCmd)
 }
 
 func (p *PoisonPane) updateInputs(msg tea.Msg) tea.Cmd {
