@@ -250,6 +250,7 @@ func (c *CurConvoPane) getContent(curConvoRow CurConvoRowDetails) (err error) {
 			ipId                                                     int
 			arpResolved, ptrResolved                                 bool
 		)
+
 		if err = rows.Scan(&ip, &ipId, &ipDiscMeth, &arpResolved, &ptrResolved, &mac, &macDiscMeth, &dnsRecordKind, &dnsName); err != nil {
 			err = fmt.Errorf("failed to read row: %w", err)
 			return
@@ -359,26 +360,6 @@ func (c *CurConvoPane) getContent(curConvoRow CurConvoRowDetails) (err error) {
 
 	// Cells for DNS values
 	dnsRows := make([][]string, 2)
-
-	// TODO delete this dummy content
-	//for i := 0; i < 5; i++ {
-	//	sender.PtrRecords = append(sender.PtrRecords, eavesarp_ng.PtrRecord{
-	//		DnsRecordFields: eavesarp_ng.DnsRecordFields{
-	//			Ip:   *sender,
-	//			Name: eavesarp_ng.DnsName{Value: fmt.Sprintf("sender-%d.test.com", i)}}})
-	//	target.PtrRecords = append(target.PtrRecords, eavesarp_ng.PtrRecord{
-	//		DnsRecordFields: eavesarp_ng.DnsRecordFields{
-	//			Ip:   *target,
-	//			Name: eavesarp_ng.DnsName{Value: fmt.Sprintf("target-%d.test.com", i)}}})
-	//	sender.ARecords = append(sender.ARecords, eavesarp_ng.ARecord{
-	//		DnsRecordFields: eavesarp_ng.DnsRecordFields{
-	//			Ip:   *sender,
-	//			Name: eavesarp_ng.DnsName{Value: fmt.Sprintf("sender-%d.test.com", i)}}})
-	//	target.ARecords = append(target.ARecords, eavesarp_ng.ARecord{
-	//		DnsRecordFields: eavesarp_ng.DnsRecordFields{
-	//			Ip:   *sender,
-	//			Name: eavesarp_ng.DnsName{Value: fmt.Sprintf("target-%d.test.com", i)}}})
-	//}
 
 	// sender DNS values
 	for _, r := range sender.PtrRecords {
