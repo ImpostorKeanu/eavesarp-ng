@@ -13,9 +13,9 @@ func init() {
 }
 
 const (
-	PtrDnsKind     DnsKind = "ptr"
-	ADnsKind       DnsKind = "a"
-	DnsMaxFailures         = 10
+	PtrDnsKind     DnsRecordKind = "ptr"
+	ADnsKind       DnsRecordKind = "a"
+	DnsMaxFailures               = 10
 )
 
 var (
@@ -32,7 +32,7 @@ var (
 	// future. See the following resource for more information:
 	// https://pkg.go.dev/net#hdr-Name_Resolution
 	dnsResolver = net.Resolver{}
-	// unsupportedDnsError is returned when an unsupported DnsKind
+	// unsupportedDnsError is returned when an unsupported DnsRecordKind
 	// is supplied to DnsSender via DnsSenderArgs.
 	unsupportedDnsError = errors.New("unsupported dns record type")
 	dnsFailCounter      *FailCounter
@@ -40,14 +40,14 @@ var (
 )
 
 type (
-	// DnsKind is a kind of DNS record.
-	DnsKind string
+	// DnsRecordKind is a kind of DNS record.
+	DnsRecordKind string
 	// DnsSenderArgs has all necessary values to perform a name
 	// resolution job.
 	//
 	// These are passed to DnsSender via dnsSenderC.
 	DnsSenderArgs struct {
-		kind    DnsKind
+		kind    DnsRecordKind
 		target  string
 		failure func(error)
 		after   func([]string)
@@ -172,14 +172,23 @@ func handlePtrName(db *sql.DB, eWriters *EventWriters, ip *Ip, name string, dept
 				} else if _, err = GetOrCreateDnsARecord(db, newIp, dnsName); err != nil {
 					eWriters.Writef("failed to create dns a record: %v", err.Error())
 					return
-				} else if _, err = db.Exec(`INSERT OR IGNORE INTO aitm_opt (snac_target_ip_id, upstream_ip_id) VALUES (?,?)`,
-					ip.Id, newIp.Id); err != nil {
-					eWriters.Writef("failed to create aitm_opt record: ", err.Error())
-					return
 				}
 
-				shouldReslove := *depth > 0 && !newIp.PtrResolved && activeDns.Get(FmtDnsKey(newIp.Value, PtrDnsKind)) == nil
-				if !shouldReslove {
+				// speculate if the host that had the original ip has since
+				// moved to the newly discovered one
+				if newIpS != ip.Value {
+					// TODO this should probably be a GOC function
+					if _, err = db.Exec(`INSERT OR IGNORE INTO aitm_opt (snac_target_ip_id, upstream_ip_id) VALUES (?,?)`,
+						ip.Id, newIp.Id); err != nil {
+						eWriters.Writef("failed to create aitm_opt record: ", err.Error())
+						return
+					}
+				}
+
+				// determine if we should reverse resolve the new ip
+				if *depth <= 0 ||
+				  newIp.PtrResolved ||
+				  activeDns.Get(FmtDnsKey(newIp.Value, PtrDnsKind)) == nil {
 					return
 				}
 
