@@ -57,6 +57,8 @@ type (
 	ConvoLockMap[T any] struct {
 		LockMap[T]
 	}
+
+	CtxKey string
 )
 
 func NewLockMap[T any](m map[string]*T) *LockMap[T] {
@@ -208,6 +210,6 @@ func SplitConvoKey(v string) (senderIp string, targetIp string, err error) {
 	return
 }
 
-func FmtDnsKey(target string, kind DnsKind) string {
+func FmtDnsKey(target string, kind DnsRecordKind) string {
 	return fmt.Sprintf("%s:%s", target, kind)
 }
