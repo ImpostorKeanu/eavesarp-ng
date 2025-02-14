@@ -57,9 +57,9 @@ const (
 )
 
 const (
-	doneKey          = poisoningStatusCtxKey("done")
-	statusPktCountCh = poisoningStatusCtxKey("count-ch")
-	cancelKey        = poisoningStatusCtxKey("cancel")
+	doneKey          = eavesarp_ng.CtxKey("poisonPaneDone")
+	statusPktCountCh = eavesarp_ng.CtxKey("poisonPaneStatusPktCountCh")
+	cancelKey        = eavesarp_ng.CtxKey("poisonPaneCancelKey")
 )
 
 type (
@@ -580,7 +580,7 @@ func (p *PoisonPane) startPoisoning(msg BtnPressMsg) tea.Cmd {
 		p.eWriter.WriteStringf("starting poisoning attack: %s -> %s", sIp.Value, tIp.Value)
 		// TODO update for ip address specification on interface
 		eavesarp_ng.SnacSniff(ctx, p.ifaceName, "",
-			senderIp, targetIp, packetLimit, eWriters,
+			senderIp, targetIp, eWriters,
 			packetCountHandler)
 		p.eWriter.WriteStringf("ending poisoning attack: %s -> %s", sIp.Value, tIp.Value)
 		return nil

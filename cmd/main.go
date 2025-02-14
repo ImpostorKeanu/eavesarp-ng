@@ -35,7 +35,7 @@ func main() {
 	//	// TODO
 	//}
 
-	eavesarp_ng.MainSniff(db, "enp13s0", os.Stdout)
+	eavesarp_ng.Sniff(db, "enp13s0", os.Stdout)
 
 	return
 }
