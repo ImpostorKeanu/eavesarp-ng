@@ -29,7 +29,7 @@ func readyDb() (db *sql.DB) {
 func TestSniff(t *testing.T) {
 	db := readyDb()
 	t.Run("sniff", func(t *testing.T) {
-		MainSniff(db, "enp13s0")
+		Sniff(db, "enp13s0")
 	})
 }
 

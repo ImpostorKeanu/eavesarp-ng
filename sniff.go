@@ -19,7 +19,6 @@ type (
 )
 
 var (
-	stopSnifferC        = make(chan bool)
 	NoTransportLayerErr = errors.New("no transport layer found")
 )
 
@@ -74,12 +73,13 @@ func getInterface(name string, addr string, eWriters *EventWriters) (iface *net.
 	return
 }
 
-// MainSniff starts sniffer subprocesses.
+// Sniff starts the ARP and DNS background routines and sniffs network traffic
+// from the interface until stopped.
 //
 // - iName is the name of the network interface to sniff on.
 // - iAddr optionally (empty string) specifies the ipv4 address
 //    on the interface to sniff for.
-func MainSniff(db *sql.DB, iName, iAddr string, eventWriters ...io.StringWriter) (err error) {
+func Sniff(ctx context.Context, db *sql.DB, iName, iAddr string, eventWriters ...io.StringWriter) (err error) {
 	// SOURCE: https://github.com/google/gopacket/blob/master/examples/arpscan/arpscan.go
 
 	eWriters := EventWriters{writers: eventWriters}
@@ -132,13 +132,13 @@ outer:
 	for {
 		var packet gopacket.Packet
 		select {
-		case <-stopSnifferC:
-			break outer
+		case <-ctx.Done():
+			eWriters.Write("killing sniff routine")
+			return
 		case packet = <-in:
-
 			arpL := GetArpLayer(packet)
 			if arpL == nil {
-				continue
+				continue outer
 			}
 			sAddrs := newUnpackedArp(arpL)
 
@@ -179,14 +179,14 @@ outer:
 				_, err = IncArpCount(db, senIp.Id, tarIp.Id)
 				if err != nil {
 					eWriters.Writef("failed to increment arp count: %v", err.Error())
-					continue
+					continue outer
 				}
 
-				//=================
-				// SEND ARP REQUEST
-				//=================
-
 				if tarIp.MacId == nil && activeArps.Get(tarIp.Value) == nil && !tarIp.ArpResolved {
+
+					//============================
+					// SEND ARP REQUEST FOR TARGET
+					//============================
 
 					go func() {
 						eWriters.Writef("initiating active arp request for %v", tarIp.Value)
@@ -220,47 +220,59 @@ outer:
 				// DO NAME RESOLUTION
 				//===================
 
-				if !dnsFailCounter.Exceeded() && activeDns.Get(FmtDnsKey(tarIp.Value, PtrDnsKind)) == nil {
-
-					go func() {
-						for _, ip := range []*Ip{senIp, tarIp} {
-							if !ip.PtrResolved {
-								dArgs := DnsSenderArgs{
-									kind:   PtrDnsKind,
-									target: ip.Value,
-									failure: func(e error) {
-										if err := SetPtrResolved(db, *ip); err != nil {
-											activeDns.Delete(FmtDnsKey(ip.Value, PtrDnsKind))
-											eWriters.Writef("failed to set ptr to resolved: %v", err.Error())
-											return
-										}
-										activeDns.Delete(FmtDnsKey(ip.Value, PtrDnsKind))
-									},
-									after: func(names []string) {
-										if err := SetPtrResolved(db, *ip); err != nil {
-											activeDns.Delete(FmtDnsKey(ip.Value, PtrDnsKind))
-											eWriters.Writef("failed to set ptr to resolved: %v", err.Error())
-											return
-										}
-										for _, name := range names {
-											handlePtrName(db, &eWriters, ip, name, nil)
-										}
-										activeDns.Delete(FmtDnsKey(ip.Value, PtrDnsKind))
-									},
-								}
-								activeDns.Set(FmtDnsKey(ip.Value, PtrDnsKind), &dArgs)
-								dnsSenderC <- dArgs
-							}
-						}
-					}()
-
+				// skip name resolution after excess failures
+				if dnsFailCounter.Exceeded() {
+					continue outer
 				}
+
+				// determine which ips to reverse resolve
+				var toResolve []*Ip
+				for _, ip := range []*Ip{senIp, tarIp} {
+					if !ip.PtrResolved && activeDns.Get(FmtDnsKey(ip.Value, PtrDnsKind)) == nil {
+						toResolve = append(toResolve, ip)
+					}
+				}
+
+				if len(toResolve) == 0 {
+					continue outer
+				}
+
+				// reverse resolve each ip
+				go func() {
+					for _, ip := range toResolve {
+						dArgs := DnsSenderArgs{
+							kind:   PtrDnsKind,
+							target: ip.Value,
+							failure: func(e error) {
+								if err := SetPtrResolved(db, *ip); err != nil {
+									activeDns.Delete(FmtDnsKey(ip.Value, PtrDnsKind))
+									eWriters.Writef("failed to set ptr to resolved: %v", err.Error())
+									return
+								}
+								activeDns.Delete(FmtDnsKey(ip.Value, PtrDnsKind))
+							},
+							after: func(names []string) {
+								if err := SetPtrResolved(db, *ip); err != nil {
+									activeDns.Delete(FmtDnsKey(ip.Value, PtrDnsKind))
+									eWriters.Writef("failed to set ptr to resolved: %v", err.Error())
+									return
+								}
+								for _, name := range names {
+									handlePtrName(db, &eWriters, ip, name, nil)
+								}
+								activeDns.Delete(FmtDnsKey(ip.Value, PtrDnsKind))
+							},
+						}
+						activeDns.Set(FmtDnsKey(ip.Value, PtrDnsKind), &dArgs)
+						dnsSenderC <- dArgs
+					}
+				}()
 
 			case layers.ARPReply:
 
-				//===================
-				// HANDLE ARP REPLIES
-				//===================
+				//===================================
+				// HANDLE REPLIES TO OUR ARP REQUESTS
+				//===================================
 
 				if aa := activeArps.Get(sAddrs.SenIp); aa != nil {
 					aa.cancel()
@@ -282,6 +294,7 @@ outer:
 }
 
 func (u arpStringAddrs) getOrCreateSourceDbValues(db *sql.DB, arpMethod DiscMethod, eWriters *EventWriters) (srcMac *Mac, srcIp *Ip, err error) {
+
 	//===========
 	// HANDLE SRC
 	//===========
@@ -374,8 +387,8 @@ func GetArpLayer(packet gopacket.Packet) *layers.ARP {
 // SnacSniff is used to initiate a standalone packet capture for a
 // specific source IP (senIp) while passing each captured packet to
 // a series of handler functions.
-func SnacSniff(ctx context.Context, iName, iAddr string, srcIp net.IP, dstIp net.IP, maxPackets int, eWriters *EventWriters,
-  handlers ...SnacSniffHandler) (err error) {
+func SnacSniff(ctx context.Context, iName, iAddr string, srcIp net.IP, dstIp net.IP,
+  eWriters *EventWriters, handlers ...SnacSniffHandler) (err error) {
 
 	iface, _, err := getInterface(iName, iAddr, eWriters)
 	if err != nil {
@@ -399,11 +412,11 @@ func SnacSniff(ctx context.Context, iName, iAddr string, srcIp net.IP, dstIp net
 	src := gopacket.NewPacketSource(handle, layers.LayerTypeEthernet)
 	in := src.Packets()
 
-outer:
 	for {
 		select {
 		case <-ctx.Done():
-			break outer
+			// TODO
+			return
 		case packet := <-in:
 
 			if arp := GetArpLayer(packet); arp != nil && arp.Operation == layers.ARPRequest {
@@ -427,7 +440,6 @@ outer:
 					}
 				}
 			}()
-
 		}
 	}
 
