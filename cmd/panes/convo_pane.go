@@ -7,7 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	eavesarp_ng "github.com/impostorkeanu/eavesarp-ng"
-	"github.com/impostorkeanu/eavesarp-ng/cmd/ui/misc"
+	"github.com/impostorkeanu/eavesarp-ng/cmd/misc"
 	zone "github.com/lrstanley/bubblezone"
 	"slices"
 	"strings"
