@@ -97,7 +97,7 @@ func MainSniff(ctx context.Context, db *sql.DB, iName, iAddr string, arpSpoofCh 
 
 	go func() {
 		dieCh := make(chan error) // to listen for routine death
-		defer close(dieCh)
+		//defer close(dieCh)
 
 		// start snac sniff routine
 		go func() {

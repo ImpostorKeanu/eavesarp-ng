@@ -3,13 +3,15 @@ package main
 import (
 	"context"
 	"database/sql"
+	_ "embed"
 	"errors"
 	"fmt"
+	"github.com/charmbracelet/bubbles/help"
+	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/enescakir/emoji"
 	eavesarp_ng "github.com/impostorkeanu/eavesarp-ng"
 	"github.com/impostorkeanu/eavesarp-ng/cmd/ui/misc"
 	"github.com/impostorkeanu/eavesarp-ng/cmd/ui/panes"
@@ -23,21 +25,20 @@ import (
 
 // ui styling variables
 var (
+	//go:embed ascii_art.txt
+	logo                      string
 	sniffCtx                  = context.TODO()
 	deselectedPaneBorderColor = lipgloss.Color("240")
 	selectedPaneBorderColor   = lipgloss.Color("248")
 	paneStyle                 = lipgloss.NewStyle().
 		Border(lipgloss.NormalBorder(), true, true, true, true).
 		BorderForeground(deselectedPaneBorderColor)
-	centerStyle  = lipgloss.NewStyle().AlignHorizontal(lipgloss.Center)
-	spinnerStyle = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("205")).
-		Width(35).
-		AlignHorizontal(lipgloss.Center).AlignVertical(lipgloss.Center)
+	centerStyle        = lipgloss.NewStyle().AlignHorizontal(lipgloss.Center)
+	spinnerStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("248"))
 	convosTableStyle   table.Styles
-	activeAttacks      misc.ActiveAttacks           // Track conversation keys for ongoing attacks
-	snacChar           = string(emoji.YellowCircle) // Character displayed in the table when a conversation is a SNAC
-	senderPoisonedChar = string(emoji.GreenCircle)  // Character displayed when a sender is poisoned
+	activeAttacks      misc.ActiveAttacks // Track conversation keys for ongoing attacks
+	snacChar           = "Σ"
+	senderPoisonedChar = "Ψ"
 )
 
 const (
@@ -182,6 +183,10 @@ type (
 
 		lastSender, lastTarget string
 		arpSpoofCh             chan eavesarp_ng.ArpSpoofCfg
+
+		keys     keyMap
+		help     help.Model
+		showHelp bool
 	}
 
 	eavesarpError error
@@ -429,7 +434,7 @@ func (m model) Update(msg tea.Msg) (_ tea.Model, cmd tea.Cmd) {
 		// rendering.
 
 		m.uiWidth = msg.Width
-		m.maxPaneHeight = msg.Height - 4
+		m.maxPaneHeight = msg.Height - 5
 
 		m.convosTable.SetHeight(m.maxPaneHeight)
 
@@ -467,8 +472,24 @@ func (m model) Update(msg tea.Msg) (_ tea.Model, cmd tea.Cmd) {
 
 func (m model) View() string {
 
-	if !m.hasConvoRows() || m.convoKey() == "" {
-		return m.convosSpinner.View() + " Capturing ARP traffic" + "\n\n" + m.logPane.View()
+	if m.showHelp {
+		h := lipgloss.NewStyle().
+			Border(lipgloss.NormalBorder(), true, true, true, true).
+			Padding(0, 0, 0, 4).
+			Render(m.help.FullHelpView(m.keys.FullHelp()))
+		return lipgloss.NewStyle().
+			Width(m.uiWidth).Height(m.maxPaneHeight).
+			AlignHorizontal(lipgloss.Center).AlignVertical(lipgloss.Center).
+			Render(h)
+	} else if !m.hasConvoRows() || m.convoKey() == "" {
+		s := m.convosSpinner.View() + " Analyzing ARP traffic"
+		var lW int
+		eavesarp_ng.GreaterLength(logo, &lW)
+		b := strings.Builder{}
+		b.WriteString(lipgloss.NewStyle().MarginLeft((m.uiWidth / 2) - (lW / 2)).Width(m.uiWidth).Render(logo))
+		b.WriteString("\n\n" + lipgloss.NewStyle().Width(m.uiWidth).AlignHorizontal(lipgloss.Center).Render(s))
+		b.WriteString("\n\n" + m.logPane.View())
+		return b.String()
 	}
 
 	poisonPane := poisonPaneLm.Get(m.convoKey())
@@ -566,7 +587,7 @@ func (m model) View() string {
 	}
 
 	rightPane := lipgloss.JoinVertical(lipgloss.Top, rightPanes...)
-	return zone.Scan(lipgloss.JoinHorizontal(lipgloss.Left, leftPane, rightPane))
+	return zone.Scan(lipgloss.JoinHorizontal(lipgloss.Left, leftPane, rightPane) + "\n" + m.help.View(m.keys))
 }
 
 // doCurrConvoRow reads the currently selected row in the conversations
@@ -680,12 +701,27 @@ func (m *model) hasConvoRows() bool {
 
 func (m *model) handleKeyMsg(msg tea.KeyMsg) (cmd tea.Cmd) {
 
-	if msg.String() == "q" || msg.String() == "ctrl+c" {
+	if key.Matches(msg, m.keys.Quit) {
+		if m.showHelp {
+			// quit help menu
+			m.showHelp = false
+			return
+		}
+		// quit eavesarp
 		// TODO check for ongoing attacks and prompt for confirmation
 		sniffCtx.Value(sniffCtxCancelKey).(context.CancelFunc)()
 		m.eWriter.WriteString("quitting")
 		return tea.Quit
 	} else if !m.hasConvoRows() {
+		// nothing to do
+		return
+	} else if !m.showHelp && key.Matches(msg, m.keys.Help) {
+		// display help
+		m.showHelp = true
+		return
+	} else if m.showHelp {
+		// close help
+		m.showHelp = false
 		return
 	}
 
@@ -702,8 +738,8 @@ func (m *model) handleKeyMsg(msg tea.KeyMsg) (cmd tea.Cmd) {
 
 		origCursor := m.convosTable.Cursor()
 
-		switch msg.String() {
-		case "up", "k":
+		switch {
+		case key.Matches(msg, m.keys.Up):
 			if m.convosTable.Cursor() == 0 {
 				m.convosTable.GotoBottom()
 			} else {
@@ -712,7 +748,7 @@ func (m *model) handleKeyMsg(msg tea.KeyMsg) (cmd tea.Cmd) {
 			m.convoPane.GotoTop()
 			m.lastSender = m.getRowSenderIp()
 			m.lastTarget = m.getRowTargetIp()
-		case "down", "j":
+		case key.Matches(msg, m.keys.Down):
 			if m.convosTable.Cursor() == len(m.convosTable.Rows())-1 {
 				m.convosTable.GotoTop()
 			} else {
@@ -721,10 +757,10 @@ func (m *model) handleKeyMsg(msg tea.KeyMsg) (cmd tea.Cmd) {
 			m.convoPane.GotoTop()
 			m.lastSender = m.getRowSenderIp()
 			m.lastTarget = m.getRowTargetIp()
-		case "ctrl+shift+up", "ctrl+shift+right":
+		case key.Matches(msg, m.keys.CtrlShiftUp, m.keys.CtrlShiftRight):
 			m.focusedId = misc.CurConvoPaneId
 			m.convoPane.FocusTable()
-		case "ctrl+shift+down":
+		case key.Matches(msg, m.keys.CtrlShiftDown):
 			handleBottomPane()
 		default:
 			m.convosTable, _ = m.convosTable.Update(msg)
@@ -754,11 +790,11 @@ func (m *model) handleKeyMsg(msg tea.KeyMsg) (cmd tea.Cmd) {
 
 	case misc.CurConvoPaneId:
 
-		switch msg.String() {
-		case "ctrl+shift+left":
+		switch {
+		case key.Matches(msg, m.keys.CtrlShiftLeft):
 			m.focusedId = misc.ConvosPaneId
 			m.convosTable.Focus()
-		case "ctrl+shift+down", "ctrl+shift+up":
+		case key.Matches(msg, m.keys.CtrlShiftDown, m.keys.CtrlShiftUp):
 			handleBottomPane()
 		default:
 			m.convoPane, cmd = m.convoPane.Update(msg)
@@ -766,11 +802,11 @@ func (m *model) handleKeyMsg(msg tea.KeyMsg) (cmd tea.Cmd) {
 
 	case misc.LogPaneId:
 
-		switch msg.String() {
-		case "ctrl+shift+left":
+		switch {
+		case key.Matches(msg, m.keys.CtrlShiftLeft):
 			m.focusedId = misc.ConvosPaneId
 			m.convosTable.Focus()
-		case "ctrl+shift+down", "ctrl+shift+up":
+		case key.Matches(msg, m.keys.CtrlShiftDown, m.keys.CtrlShiftUp):
 			m.focusedId = misc.CurConvoPaneId
 		default:
 			m.logPane, cmd = m.logPane.Update(msg)
@@ -780,13 +816,13 @@ func (m *model) handleKeyMsg(msg tea.KeyMsg) (cmd tea.Cmd) {
 
 		poisonPane := poisonPaneLm.Get(m.convoKey())
 
-		switch msg.String() {
-		case "ctrl+shift+left":
+		switch {
+		case key.Matches(msg, m.keys.CtrlShiftLeft):
 			if poisonPane == nil || m.convoPane.IsPoisoning {
 				m.focusedId = misc.ConvosPaneId
 			}
 			m.convosTable.Focus()
-		case "ctrl+shift+down", "ctrl+shift+up":
+		case key.Matches(msg, m.keys.CtrlShiftDown, m.keys.CtrlShiftUp):
 			if poisonPane == nil || m.convoPane.IsPoisoning {
 				m.focusedId = misc.CurConvoPaneId
 			}

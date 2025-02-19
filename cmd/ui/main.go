@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
@@ -91,6 +92,8 @@ func runUi(db *sql.DB, startMainSniffer bool) (err error) {
 		senderPoisonedChar: senderPoisonedChar,
 		snacChar:           snacChar,
 		arpSpoofCh:         make(chan eavesarp_ng.ArpSpoofCfg),
+		keys:               keys,
+		help:               help.New(),
 	}
 	ui.convosTable.Focus()
 
