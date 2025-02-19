@@ -22,7 +22,7 @@ const (
 	PassiveArpMeth = DiscMethod("passive_arp")
 	// ActiveArpMeth indicates that a Mac was discovered by actively
 	// generating an ARP request. This occurs when the application
-	// broadcasts an ARP request for a target.
+	// broadcasts an ARP request for a Target.
 	ActiveArpMeth = DiscMethod("active_arp")
 	// ForwardDnsMeth indicates that an Ip was discovered by performing
 	// forward name resolution.
@@ -108,12 +108,20 @@ type (
 		DnsRecordFields
 	}
 
+	// AitmOpt indicates a potential AITM opportunity discovered through
+	// DNS resolution, which occurs when a PTR record reveals an A record
+	// that resolves to a distinct IP address. This indicates that the host
+	// that was once assigned the SnacTargetIp has a new IP address, and
+	// the expected service may be available for AITM by NAT techniques.
 	AitmOpt struct {
-		SnacTargetIpId           int
-		UpstreamIpId             int
+		IsNew                    bool
+		SnacTargetIpId           int // Original IP
+		UpstreamIpId             int // IP that we should NAT traffic to
 		SnacTargetIp, UpstreamIp *Ip
 	}
 
+	// Port records indicate ports and protocols observed during poisoning
+	// attacks.
 	Port struct {
 		Id       int
 		IsNew    bool
@@ -121,6 +129,7 @@ type (
 		Protocol string
 	}
 
+	// Attack records track ARP poisoning attacks in a conversation.
 	Attack struct {
 		Id         int
 		IsNew      bool
@@ -131,6 +140,7 @@ type (
 		Ports      []Port
 	}
 
+	// AttackPort records track which Port records an Attack has seen.
 	AttackPort struct {
 		AttackId, PortId int
 		IsNew            bool
@@ -164,10 +174,6 @@ func (p Port) String() string {
 	return fmt.Sprintf("%d/%s", p.Number, p.Protocol)
 }
 
-func (i Ip) IsSnac() bool {
-	return i.ArpResolved && i.MacId != nil
-}
-
 func GetSnacs(db *sql.DB) (ips []Ip, err error) {
 	rows, err := db.Query(`SELECT * FROM ip WHERE arp_resolved=TRUE AND ip.mac_id IS NULL`)
 	if rows == nil {
@@ -181,6 +187,18 @@ func GetSnacs(db *sql.DB) (ips []Ip, err error) {
 		}
 		ips = append(ips, ip)
 	}
+	return
+}
+
+func GetOrCreateAitmOpt(db *sql.DB, snacTargetIpId, upstreamIpId int) (opt AitmOpt, err error) {
+	opt.IsNew, err = GetOrCreate(db, GoCArgs{
+		GetStmt:      "SELECT * FROM aitm_opt WHERE snac_target_ip_id = ? AND upstream_ip_id = ?",
+		CreateStmt:   "INSERT INTO aitm_opt (snac_target_ip_id, upstream_ip_id) VALUES (?, ?) RETURNING *",
+		Params:       map[string]any{"snac_target_ip_id": snacTargetIpId, "upstream_ip_id": upstreamIpId},
+		GetParams:    []string{"snac_target_ip_id", "upstream_ip_id"},
+		CreateParams: []string{"snac_target_ip_id", "upstream_ip_id"},
+		Outputs:      []any{&opt.SnacTargetIpId, &opt.SnacTargetIpId},
+	})
 	return
 }
 
@@ -265,10 +283,10 @@ SELECT ip_id, dns_name_id
 FROM dns_record
 INNER JOIN ip ON ip.id=dns_record.ip_id
 INNER JOIN dns_name ON dns_record.dns_name_id=dns_name.id
-WHERE ip.id=? AND dns_name.id=? AND dns_record.kind="RECORD_KIND"
+WHERE ip.id=? AND dns_name.id=? AND dns_record.Kind="RECORD_KIND"
 LIMIT 1`, "RECORD_KIND", kind, -1)
 	insStmt = strings.Replace(`
-INSERT INTO dns_record (ip_id, dns_name_id, kind)
+INSERT INTO dns_record (ip_id, dns_name_id, Kind)
 VALUES (?,?,"RECORD_KIND") RETURNING ip_id, dns_name_id`, "RECORD_KIND", kind, -1)
 	return
 }
@@ -357,7 +375,7 @@ func GetOrCreate(db *sql.DB, args GoCArgs) (created bool, err error) {
 }
 
 func GetRow(db *sql.DB, stmt string, queryArgs []any, scanDest ...any) error {
-	// TODO context time
+	// TODO configurable context time
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	return db.QueryRowContext(ctx, stmt, queryArgs...).Scan(scanDest...)

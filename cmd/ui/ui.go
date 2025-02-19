@@ -181,6 +181,7 @@ type (
 		mainSniff bool
 
 		lastSender, lastTarget string
+		arpSpoofCh             chan eavesarp_ng.ArpSpoofCfg
 	}
 
 	eavesarpError error
@@ -236,11 +237,12 @@ func (m model) Init() tea.Cmd {
 
 	if m.mainSniff {
 		cmds = append(cmds, func() tea.Msg {
-			m.eWriter.WriteStringf("starting arp sniffer routine")
+			m.eWriter.WriteStringf("starting sniffer")
 			// TODO update to support address specification for interface
-			if err := eavesarp_ng.Sniff(sniffCtx, m.db, ifaceName, "", m.eWriter); err != nil {
+			if err := eavesarp_ng.MainSniff(sniffCtx, m.db, ifaceName, "", m.arpSpoofCh, m.eWriter); err != nil {
 				return eavesarpError(err)
 			}
+			close(m.arpSpoofCh)
 			return nil
 		})
 	}
@@ -653,7 +655,7 @@ func (m *model) handleMouseMsg(msg tea.MouseMsg) (cmd tea.Cmd) {
 		if poisonPane == nil {
 			s, t := m.getSenderTargetIps()
 			// Create a new poison pane for the conversation
-			buff := panes.NewPoison(m.db, ifaceName, s, t, zone.DefaultManager, m.eWriter)
+			buff := panes.NewPoison(m.db, ifaceName, s, t, zone.DefaultManager, m.arpSpoofCh, m.eWriter)
 			buff.SetWidth(m.rightWidth)
 			buff.SetHeight(m.bottomRightHeight)
 			poisonPane = &buff

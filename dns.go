@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"github.com/google/gopacket/pcap"
 	"net"
 	"time"
 )
@@ -19,12 +21,8 @@ const (
 )
 
 var (
-	activeDns = NewLockMap(make(map[string]*DnsSenderArgs))
-	// stopDnsSenderC is used to stop the DnsSender process.
-	stopDnsSenderC = make(chan bool)
-	// dnsSenderC receives DnsSenderArgs and runs DNS jobs based
+	// dnsSenderC receives DoDnsCfg and runs DNS jobs based
 	// on their values.
-	dnsSenderC = make(chan DnsSenderArgs, 100)
 	// dnsResolver allows us to configure a custom context for name
 	// resolution, enabling a custom timeout.
 	//
@@ -33,138 +31,148 @@ var (
 	// https://pkg.go.dev/net#hdr-Name_Resolution
 	dnsResolver = net.Resolver{}
 	// unsupportedDnsError is returned when an unsupported DnsRecordKind
-	// is supplied to DnsSender via DnsSenderArgs.
+	// is supplied to SendDns via DoDnsCfg.
 	unsupportedDnsError = errors.New("unsupported dns record type")
 	dnsFailCounter      *FailCounter
-	dnsSleeper          = NewSleeper(1, 4, 30)
 )
 
 type (
-	// DnsRecordKind is a kind of DNS record.
+	// DnsRecordKind is a Kind of DNS record.
 	DnsRecordKind string
-	// DnsSenderArgs has all necessary values to perform a name
+	// DoDnsCfg has all necessary values to perform a name
 	// resolution job.
 	//
-	// These are passed to DnsSender via dnsSenderC.
-	DnsSenderArgs struct {
-		kind    DnsRecordKind
-		target  string
-		failure func(error)
-		after   func([]string)
+	// These are passed to SendDns via dnsSenderC.
+	DoDnsCfg struct {
+		Kind     DnsRecordKind
+		Target   string
+		FailureF func(error)
+		AfterF   func([]string)
+		SenderC  chan DoDnsCfg
+	}
+
+	// handlePtrNameArgs is a structure used to document args required
+	// for handling reverse resolved names.
+	handlePtrNameArgs[DT DoDnsCfg, AT ActiveArp] struct {
+		ip         *Ip             // ip that was reverse resolved
+		name       string          // name obtained through reverse resolution
+		srcIfaceIp []byte          // srcIfaceIp address used to send arp requests for new ips
+		srcIfaceHw []byte          // srcIfaceHw address used to send arp requests for new ips
+		activeArp  *LockMap[AT]    // track active arp requests
+		arpSenderC chan SendArpCfg // channel used to send arp requests
+		activeDns  *LockMap[DT]    // track active dns resolutions
+		dnsSenderC chan DoDnsCfg   // channel used to send dns queries
+		handle     *pcap.Handle    // pcap handle used to send arp requests and dns queries
 	}
 )
 
-// DnsSender is a background process that receives DNS resolution
+// SendDns is a background process that receives DNS resolution
 // jobs via dnsSenderC.
-func DnsSender(eWriters *EventWriters) {
-	eWriters.Write("starting dns sender routine")
-	for {
-		dnsSleeper.Sleep()
-		select {
-		case <-stopDnsSenderC:
-			eWriters.Write("stopping dns sender routine")
-			break
-		case dA := <-dnsSenderC:
+func SendDns(dA DoDnsCfg) error {
 
-			if dnsFailCounter.Exceeded() {
-				eWriters.Write("dns failure count exceeded; skipping name resolution")
-				continue
-			}
-
-			//===================
-			// DO NAME RESOLUTION
-			//===================
-
-			var err error
-			var resolved []string
-
-			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			dnsKind := string(dA.kind)
-			switch dA.kind {
-			case PtrDnsKind:
-				resolved, err = dnsResolver.LookupAddr(ctx, dA.target)
-			case ADnsKind:
-				resolved, err = dnsResolver.LookupHost(ctx, dA.target)
-			default:
-				err = unsupportedDnsError
-			}
-			cancel()
-
-			if e, ok := err.(*net.DNSError); ok && e.IsNotFound {
-				if dA.failure != nil {
-					dA.failure(err)
-				}
-				eWriters.Writef("no %v record found for %v", dnsKind, dA.target)
-				continue
-			} else if ok {
-				eWriters.Writef("dns failure: %v", e.Error())
-				dnsFailCounter.Inc() // Increment the maximum fail counter
-			}
-
-			if err != nil {
-				eWriters.Writef("error while performing name resolution: %v", err.Error())
-				continue
-			}
-
-			// Handle the output
-			if dA.after != nil {
-				dA.after(resolved)
-			}
-
-			if dA.failure != nil {
-				dA.failure(err)
-			}
-		}
+	if dnsFailCounter.Exceeded() {
+		// TODO log this event
+		//eWriters.Write("dns FailureF count exceeded; skipping name resolution")
+		return nil
 	}
+
+	//===================
+	// DO NAME RESOLUTION
+	//===================
+
+	var err error
+	var resolved []string
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	//dnsKind := string(dA.Kind)
+	switch dA.Kind {
+	case PtrDnsKind:
+		resolved, err = dnsResolver.LookupAddr(ctx, dA.Target)
+	case ADnsKind:
+		resolved, err = dnsResolver.LookupHost(ctx, dA.Target)
+	default:
+		err = unsupportedDnsError
+	}
+	cancel()
+
+	if e, ok := err.(*net.DNSError); ok && e.IsNotFound {
+		if dA.FailureF != nil {
+			dA.FailureF(err)
+		}
+		//eWriters.Writef("no %v record found for %v", dnsKind, dA.Target)
+		//continue
+		return nil
+	} else if ok {
+		//eWriters.Writef("dns FailureF: %v", e.Error())
+		dnsFailCounter.Inc() // Increment the maximum fail counter
+		return nil
+	}
+
+	if err != nil {
+		//eWriters.Writef("error while performing name resolution: %v", err.Error())
+		return fmt.Errorf("unhandled dns exception: %w", err)
+	}
+
+	// Handle the output
+	if dA.AfterF != nil {
+		dA.AfterF(resolved)
+	}
+	if dA.FailureF != nil {
+		dA.FailureF(err)
+	}
+
+	return nil
 }
 
 // handlePtrName processes string DNS name values resolved
 // via reverse name resolution. It:
-//
-// - Creates a DnsName for the string in the db
-// - Associates the Ip with the DnsName by creating a PtrRecord
-// - If the DnsName is new, a forward lookup on the newly discovered DnsName
-//   is performed.
-// - To a maximum depth of 10, each newly discovered Ip will be subjected
-//   to reverse name resolution.
-func handlePtrName(db *sql.DB, eWriters *EventWriters, ip *Ip, name string, depth *int) {
+func handlePtrName(db *sql.DB, depth int, cfg handlePtrNameArgs[DoDnsCfg, ActiveArp], eWriters *EventWriters) {
 
-	if depth == nil {
-		buff := 10
-		depth = &buff
-	} else if *depth > 10 {
-		// TODO log this as an event
-		*depth = 10
-	}
-
-	dnsName, err := GetOrCreateDnsName(db, name)
+	dnsName, err := GetOrCreateDnsName(db, cfg.name)
 	if err != nil {
 		eWriters.Writef("failed to create dns name: %v", err.Error())
 		return
 	}
 
-	if _, err = GetOrCreateDnsPtrRecord(db, *ip, dnsName); err != nil {
+	if _, err = GetOrCreateDnsPtrRecord(db, *cfg.ip, dnsName); err != nil {
 		eWriters.Writef("failed to create dns ptr record: %v", err.Error())
 		return
 	}
 
 	// Avoid duplicate forward name resolution
-	if !dnsName.IsNew || dnsFailCounter.Exceeded() || activeDns.Get(FmtDnsKey(name, ADnsKind)) != nil {
+	if !dnsName.IsNew || dnsFailCounter.Exceeded() || cfg.activeDns.Get(FmtDnsKey(cfg.name, ADnsKind)) != nil {
 		return
 	}
 
 	// Do forward lookups for each newly discovered name
-	dArgs := DnsSenderArgs{
-		kind:   ADnsKind,
-		target: name,
-		failure: func(err error) {
-			activeDns.Delete(FmtDnsKey(name, ADnsKind))
+	dArgs := DoDnsCfg{
+		Kind:    ADnsKind,
+		SenderC: cfg.dnsSenderC,
+		Target:  cfg.name,
+		FailureF: func(err error) {
+			cfg.activeDns.Delete(FmtDnsKey(cfg.name, ADnsKind))
 		},
-		after: func(newIpStrings []string) {
+		AfterF: func(newIpStrings []string) {
 			for _, newIpS := range newIpStrings {
 
 				newIp, err := GetOrCreateIp(db, newIpS, nil, ForwardDnsMeth,
 					false, false)
+
+				if newIp.IsNew || newIp.MacId == nil {
+					// arp resolve newly discovered ip addresses
+					//go doArpRequest(db, &newIp, cfg.srcIfaceIp, cfg.srcIfaceHw, net.ParseIP(newIp.Value).To4(),
+					//	nil, cfg.handle, cfg.arpSenderC, cfg.activeArp, eWriters)
+					go doArpRequest(db, doArpRequestArgs[ActiveArp]{
+						tarIpRecord: &newIp,
+						senIp:       cfg.srcIfaceIp,
+						senHw:       cfg.srcIfaceHw,
+						tarIp:       net.ParseIP(newIp.Value).To4(),
+						tarHw:       nil,
+						senderC:     cfg.arpSenderC,
+						activeArps:  cfg.activeArp,
+						handle:      cfg.handle,
+					}, eWriters)
+				}
 
 				if err != nil {
 					eWriters.Writef("failed to create new ip: %v", err.Error())
@@ -176,55 +184,55 @@ func handlePtrName(db *sql.DB, eWriters *EventWriters, ip *Ip, name string, dept
 
 				// speculate if the host that had the original ip has since
 				// moved to the newly discovered one
-				if newIpS != ip.Value {
-					// TODO this should probably be a GOC function
-					if _, err = db.Exec(`INSERT OR IGNORE INTO aitm_opt (snac_target_ip_id, upstream_ip_id) VALUES (?,?)`,
-						ip.Id, newIp.Id); err != nil {
+				if newIpS != cfg.ip.Value {
+					if _, err = GetOrCreateAitmOpt(db, cfg.ip.Id, newIp.Id); err != nil {
 						eWriters.Writef("failed to create aitm_opt record: ", err.Error())
 						return
 					}
 				}
 
 				// determine if we should reverse resolve the new ip
-				if *depth <= 0 ||
+				if depth <= 0 ||
 				  newIp.PtrResolved ||
-				  activeDns.Get(FmtDnsKey(newIp.Value, PtrDnsKind)) == nil {
+				  cfg.activeDns.Get(FmtDnsKey(newIp.Value, PtrDnsKind)) == nil {
 					return
 				}
 
-				dArgs := DnsSenderArgs{
-					kind:   PtrDnsKind,
-					target: newIp.Value,
-					failure: func(e error) {
-						if err := SetPtrResolved(db, *ip); err != nil {
+				dArgs := DoDnsCfg{
+					SenderC: cfg.dnsSenderC,
+					Kind:    PtrDnsKind,
+					Target:  newIp.Value,
+					FailureF: func(e error) {
+						if err := SetPtrResolved(db, *cfg.ip); err != nil {
 							eWriters.Writef("failed to set ptr to resolved: %v", err.Error())
 						}
-						activeDns.Delete(FmtDnsKey(newIp.Value, PtrDnsKind))
+						cfg.activeDns.Delete(FmtDnsKey(newIp.Value, PtrDnsKind))
 					},
-					after: func(names []string) {
-						if err := SetPtrResolved(db, *ip); err != nil {
+					AfterF: func(names []string) {
+						if err := SetPtrResolved(db, *cfg.ip); err != nil {
 							eWriters.Writef("failed to set ptr to resolved: %v", err.Error())
-							activeDns.Delete(FmtDnsKey(newIp.Value, PtrDnsKind))
+							cfg.activeDns.Delete(FmtDnsKey(newIp.Value, PtrDnsKind))
 							return
 						}
 						// call recursively for each friendly name
 						for _, name := range names {
-							d := *depth - 1
-							handlePtrName(db, eWriters, &newIp, name, &d)
+							depth -= 1
+							cfg.name = name
+							handlePtrName(db, depth, cfg, eWriters)
 						}
-						activeDns.Delete(FmtDnsKey(newIp.Value, PtrDnsKind))
+						cfg.activeDns.Delete(FmtDnsKey(newIp.Value, PtrDnsKind))
 					},
 				}
 
-				activeDns.Set(FmtDnsKey(newIp.Value, PtrDnsKind), &dArgs)
-				dnsSenderC <- dArgs
+				cfg.activeDns.Set(FmtDnsKey(newIp.Value, PtrDnsKind), &dArgs)
+				cfg.dnsSenderC <- dArgs
 
 			}
 
-			activeDns.Delete(FmtDnsKey(name, ADnsKind))
+			cfg.activeDns.Delete(FmtDnsKey(cfg.name, ADnsKind))
 		},
 	}
 
-	activeDns.Set(FmtDnsKey(name, ADnsKind), &dArgs)
-	dnsSenderC <- dArgs
+	cfg.activeDns.Set(FmtDnsKey(cfg.name, ADnsKind), &dArgs)
+	cfg.dnsSenderC <- dArgs
 }

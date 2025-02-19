@@ -29,7 +29,7 @@ func readyDb() (db *sql.DB) {
 func TestSniff(t *testing.T) {
 	db := readyDb()
 	t.Run("sniff", func(t *testing.T) {
-		Sniff(db, "enp13s0")
+		MainSniff(db, "enp13s0")
 	})
 }
 
@@ -48,7 +48,7 @@ func TestSnacSniff(t *testing.T) {
 
 	t.Run("snac", func(t *testing.T) {
 		go counter()
-		SnacSniff(ctx, "enp13s0", net.ParseIP("192.168.2.6"), func(p gopacket.Packet) {
+		ArpSpoof(ctx, "enp13s0", net.ParseIP("192.168.2.6"), func(p gopacket.Packet) {
 			counterC <- true
 			proto, port, _ := GetPacketTransportLayerInfo(p)
 			fmt.Printf("Got packet: %s/%d\n", proto, port)

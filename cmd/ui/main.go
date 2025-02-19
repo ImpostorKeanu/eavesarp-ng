@@ -90,6 +90,7 @@ func runUi(db *sql.DB, startMainSniffer bool) (err error) {
 		logPane:            lPane,
 		senderPoisonedChar: senderPoisonedChar,
 		snacChar:           snacChar,
+		arpSpoofCh:         make(chan eavesarp_ng.ArpSpoofCfg),
 	}
 	ui.convosTable.Focus()
 

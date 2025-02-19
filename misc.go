@@ -10,13 +10,18 @@ import (
 	"time"
 )
 
+const (
+	ConversationKeyDelimiter = ":"
+	DnsKeyDelimiter          = ":"
+)
+
 var (
 	rnd = rand.New(rand.NewSource(time.Now().UnixNano()))
 )
 
 type (
 	// FailCounter is used to track the number of failures that
-	// have occurred. It allows application to determine when
+	// have occurred. It allows the application to determine when
 	// to stop performing some type of action that may be detrimental
 	// to the network, e.g., making repeated DNS queries when the
 	// server is failing.
@@ -27,8 +32,9 @@ type (
 	}
 
 	// Sleeper is used to sleep a routine for a period of time.
-	// This type is used to throttle ARP and DNS name resolution
-	// requests/responses.
+	// Jitter is applied at each call, adding some randomization
+	// to the sleep time. This type is used to throttle ARP and
+	// DNS name resolution requests/responses.
 	//
 	// Jitter Logic:
 	//
@@ -49,11 +55,18 @@ type (
 		jitterMax int
 	}
 
+	// LockMap is effectively a mapping of string to any values that
+	// uses mutexes to ensure controlled access.
 	LockMap[T any] struct {
 		mu sync.RWMutex
 		m  map[string]*T
 	}
 
+	// ConvoLockMap is LockMap with additional methods that act on the
+	// key, which is typically in the form of `{SenderIP}:{TargetIP}`.
+	// Methods prefixed with `C` are effectively aliases to standard
+	// LockMap methods, except they receive individual arguments for
+	// the sender and target IP addresses.
 	ConvoLockMap[T any] struct {
 		LockMap[T]
 	}
@@ -146,7 +159,7 @@ func (f *FailCounter) Inc() {
 	}
 }
 
-// Exceeded determines if the failure threshold has been
+// Exceeded determines if the FailureF threshold has been
 // exceeded.
 func (f *FailCounter) Exceeded() bool {
 	f.mu.RLock()
@@ -177,31 +190,15 @@ func GreaterLength(s string, i *int) {
 	}
 }
 
-// EmptyOrDefault sets the value of s to d if it's currently
-// empty.
-func EmptyOrDefault(s *string, d string) {
-	if *s == "" {
-		*s = d
-	}
-}
-
-func Longest(s []string) (e string, i int) {
-	for _, ele := range s {
-		if len(ele) > i {
-			i = len(ele)
-			e = ele
-		}
-	}
-	return
-}
-
 // FmtConvoKey returns the IPs formatted for common lookups.
 func FmtConvoKey(senderIp, targetIp string) string {
-	return fmt.Sprintf("%s:%s", senderIp, targetIp)
+	return fmt.Sprintf("%s%s%s", senderIp, ConversationKeyDelimiter, targetIp)
 }
 
+// SplitConvoKey breaks apart the conversation key and returns the
+// sender and target IP values.
 func SplitConvoKey(v string) (senderIp string, targetIp string, err error) {
-	s := strings.Split(v, ":")
+	s := strings.Split(v, ConversationKeyDelimiter)
 	if len(v) >= 2 {
 		senderIp, targetIp = s[0], s[1]
 	} else {
@@ -210,6 +207,8 @@ func SplitConvoKey(v string) (senderIp string, targetIp string, err error) {
 	return
 }
 
+// FmtDnsKey returns a string value that's properly formatted
+// for use various eavesarp_ng functions and methods.
 func FmtDnsKey(target string, kind DnsRecordKind) string {
-	return fmt.Sprintf("%s:%s", target, kind)
+	return fmt.Sprintf("%s%s%s", target, DnsKeyDelimiter, kind)
 }

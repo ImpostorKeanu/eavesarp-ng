@@ -11,11 +11,6 @@ import (
 	"github.com/google/gopacket/pcap"
 	"io"
 	"net"
-	"time"
-)
-
-type (
-	SnacSniffHandler func(packet gopacket.Packet)
 )
 
 var (
@@ -73,32 +68,113 @@ func getInterface(name string, addr string, eWriters *EventWriters) (iface *net.
 	return
 }
 
-// Sniff starts the ARP and DNS background routines and sniffs network traffic
-// from the interface until stopped.
+// MainSniff starts the ARP and DNS background routines and sniffs network traffic
+// from the interface until the context is done.
 //
 // - iName is the name of the network interface to sniff on.
 // - iAddr optionally (empty string) specifies the ipv4 address
 //    on the interface to sniff for.
-func Sniff(ctx context.Context, db *sql.DB, iName, iAddr string, eventWriters ...io.StringWriter) (err error) {
+// - When snacSniffCh receives ArpSpoofCfg, a new background routine
+//   to perform an ARP spoofing attack is started.
+func MainSniff(ctx context.Context, db *sql.DB, iName, iAddr string, arpSpoofCh chan ArpSpoofCfg,
+  eventWriters ...io.StringWriter) (err error) {
 	// SOURCE: https://github.com/google/gopacket/blob/master/examples/arpscan/arpscan.go
 
+	eWriters := NewEventWriters(eventWriters...)
+
+	arpSleeper := NewSleeper(1, 5, 30)
+	dnsSleeper := NewSleeper(1, 5, 30)
+
+	ch := make(chan error) // channel to receive notification of death
+	dnsSenderC := make(chan DoDnsCfg, 50)
+	arpSenderC := make(chan SendArpCfg, 50)
+
+	// create child contexts for each subroutine
+	sniffCtx, sniffCancel := context.WithCancel(ctx)
+	snacSniffCtx, snacSniffCancel := context.WithCancel(ctx)
+	arpSenderCtx, arpSenderCancel := context.WithCancel(ctx)
+	dnsSenderCtx, dnsSenderCancel := context.WithCancel(ctx)
+
+	go func() {
+		dieCh := make(chan error) // to listen for routine death
+		defer close(dieCh)
+
+		// start snac sniff routine
+		go func() {
+			for {
+				select {
+				case <-snacSniffCtx.Done():
+					return
+				case args := <-arpSpoofCh:
+
+					// start routine that waits for sniff job to finish
+					go func() {
+						// start sniff job
+						ctx, cancel := context.WithCancel(args.Ctx)
+						go func() {
+							err := ArpSpoof(ctx, iName, iAddr, arpSenderC,
+								args.SenderIp, args.TargetIp, eWriters, args.Handlers...)
+							if err != nil {
+								dieCh <- err
+							}
+						}()
+
+						// wait for sniff job to finish
+						select {
+						case <-snacSniffCtx.Done():
+							cancel()
+						case <-args.Ctx.Done():
+							cancel()
+						}
+
+					}()
+				}
+			}
+		}()
+
+		// start arp sender
+		go func() {
+			dieCh <- SenderServer(arpSenderCtx, arpSleeper, arpSenderC, SendArp)
+		}()
+
+		// start dns sender
+		go func() {
+			dieCh <- SenderServer(dnsSenderCtx, dnsSleeper, dnsSenderC, SendDns)
+		}()
+
+		// start main sniffer
+		go func() {
+			dieCh <- WatchArp(sniffCtx, db, iName, iAddr, arpSenderC, dnsSenderC, eventWriters...)
+		}()
+
+		err := <-dieCh // block until an error or nil is received
+
+		// call all cancel functions
+		sniffCancel()
+		arpSenderCancel()
+		dnsSenderCancel()
+		snacSniffCancel()
+
+		close(arpSenderC)
+		close(dnsSenderC)
+
+		ch <- err // notify main routine
+	}()
+
+	err = <-ch // wait for completion
+	close(ch)
+
+	return
+}
+
+// WatchArp is the primary function that monitors ARP requests and initiates DNS name
+// resolution for newly discovered IP addresses.
+func WatchArp(ctx context.Context, db *sql.DB, iName, iAddr string,
+  arpSenderC chan SendArpCfg, dnsSenderC chan DoDnsCfg, eventWriters ...io.StringWriter) (err error) {
+
 	eWriters := EventWriters{writers: eventWriters}
-
-	//==========================
-	// START BACKGROUND ROUTINES
-	//==========================
-
-	go ArpSender(&eWriters)
-	defer func() {
-		eWriters.Write("killing arp sender routine")
-		stopArpSenderC <- true
-	}()
-
-	go DnsSender(&eWriters)
-	defer func() {
-		eWriters.Write("killing dns sender routine")
-		stopDnsSenderC <- true
-	}()
+	activeArps := NewLockMap(make(map[string]*ActiveArp)) // track arp requests
+	activeDns := NewLockMap(make(map[string]*DoDnsCfg))   // track dns requests
 
 	//==========================
 	// PREPARE NETWORK INTERFACE
@@ -169,7 +245,7 @@ outer:
 					eWriters.Writef("new sender ip passively discovered: %v", senIp.Value)
 				}
 				if tarIp.IsNew {
-					eWriters.Writef("new target ip passively discovered: %v", tarIp.Value)
+					eWriters.Writef("new Target ip passively discovered: %v", tarIp.Value)
 				}
 
 				//====================
@@ -188,31 +264,18 @@ outer:
 					// SEND ARP REQUEST FOR TARGET
 					//============================
 
-					go func() {
-						eWriters.Writef("initiating active arp request for %v", tarIp.Value)
-
-						ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-						context.AfterFunc(ctx, func() {
-							cancel()
-							if err := SetArpResolved(db, tarIp.Id); err != nil {
-								eWriters.Writef("failed to set arp as resolved: %v", err.Error())
-							}
-							if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-								eWriters.Writef("never received active arp response for %v", tarIp.Value)
-							}
-							activeArps.Delete(tarIp.Value)
-						})
-
-						activeArps.Set(tarIp.Value, &ActiveArp{TarIp: tarIp, ctx: ctx, cancel: cancel})
-
-						arpSenderC <- ArpSenderArgs{
-							operation: layers.ARPRequest,
-							handle:    handle,
-							senHw:     iface.HardwareAddr,
-							senIp:     ifaceAddr.IP,
-							tarIp:     arpL.DstProtAddress,
-						}
-					}()
+					//go doArpRequest(db, tarIp, ifaceAddr.IP.To4(), iface.HardwareAddr, arpL.DstProtAddress, nil,
+					//	handle, arpSenderC, activeArps, &eWriters)
+					go doArpRequest(db, doArpRequestArgs[ActiveArp]{
+						tarIpRecord: tarIp,
+						senIp:       ifaceAddr.IP.To4(),
+						senHw:       iface.HardwareAddr,
+						tarIp:       arpL.DstProtAddress,
+						tarHw:       nil,
+						senderC:     arpSenderC,
+						activeArps:  activeArps,
+						handle:      handle,
+					}, &eWriters)
 
 				}
 
@@ -220,7 +283,7 @@ outer:
 				// DO NAME RESOLUTION
 				//===================
 
-				// skip name resolution after excess failures
+				// skip name resolution AfterF excess failures
 				if dnsFailCounter.Exceeded() {
 					continue outer
 				}
@@ -240,10 +303,11 @@ outer:
 				// reverse resolve each ip
 				go func() {
 					for _, ip := range toResolve {
-						dArgs := DnsSenderArgs{
-							kind:   PtrDnsKind,
-							target: ip.Value,
-							failure: func(e error) {
+						dArgs := DoDnsCfg{
+							SenderC: dnsSenderC,
+							Kind:    PtrDnsKind,
+							Target:  ip.Value,
+							FailureF: func(e error) {
 								if err := SetPtrResolved(db, *ip); err != nil {
 									activeDns.Delete(FmtDnsKey(ip.Value, PtrDnsKind))
 									eWriters.Writef("failed to set ptr to resolved: %v", err.Error())
@@ -251,14 +315,24 @@ outer:
 								}
 								activeDns.Delete(FmtDnsKey(ip.Value, PtrDnsKind))
 							},
-							after: func(names []string) {
+							AfterF: func(names []string) {
 								if err := SetPtrResolved(db, *ip); err != nil {
 									activeDns.Delete(FmtDnsKey(ip.Value, PtrDnsKind))
 									eWriters.Writef("failed to set ptr to resolved: %v", err.Error())
 									return
 								}
 								for _, name := range names {
-									handlePtrName(db, &eWriters, ip, name, nil)
+									handlePtrName(db, 10, handlePtrNameArgs[DoDnsCfg, ActiveArp]{
+										ip:         ip,
+										name:       name,
+										srcIfaceIp: ifaceAddr.IP.To4(),
+										srcIfaceHw: iface.HardwareAddr,
+										activeArp:  activeArps,
+										arpSenderC: arpSenderC,
+										activeDns:  activeDns,
+										dnsSenderC: dnsSenderC,
+										handle:     handle,
+									}, &eWriters)
 								}
 								activeDns.Delete(FmtDnsKey(ip.Value, PtrDnsKind))
 							},
@@ -280,7 +354,7 @@ outer:
 					var srcMac *Mac
 					srcMac, srcIp, _, err = sAddrs.getOrCreateSnifferDbValues(db, ActiveArpMeth, &eWriters)
 					if err != nil {
-						eWriters.Writef("failed to handle arp reply: %v", err.Error())
+						eWriters.Writef("failed to Handle arp reply: %v", err.Error())
 						return err
 					}
 					eWriters.Writef("received arp reply: %s (%s)", srcIp.Value, srcMac.Value)
@@ -288,9 +362,6 @@ outer:
 			}
 		}
 	}
-
-	eWriters.Write("exiting main sniffer thread")
-	return
 }
 
 func (u arpStringAddrs) getOrCreateSourceDbValues(db *sql.DB, arpMethod DiscMethod, eWriters *EventWriters) (srcMac *Mac, srcIp *Ip, err error) {
@@ -351,6 +422,13 @@ func (u arpStringAddrs) getOrCreateSnifferDbValues(db *sql.DB, arpMethod DiscMet
 	return
 }
 
+// GetPacketTransportLayerInfo extracts the transport layer protocol and port from
+// a packet.
+//
+// An error is returned if an unknown transport layer is found. When this occurs,
+// proto and dstPort are zero values.
+//
+// Known protocols transport layer protocols: `tcp`, `udp`, `sctp`
 func GetPacketTransportLayerInfo(packet gopacket.Packet, eWriters *EventWriters) (proto string, dstPort int, err error) {
 	transLayer := packet.TransportLayer()
 	if transLayer == nil {
@@ -377,6 +455,8 @@ func GetPacketTransportLayerInfo(packet gopacket.Packet, eWriters *EventWriters)
 	return
 }
 
+// GetArpLayer extracts the ARP layer from packet, returning nil when no
+// ARP layer is found.
 func GetArpLayer(packet gopacket.Packet) *layers.ARP {
 	if arpLayer := packet.Layer(layers.LayerTypeARP); arpLayer != nil {
 		return arpLayer.(*layers.ARP)
@@ -384,11 +464,15 @@ func GetArpLayer(packet gopacket.Packet) *layers.ARP {
 	return nil
 }
 
-// SnacSniff is used to initiate a standalone packet capture for a
-// specific source IP (senIp) while passing each captured packet to
+// ArpSpoof poisons the sender's ARP table by sending our MAC address
+// when a request for the target's IP is observed. After poisoning
+// occurs and non-ARP traffic is detected, each packet is passed to
 // a series of handler functions.
-func SnacSniff(ctx context.Context, iName, iAddr string, srcIp net.IP, dstIp net.IP,
-  eWriters *EventWriters, handlers ...SnacSniffHandler) (err error) {
+//
+// NOTE: Before poisoning the sender's ARP table, this function passively
+// waits for the sender to broadcast an ARP request.
+func ArpSpoof(ctx context.Context, iName, iAddr string, arpSenderC chan SendArpCfg, senIp net.IP, tarIp net.IP,
+  eWriters *EventWriters, handlers ...ArpSpoofHandler) (err error) {
 
 	iface, _, err := getInterface(iName, iAddr, eWriters)
 	if err != nil {
@@ -404,7 +488,7 @@ func SnacSniff(ctx context.Context, iName, iAddr string, srcIp net.IP, dstIp net
 	}
 	defer handle.Close()
 
-	if err = handle.SetBPFFilter(fmt.Sprintf("src host %s && dst host %s", srcIp.String(), dstIp.String())); err != nil {
+	if err = handle.SetBPFFilter(fmt.Sprintf("src host %s && dst host %s", senIp.String(), tarIp.String())); err != nil {
 		eWriters.Writef("failed to set bpf filter: %v", err.Error())
 		return
 	}
@@ -415,19 +499,18 @@ func SnacSniff(ctx context.Context, iName, iAddr string, srcIp net.IP, dstIp net
 	for {
 		select {
 		case <-ctx.Done():
-			// TODO
 			return
 		case packet := <-in:
 
 			if arp := GetArpLayer(packet); arp != nil && arp.Operation == layers.ARPRequest {
 				// Respond with our MAC
-				arpSenderC <- ArpSenderArgs{
-					handle:    handle,
-					operation: layers.ARPReply,
-					senHw:     iface.HardwareAddr,
-					senIp:     dstIp,
-					tarHw:     arp.SourceHwAddress,
-					tarIp:     arp.SourceProtAddress,
+				arpSenderC <- SendArpCfg{
+					Handle:    handle,
+					Operation: layers.ARPReply,
+					SenderHw:  iface.HardwareAddr,
+					SenderIp:  tarIp,
+					TargetHw:  arp.SourceHwAddress,
+					TargetIp:  arp.SourceProtAddress,
 				}
 				continue
 			}
@@ -442,6 +525,4 @@ func SnacSniff(ctx context.Context, iName, iAddr string, srcIp net.IP, dstIp net
 			}()
 		}
 	}
-
-	return
 }
