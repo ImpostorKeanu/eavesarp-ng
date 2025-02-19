@@ -26,15 +26,14 @@ import (
 // ui styling variables
 var (
 	//go:embed ascii_art.txt
-	logo                      string
-	sniffCtx                  = context.TODO()
-	deselectedPaneBorderColor = lipgloss.Color("240")
-	selectedPaneBorderColor   = lipgloss.Color("248")
-	paneStyle                 = lipgloss.NewStyle().
+	logo     string
+	sniffCtx = context.TODO()
+
+	paneStyle = lipgloss.NewStyle().
 		Border(lipgloss.NormalBorder(), true, true, true, true).
-		BorderForeground(deselectedPaneBorderColor)
+		BorderForeground(misc.DeselectedPaneBorderColor)
 	centerStyle        = lipgloss.NewStyle().AlignHorizontal(lipgloss.Center)
-	spinnerStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("248"))
+	spinnerStyle       = lipgloss.NewStyle().Foreground(misc.SelectedPaneBorderColor)
 	convosTableStyle   table.Styles
 	activeAttacks      misc.ActiveAttacks // Track conversation keys for ongoing attacks
 	snacChar           = "Σ"
@@ -103,16 +102,13 @@ func init() {
 	convosTableStyle = table.DefaultStyles()
 	convosTableStyle.Header = convosTableStyle.Header.
 		BorderStyle(lipgloss.NormalBorder()).
-		BorderForeground(lipgloss.Color("240")).
+		BorderForeground(misc.DeselectedPaneBorderColor).
 		BorderBottom(true).
 		Bold(true).
 		PaddingLeft(1)
 	convosTableStyle.Cell.PaddingLeft(1)
 	convosTableStyle.Selected = convosTableStyle.Selected.
-		//Foreground(lipgloss.Color("229")).
-		//Background(lipgloss.Color("57")).
-		//UnsetForeground().
-		Foreground(lipgloss.Color("255")).
+		Foreground(misc.SelectedRowForegroundColor).
 		Bold(true)
 
 	// Assign index offsets to conversations table headers
@@ -532,7 +528,7 @@ func (m model) View() string {
 
 	convosTblStyle := paneStyle.Height(m.maxPaneHeight)
 	if m.focusedId == misc.ConvosPaneId {
-		convosTblStyle = convosTblStyle.BorderForeground(selectedPaneBorderColor)
+		convosTblStyle = convosTblStyle.BorderForeground(misc.SelectedPaneBorderColor)
 	}
 
 	leftPane = lipgloss.JoinVertical(lipgloss.Center,
@@ -545,7 +541,7 @@ func (m model) View() string {
 
 	currConvoStyle := paneStyle.Width(m.rightWidth - 2).MaxWidth(m.rightWidth)
 	if m.focusedId == misc.CurConvoPaneId {
-		currConvoStyle = currConvoStyle.BorderForeground(selectedPaneBorderColor)
+		currConvoStyle = currConvoStyle.BorderForeground(misc.SelectedPaneBorderColor)
 	}
 
 	m.convoPane.Style = currConvoStyle
@@ -565,9 +561,9 @@ func (m model) View() string {
 		//=============================
 
 		if m.focusedId == misc.PoisonCfgPaneId {
-			poisonPane.Style = paneStyle.BorderForeground(selectedPaneBorderColor)
+			poisonPane.Style = paneStyle.BorderForeground(misc.SelectedPaneBorderColor)
 		} else {
-			poisonPane.Style = paneStyle.BorderForeground(deselectedPaneBorderColor)
+			poisonPane.Style = paneStyle.BorderForeground(misc.DeselectedPaneBorderColor)
 		}
 		rightPanes = append(rightPanes, poisonPane.View())
 
@@ -578,7 +574,7 @@ func (m model) View() string {
 		//==========
 
 		if m.focusedId == misc.LogPaneId {
-			m.logPane.SetStyle(paneStyle.BorderForeground(selectedPaneBorderColor))
+			m.logPane.SetStyle(paneStyle.BorderForeground(misc.SelectedPaneBorderColor))
 		} else {
 			m.logPane.SetStyle(paneStyle)
 		}

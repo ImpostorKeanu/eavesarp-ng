@@ -54,21 +54,18 @@ var (
 )
 
 func init() {
-	//curConvoTableStyle = table.DefaultStyles()
 	curConvoTableStyle.Header = curConvoTableStyle.Header.
 		BorderStyle(lipgloss.NormalBorder()).
-		BorderForeground(lipgloss.Color("240")).
+		BorderForeground(misc.DeselectedPaneBorderColor).
 		BorderBottom(true).
 		Bold(true).
 		Padding(0, 0, 0, 2).
 		Margin(0, 0, 0, 0)
-	//PaddingLeft(1).
-	//curConvoTableStyle.Cell.PaddingLeft(1)
 	curConvoTableStyle.Cell = curConvoTableStyle.Cell.
 		Padding(0, 0, 0, 2).
 		Margin(0, 0, 0, 0)
 	curConvoTableStyle.Selected = curConvoTableStyle.Selected.
-		Foreground(lipgloss.Color("255")).
+		Foreground(misc.SelectedRowForegroundColor).
 		Bold(true).
 		Padding(0, 0, 0, 0).
 		Margin(0, 0, 0, 0)
@@ -201,7 +198,8 @@ func (c CurConvoPane) View() string {
 		s := lipgloss.NewStyle().
 			Width(len(btnTxt) + 2).
 			AlignHorizontal(lipgloss.Center).
-			Background(lipgloss.Color("240"))
+			Background(misc.BtnColor).
+			Foreground(misc.BtnTextColor)
 		btn = zone.Mark(c.poisonCfgBtnId, s.Render(btnTxt))
 
 	}

@@ -28,14 +28,15 @@ import (
 var (
 	btnStyle = lipgloss.NewStyle().
 		Align(lipgloss.Center).
-		Background(lipgloss.Color("241")).
+		Background(misc.BtnColor).
+		Foreground(misc.BtnTextColor).
 		PaddingLeft(1).
 		PaddingRight(1)
 	focusedStyle           = lipgloss.NewStyle()
-	blurredStyle           = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	blurredStyle           = lipgloss.NewStyle().Foreground(misc.BlurredColor)
 	underlineStyle         = lipgloss.NewStyle().Underline(true)
-	validationFailureStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#e60000"))
-	validationSuccessStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#009900"))
+	validationFailureStyle = lipgloss.NewStyle().Foreground(misc.FailedValidationColor)
+	validationSuccessStyle = lipgloss.NewStyle().Foreground(misc.SuccessValidationColor)
 	captureDurationHeading = underlineStyle.Render("Capture Duration")
 	packetLimitHeading     = underlineStyle.Render("Packet Limit")
 	outputFileHeading      = underlineStyle.Render("Output File")

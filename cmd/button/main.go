@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	zone "github.com/lrstanley/bubblezone"
 	"strings"
 )
@@ -16,12 +15,6 @@ type (
 	buttonRow struct {
 		buttons []button
 	}
-)
-
-var (
-	buttonStyle = lipgloss.NewStyle().
-		Background(lipgloss.Color("240")).
-		Bold(true)
 )
 
 func (bR buttonRow) Init() tea.Cmd {

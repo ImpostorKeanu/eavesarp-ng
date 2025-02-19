@@ -2,6 +2,7 @@ package misc
 
 import (
 	"fmt"
+	"github.com/charmbracelet/lipgloss"
 	"slices"
 	"sync"
 )
@@ -13,6 +14,17 @@ const (
 	CurConvoPaneId  PaneHeadingId = "convoTable"
 	LogPaneId       PaneHeadingId = "logsViewPort"
 	PoisonCfgPaneId PaneHeadingId = "poisonCfgPane"
+)
+
+var (
+	SelectedPaneBorderColor    = lipgloss.AdaptiveColor{Light: "232", Dark: "248"}
+	DeselectedPaneBorderColor  = lipgloss.AdaptiveColor{Light: "252", Dark: "240"}
+	SelectedRowForegroundColor = lipgloss.AdaptiveColor{Light: "232", Dark: "255"}
+	BtnColor                   = lipgloss.AdaptiveColor{Light: "236", Dark: "241"}
+	BlurredColor               = lipgloss.AdaptiveColor{Light: "236", Dark: "240"}
+	FailedValidationColor      = lipgloss.AdaptiveColor{Light: "52", Dark: "160"}
+	SuccessValidationColor     = lipgloss.AdaptiveColor{Light: "34", Dark: "76"}
+	BtnTextColor               = lipgloss.AdaptiveColor{Light: "253", Dark: "255"}
 )
 
 // EventWriter is used to write formatted logs to a channel.
