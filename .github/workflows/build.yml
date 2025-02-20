@@ -1,0 +1,27 @@
+on:
+  push:
+    tags:
+      - '*-release'
+jobs:
+  build_eavesarp:
+    name: Build Eavesarp
+    runs-on: ubuntu-latest
+    container:
+      image: golang:1.23.1-bullseye
+    steps:
+      - name: Build Binary
+        id: build-eavesarp
+        run: |
+          cd cmd
+          GOOS=linux GOARCH=amd64 go build -buildvcs=false -o eavesarp.elf
+          GOOS=windows GOARCH=amd64 go build -buildvcs=false -o eavesarp.exe
+          GOOS=darwin GOARCH=amd64 go build -buildvcs=false -o eavesarp.darwin_amd64
+          GOOS=darwin GOARCH=amd64 go build -buildvcs=false -o eavesarp.darwin_arm64
+      - name: Release
+        id: issue-release
+        uses: ncipollo/release-action@v1
+        with:
+          artifacts: "eavesarp.*"
+          allowUpdates: "true"
+          body: "Releasing ${{ github.ref_name }}"
+          tag: ${{ github.ref_name }}
