@@ -11,14 +11,14 @@ import (
 	"sync/atomic"
 )
 
-// PacketCounter runs a background routine that sends the count
+// PacketCounterHandler runs a background routine that sends the count
 // of packets captured during an ARP spoofing attack to a channel.
 //
 // limit indicates that the packet count channel should receive
 // a value only after buffSize number of packets have been captured. A
 // zero buffSize results in the current count being sent to the channel
 // after each packet is received.
-func PacketCounter(ctx context.Context, limit int) (chan int, ArpSpoofHandler) {
+func PacketCounterHandler(ctx context.Context, limit int) (chan int, ArpSpoofHandler) {
 	var dead atomic.Bool
 	cntCh := make(chan int, 100)             // sends the current count to the caller
 	pktCh := make(chan gopacket.Packet, 100) // sends packets to the background routine

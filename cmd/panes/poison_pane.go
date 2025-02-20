@@ -486,7 +486,7 @@ func (p *PoisonPane) startPoisoning(msg BtnPressMsg) tea.Cmd {
 	//========================
 	// handlers are functions that receive each packet for handling
 
-	pktCntCh, pktCntHandler := eavesarp_ng.PacketCounter(ctx, 0)
+	pktCntCh, pktCntHandler := eavesarp_ng.PacketCounterHandler(ctx, 0)
 	pktCntReceiverCmd := func() tea.Msg {
 		for {
 			select {
