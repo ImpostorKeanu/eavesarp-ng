@@ -13,12 +13,17 @@ jobs:
       - name: build
         id: build-eavesarp
         run: |
+          echo "installing dependencies"
           apt update && apt install clang build-essential libpcap-dev -y
           cd cmd
+          echo "building for linux"
           GOOS=linux GOARCH=amd64 go build -buildvcs=false -o eavesarp
+          echo "building for windows"
           GOOS=windows GOARCH=amd64 go build -buildvcs=false -o eavesarp.exe
+          echo "building for mac (amd64)"
           GOOS=darwin GOARCH=amd64 go build -buildvcs=false -o eavesarp.darwin_amd64
-          GOOS=darwin GOARCH=amd64 go build -buildvcs=false -o eavesarp.darwin_arm64
+          echo "building for mac (arm64)
+          GOOS=darwin GOARCH=arm64 go build -buildvcs=false -o eavesarp.darwin_arm64
       - name: release
         id: issue-release
         uses: ncipollo/release-action@v1
