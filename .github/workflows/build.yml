@@ -9,7 +9,8 @@ jobs:
     container:
       image: golang:1.23.1-bullseye
     steps:
-      - name: Build Binary
+      - uses: actions/checkout@v3
+      - name: build
         id: build-eavesarp
         run: |
           cd cmd
@@ -17,7 +18,7 @@ jobs:
           GOOS=windows GOARCH=amd64 go build -buildvcs=false -o eavesarp.exe
           GOOS=darwin GOARCH=amd64 go build -buildvcs=false -o eavesarp.darwin_amd64
           GOOS=darwin GOARCH=amd64 go build -buildvcs=false -o eavesarp.darwin_arm64
-      - name: Release
+      - name: release
         id: issue-release
         uses: ncipollo/release-action@v1
         with:
