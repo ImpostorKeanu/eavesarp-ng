@@ -13,7 +13,7 @@ jobs:
       - name: build
         id: build-eavesarp
         run: |
-          apt update && apt install libpcap-dev -y
+          apt update && apt install build-essential libpcap-dev -y
           cd cmd
           GOOS=linux GOARCH=amd64 go build -buildvcs=false -o eavesarp.elf
           GOOS=windows GOARCH=amd64 go build -buildvcs=false -o eavesarp.exe
