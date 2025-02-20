@@ -15,10 +15,10 @@ jobs:
         run: |
           apt update && apt install build-essential libpcap-dev -y
           cd cmd
-          GOOS=linux GOARCH=amd64 go build -buildvcs=false -o eavesarp.elf
-          GOOS=windows GOARCH=amd64 go build -buildvcs=false -o eavesarp.exe
-          GOOS=darwin GOARCH=amd64 go build -buildvcs=false -o eavesarp.darwin_amd64
-          GOOS=darwin GOARCH=amd64 go build -buildvcs=false -o eavesarp.darwin_arm64
+          CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -buildvcs=false -o eavesarp.elf
+          CGO_ENABLED=1 GOOS=windows GOARCH=amd64 go build -buildvcs=false -o eavesarp.exe
+          CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 go build -buildvcs=false -o eavesarp.darwin_amd64
+          CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 go build -buildvcs=false -o eavesarp.darwin_arm64
       - name: release
         id: issue-release
         uses: ncipollo/release-action@v1
