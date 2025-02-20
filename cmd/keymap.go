@@ -34,8 +34,8 @@ var keys = keyMap{
 		key.WithKeys("down", "j"),
 		key.WithHelp("↓/j", "move down row")),
 	Help: key.NewBinding(
-		key.WithKeys("?", "h"),
-		key.WithHelp("h/?", "toggle help")),
+		key.WithKeys("?"),
+		key.WithHelp("?", "toggle help")),
 	Quit: key.NewBinding(
 		key.WithKeys("q", "esc", "ctrl+c"),
 		key.WithHelp("q/esc", "quit")),
