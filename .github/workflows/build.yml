@@ -34,7 +34,7 @@ jobs:
         id: issue-release
         uses: ncipollo/release-action@v1
         with:
-          artifacts: "eavesarp*"
+          artifacts: "cmd/eavesarp*"
           allowUpdates: "true"
           body: "Releasing ${{ github.ref_name }}"
           tag: ${{ github.ref_name }}
