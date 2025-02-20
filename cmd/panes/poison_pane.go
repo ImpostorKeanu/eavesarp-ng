@@ -442,11 +442,11 @@ func (p *PoisonPane) startPoisoning(msg BtnPressMsg) tea.Cmd {
 	}
 
 	var (
-		ctx               context.Context    // context to enable cross-routine attack timeout/cancellation
-		cancel            context.CancelFunc // cancel function that will be used to stop the attack
-		startClockCmd     tea.Cmd            // start command for the ui timer/stopwatch
-		outputFileHandler eavesarp_ng.ArpSpoofHandler
-		statusCntCh       = make(chan int, 100) // channel used to send the packet count to the ui
+		ctx                                context.Context    // context to enable cross-routine attack timeout/cancellation
+		cancel                             context.CancelFunc // cancel function that will be used to stop the attack
+		startClockCmd                      tea.Cmd            // start command for the ui timer/stopwatch
+		outputFileHandler, pktLimitHandler eavesarp_ng.ArpSpoofHandler
+		statusCntCh                        = make(chan int, 100) // channel used to send the packet count to the ui
 	)
 
 	//====================================================
@@ -503,10 +503,12 @@ func (p *PoisonPane) startPoisoning(msg BtnPressMsg) tea.Cmd {
 		p.cancelPoisonCtx()
 	})
 
-	pktLimitHandler := eavesarp_ng.PacketLimitHandler(ctx, packetLimit, func() {
-		p.eWriter.WriteString("packet limit met")
-		p.cancelPoisonCtx()
-	})
+	if packetLimit > 0 {
+		pktLimitHandler = eavesarp_ng.PacketLimitHandler(ctx, packetLimit, func() {
+			p.eWriter.WriteString("packet limit met")
+			p.cancelPoisonCtx()
+		})
+	}
 
 	// handle writing to output file
 	if p.OutputFileInput().Value() != "" {
