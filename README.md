@@ -8,6 +8,8 @@ techniques, designed for security researchers and network administrators.
 ./eavesarp --db-file eavesarp.db -i eth0
 ```
 
+![demo](docs/demo.png)
+
 # Automated Builds
 
 See the [releases](https://github.com/ImpostorKeanu/eavesarp-ng/releases) page
