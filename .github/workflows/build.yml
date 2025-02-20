@@ -16,22 +16,21 @@ jobs:
           echo "installing dependencies"
           apt update && apt install clang build-essential libpcap-dev mingw-w64 wget zip -y
           cd cmd
+          
           cd /tmp
           wget -O npcap.zip https://npcap.com/dist/npcap-sdk-1.13.zip
           unzip npcap.zip
           cd -
+          
           echo "building for linux"
           GOOS=linux GOARCH=amd64 go build -buildvcs=false -o eavesarp
+          
           echo "building for windows"
           CGO_ENABLED=1 GOOS=windows GARCH=amd64 \
             CGO_FLAGS="-I/tmp/Include" \
             CGO_LDFLAGS="-L/tmp/Lib/x64 -lwpcap -lPacket" \
             CC=x86_64-w64-mingw32-gcc \
             go build -buildvcs=false -o eavesarp.exe
-          echo "building for mac (amd64)"
-          GOOS=darwin GOARCH=amd64 go build -buildvcs=false -o eavesarp.darwin_amd64
-          echo "building for mac (arm64)
-          GOOS=darwin GOARCH=arm64 go build -buildvcs=false -o eavesarp.darwin_arm64
       - name: release
         id: issue-release
         uses: ncipollo/release-action@v1
