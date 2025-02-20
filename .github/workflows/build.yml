@@ -7,7 +7,7 @@ jobs:
     name: Build Eavesarp
     runs-on: ubuntu-latest
     container:
-      image: golang:1.23.1-bullseye
+      image: golang:1.23.1-bookworm
     steps:
       - uses: actions/checkout@v3
       - name: build
