@@ -245,7 +245,7 @@ outer:
 					eWriters.Writef("new sender ip passively discovered: %v", senIp.Value)
 				}
 				if tarIp.IsNew {
-					eWriters.Writef("new Target ip passively discovered: %v", tarIp.Value)
+					eWriters.Writef("new target ip passively discovered: %v", tarIp.Value)
 				}
 
 				//====================
