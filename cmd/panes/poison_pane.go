@@ -95,7 +95,7 @@ type (
 		eWriter            *misc.EventWriter
 		ifaceName          string // name of the network interface to monitor while poisoning
 		db                 *sql.DB
-		arpSoofCh          chan eavesarp_ng.ArpSpoofCfg
+		arpSoofCh          chan eavesarp_ng.AttackSnacCfg
 	}
 
 	// BtnPressMsg indicates a button has been pressed in a PoisonPane.
@@ -126,7 +126,7 @@ func (p PoisonPane) ConvoKey() string {
 	return eavesarp_ng.FmtConvoKey(p.senderIp, p.targetIp)
 }
 
-func NewPoison(db *sql.DB, ifaceName, senderIp, targetIp string, z *zone.Manager, arpSpoofCh chan eavesarp_ng.ArpSpoofCfg, eW *misc.EventWriter) PoisonPane {
+func NewPoison(db *sql.DB, ifaceName, senderIp, targetIp string, z *zone.Manager, arpSpoofCh chan eavesarp_ng.AttackSnacCfg, eW *misc.EventWriter) PoisonPane {
 	id := z.NewPrefix()
 	return PoisonPane{
 		zoneM:         z,
@@ -527,7 +527,7 @@ func (p *PoisonPane) startPoisoning(msg BtnPressMsg) tea.Cmd {
 	poisonerCmd := func() tea.Msg {
 		p.eWriter.WriteStringf("starting poisoning attack: %s -> %s", sIp.Value, tIp.Value)
 		// TODO update for ip address specification on interface
-		p.arpSoofCh <- eavesarp_ng.ArpSpoofCfg{
+		p.arpSoofCh <- eavesarp_ng.AttackSnacCfg{
 			Ctx:      ctx,
 			SenderIp: senderIp,
 			TargetIp: targetIp,

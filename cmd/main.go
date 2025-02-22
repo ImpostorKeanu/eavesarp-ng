@@ -91,7 +91,7 @@ func runUi(db *sql.DB, startMainSniffer bool) (err error) {
 		logPane:            lPane,
 		senderPoisonedChar: senderPoisonedChar,
 		snacChar:           snacChar,
-		arpSpoofCh:         make(chan eavesarp_ng.ArpSpoofCfg),
+		arpSpoofCh:         make(chan eavesarp_ng.AttackSnacCfg),
 		keys:               keys,
 		help:               help.New(),
 	}

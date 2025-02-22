@@ -43,8 +43,8 @@ type (
 	// packets that are received after poisoning a sender's ARP table.
 	ArpSpoofHandler func(packet gopacket.Packet)
 
-	// ArpSpoofCfg is used to configure an ARP spoofing attack.
-	ArpSpoofCfg struct {
+	// AttackSnacCfg is used to configure an ARP spoofing attack.
+	AttackSnacCfg struct {
 		// Calling the cancel func associated with Ctx stops the
 		// ARP spoofing attack.
 		Ctx      context.Context

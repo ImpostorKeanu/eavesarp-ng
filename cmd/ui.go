@@ -178,7 +178,7 @@ type (
 		mainSniff bool
 
 		lastSender, lastTarget string
-		arpSpoofCh             chan eavesarp_ng.ArpSpoofCfg
+		arpSpoofCh             chan eavesarp_ng.AttackSnacCfg
 
 		keys     keyMap
 		help     help.Model

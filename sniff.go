@@ -11,10 +11,12 @@ import (
 	"github.com/google/gopacket/pcap"
 	"io"
 	"net"
+	"sync"
 )
 
 var (
 	NoTransportLayerErr = errors.New("no transport layer found")
+	errCtxKey           = CtxKey("sniff-error")
 )
 
 // getInterface gets the network interface described by name and addr.
@@ -69,14 +71,14 @@ func getInterface(name string, addr string, eWriters *EventWriters) (iface *net.
 }
 
 // MainSniff starts the ARP and DNS background routines and sniffs network traffic
-// from the interface until the context is done.
+// from the interface until ctx is done.
 //
 // - iName is the name of the network interface to sniff on.
-// - iAddr optionally (empty string) specifies the ipv4 address
+// - iAddr (optionally empty) specifies the ipv4 address
 //    on the interface to sniff for.
-// - When snacSniffCh receives ArpSpoofCfg, a new background routine
+// - When attackCh receives an AttackSnacCfg, a new background routine
 //   to perform an ARP spoofing attack is started.
-func MainSniff(ctx context.Context, db *sql.DB, iName, iAddr string, arpSpoofCh chan ArpSpoofCfg,
+func MainSniff(ctx context.Context, db *sql.DB, iName, iAddr string, attackCh chan AttackSnacCfg,
   eventWriters ...io.StringWriter) (err error) {
 	// SOURCE: https://github.com/google/gopacket/blob/master/examples/arpscan/arpscan.go
 
@@ -91,77 +93,94 @@ func MainSniff(ctx context.Context, db *sql.DB, iName, iAddr string, arpSpoofCh 
 
 	// create child contexts for each subroutine
 	sniffCtx, sniffCancel := context.WithCancel(ctx)
-	snacSniffCtx, snacSniffCancel := context.WithCancel(ctx)
-	arpSenderCtx, arpSenderCancel := context.WithCancel(ctx)
-	dnsSenderCtx, dnsSenderCancel := context.WithCancel(ctx)
 
 	go func() {
-		dieCh := make(chan error) // to listen for routine death
-		//defer close(dieCh)
 
-		// start snac sniff routine
-		go func() {
+		died := make(chan error)  // to listen for routine death
+		errCh := make(chan error) // child routines send errors over this
+		wg := sync.WaitGroup{}    // to watch for completion of 4 key child routines
+		wg.Add(4)
+
+		go func() { // watch for child routine death/errors
+			// NOTE: only the first error is retained
+
+			var err error
+		outer:
 			for {
 				select {
-				case <-snacSniffCtx.Done():
-					return
-				case args := <-arpSpoofCh:
+				case <-sniffCtx.Done():
+					break outer
+				case iErr := <-died:
+					if iErr != nil && err == nil {
+						// retain first error
+						err = iErr
+					}
+					// call all cancel functions
+					sniffCancel()
+				}
+			}
+			errCh <- err
+		}()
 
-					// start routine that waits for sniff job to finish
-					go func() {
-						// start sniff job
+		go func() { // start routine to manage sender, sniff, and attack routines
+
+			for {
+				select {
+
+				case <-sniffCtx.Done(): // parent sniff routine has been canceled
+					wg.Done()
+					return
+				case args := <-attackCh: // receive spoof attack configurations
+
+					go func() { // start the attack in a new routine
+
 						ctx, cancel := context.WithCancel(args.Ctx)
 						go func() {
-							err := ArpSpoof(ctx, iName, iAddr, arpSenderC,
+							err := AttackSnac(ctx, iName, iAddr, arpSenderC,
 								args.SenderIp, args.TargetIp, eWriters, args.Handlers...)
 							if err != nil {
-								dieCh <- err
+								died <- err
 							}
 						}()
 
-						// wait for sniff job to finish
-						select {
-						case <-snacSniffCtx.Done():
+						select { // wait for the sniff job to finish
+						case <-sniffCtx.Done(): // parent sniff routine has been canceled
 							cancel()
-						case <-args.Ctx.Done():
+						case <-args.Ctx.Done(): // caller has canceled the attack
 							cancel()
 						}
-
 					}()
 				}
 			}
+
 		}()
 
-		// start arp sender
-		go func() {
-			dieCh <- SenderServer(arpSenderCtx, arpSleeper, arpSenderC, SendArp)
+		go func() { // arp sender routine
+			died <- SenderServer(sniffCtx, arpSleeper, arpSenderC, SendArp)
+			wg.Done()
 		}()
 
-		// start dns sender
-		go func() {
-			dieCh <- SenderServer(dnsSenderCtx, dnsSleeper, dnsSenderC, SendDns)
+		go func() { // dns sender routine
+			died <- SenderServer(sniffCtx, dnsSleeper, dnsSenderC, SendDns)
+			wg.Done()
 		}()
 
-		// start main sniffer
-		go func() {
-			dieCh <- WatchArp(sniffCtx, db, iName, iAddr, arpSenderC, dnsSenderC, eventWriters...)
+		go func() { // main sniffer routine
+			died <- WatchArp(sniffCtx, db, iName, iAddr, arpSenderC, dnsSenderC, eventWriters...)
+			wg.Done()
 		}()
 
-		err := <-dieCh // block until an error or nil is received
-
-		// call all cancel functions
-		sniffCancel()
-		arpSenderCancel()
-		dnsSenderCancel()
-		snacSniffCancel()
-
+		wg.Wait()
+		// close channels
+		close(died)
 		close(arpSenderC)
 		close(dnsSenderC)
+		err := <-errCh // block until an error or nil is received
+		ch <- err      // notify main routine
 
-		ch <- err // notify main routine
 	}()
 
-	err = <-ch // wait for completion
+	err = <-ch // wait for completion and receive error
 	close(ch)
 
 	return
@@ -464,14 +483,14 @@ func GetArpLayer(packet gopacket.Packet) *layers.ARP {
 	return nil
 }
 
-// ArpSpoof poisons the sender's ARP table by sending our MAC address
+// AttackSnac poisons the sender's ARP table by sending our MAC address
 // when a request for the target's IP is observed. After poisoning
 // occurs and non-ARP traffic is detected, each packet is passed to
 // a series of handler functions.
 //
 // NOTE: Before poisoning the sender's ARP table, this function passively
 // waits for the sender to broadcast an ARP request.
-func ArpSpoof(ctx context.Context, iName, iAddr string, arpSenderC chan SendArpCfg, senIp net.IP, tarIp net.IP,
+func AttackSnac(ctx context.Context, iName, iAddr string, arpSenderC chan SendArpCfg, senIp net.IP, tarIp net.IP,
   eWriters *EventWriters, handlers ...ArpSpoofHandler) (err error) {
 
 	iface, _, err := getInterface(iName, iAddr, eWriters)
