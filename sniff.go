@@ -16,7 +16,6 @@ import (
 
 var (
 	NoTransportLayerErr = errors.New("no transport layer found")
-	errCtxKey           = CtxKey("sniff-error")
 )
 
 // getInterface gets the network interface described by name and addr.
@@ -71,7 +70,7 @@ func getInterface(name string, addr string, eWriters *EventWriters) (iface *net.
 }
 
 // MainSniff starts the ARP and DNS background routines and sniffs network traffic
-// from the interface until ctx is done.
+// from the interface until ctx is done or an error occurs.
 //
 // - iName is the name of the network interface to sniff on.
 // - iAddr (optionally empty) specifies the ipv4 address
@@ -87,7 +86,7 @@ func MainSniff(ctx context.Context, db *sql.DB, iName, iAddr string, attackCh ch
 	arpSleeper := NewSleeper(1, 5, 30)
 	dnsSleeper := NewSleeper(1, 5, 30)
 
-	ch := make(chan error) // channel to receive notification of death
+	ch := make(chan error) // channel to receive notification of routine death
 	dnsSenderC := make(chan DoDnsCfg, 50)
 	arpSenderC := make(chan SendArpCfg, 50)
 
@@ -138,7 +137,7 @@ func MainSniff(ctx context.Context, db *sql.DB, iName, iAddr string, attackCh ch
 						go func() {
 							err := AttackSnac(ctx, iName, iAddr, arpSenderC,
 								args.SenderIp, args.TargetIp, eWriters, args.Handlers...)
-							if err != nil {
+							if err != nil { // error while performing attack
 								died <- err
 							}
 						}()
@@ -186,7 +185,7 @@ func MainSniff(ctx context.Context, db *sql.DB, iName, iAddr string, attackCh ch
 	return
 }
 
-// WatchArp is the primary function that monitors ARP requests and initiates DNS name
+// WatchArp monitors ARP requests and initiates DNS name
 // resolution for newly discovered IP addresses.
 func WatchArp(ctx context.Context, db *sql.DB, iName, iAddr string,
   arpSenderC chan SendArpCfg, dnsSenderC chan DoDnsCfg, eventWriters ...io.StringWriter) (err error) {
