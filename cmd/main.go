@@ -44,7 +44,7 @@ func init() {
 		os.Exit(1)
 	}
 	if err := rootCmd.MarkPersistentFlagRequired("interface"); err != nil {
-		fmt.Println("interface-name is required")
+		fmt.Println("interface is required")
 		os.Exit(1)
 	}
 }
@@ -89,10 +89,12 @@ func runUi(cfg eavesarp_ng.Cfg) (err error) {
 	if _, err = tea.NewProgram(ui, tea.WithAltScreen(), tea.WithMouseCellMotion()).Run(); err != nil {
 		fmt.Printf("error starting the ui: %v", err.Error())
 	}
+
 	return
 }
 
 func start(cmd *cobra.Command, args []string) {
+
 	var logOutputs []string
 	if logFile != "" {
 		logOutputs = append(logOutputs, logFile)
@@ -114,6 +116,7 @@ func start(cmd *cobra.Command, args []string) {
 		panic(err)
 	}
 
+	// close the database connection upon exit
 	defer func() {
 		db := cfg.DB()
 		if db != nil {

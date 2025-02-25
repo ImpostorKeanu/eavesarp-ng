@@ -90,7 +90,8 @@ func NewLogger(level string, outputPaths, errOutputPaths []string) (*zap.Logger,
 
 // NewCfg creates a Cfg for various eavesarp_ng functions.
 //
-// dsn is the Data Source Name describing where to find the SQLite database.
+// dsn is the Data Source Name describing where to find the SQLite database. The
+// database is initialized along with Cfg.
 //
 // ifaceName and ifaceAddr describe the network interface to monitor,
 // the latter of which can be empty (""), indicating that the first non-loopback
@@ -110,6 +111,7 @@ func NewCfg(dsn string, ifaceName, ifaceAddr string, log *zap.Logger) (cfg Cfg, 
 	return
 }
 
+// DB returns the database connection initialized by NewCfg.
 func (cfg *Cfg) DB() *sql.DB {
 	return cfg.db
 }
