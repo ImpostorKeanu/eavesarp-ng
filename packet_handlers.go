@@ -111,7 +111,7 @@ func AttackPortHandler(ctx context.Context, db *sql.DB, attackId int, errF func(
 				kill(nil)
 				return
 			case pkt := <-pktCh:
-				if proto, dstPort, err := GetPacketTransportLayerInfo(pkt, nil); errors.Is(err, NoTransportLayerErr) {
+				if proto, dstPort, err := GetPacketTransportLayerInfo(pkt); errors.Is(err, NoTransportLayerErr) {
 					// NOP
 					continue loop
 				} else if err != nil {

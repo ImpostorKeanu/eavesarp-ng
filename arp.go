@@ -2,12 +2,12 @@ package eavesarp_ng
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
+	"go.uber.org/zap"
 	"net"
 	"time"
 )
@@ -121,18 +121,18 @@ func SendArp(sA SendArpCfg) error {
 }
 
 // doArpRequest configures and sends an ARP request.
-func doArpRequest(db *sql.DB, args doArpRequestArgs[ActiveArp], eWriters *EventWriters) {
+func doArpRequest(cfg Cfg, args doArpRequestArgs[ActiveArp]) {
 
-	eWriters.Writef("initiating active arp request for %v", args.tarIpRecord.Value)
+	cfg.log.Info("initiating arp request", zap.String("ip", args.tarIpRecord.Value))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	context.AfterFunc(ctx, func() {
 		cancel()
-		if err := SetArpResolved(db, args.tarIpRecord.Id); err != nil {
-			eWriters.Writef("failed to set arp as resolved: %v", err.Error())
+		if err := SetArpResolved(cfg.db, args.tarIpRecord.Id); err != nil {
+			cfg.log.Error("failed to set arp as resolved for ip", zap.String("targetIp", args.tarIpRecord.Value))
 		}
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			eWriters.Writef("never received active arp response for %v", args.tarIpRecord.Value)
+			cfg.log.Info("never received arp response", zap.String("targetIp", args.tarIpRecord.Value))
 		}
 		args.activeArps.Delete(args.tarIpRecord.Value)
 	})

@@ -133,7 +133,8 @@ func init() {
 
 type (
 	model struct {
-		db *sql.DB
+		eCfg eavesarp_ng.Cfg
+		db   *sql.DB
 
 		maxPaneHeight, uiWidth int
 		rightWidth             int
@@ -171,11 +172,6 @@ type (
 		// logPane presents lines from events.
 		logPane panes.LogsPane
 		logsCh  chan string
-
-		// mainSniff determines if the sniffing process should
-		// be started. As it allows the UI to run without root,
-		// it's sometimes useful to disable this while debugging.
-		mainSniff bool
 
 		lastSender, lastTarget string
 		arpSpoofCh             chan eavesarp_ng.AttackSnacCfg
@@ -236,17 +232,15 @@ func (m model) Init() tea.Cmd {
 	sniffCtx, cancel = context.WithCancel(sniffCtx)
 	sniffCtx = context.WithValue(sniffCtx, sniffCtxCancelKey, cancel)
 
-	if m.mainSniff {
-		cmds = append(cmds, func() tea.Msg {
-			m.eWriter.WriteStringf("starting sniffer")
-			// TODO update to support address specification for interface
-			if err := eavesarp_ng.MainSniff(sniffCtx, m.db, ifaceName, "", m.arpSpoofCh, m.eWriter); err != nil {
-				return eavesarpError(err)
-			}
-			close(m.arpSpoofCh)
-			return nil
-		})
-	}
+	cmds = append(cmds, func() tea.Msg {
+		m.eWriter.WriteStringf("starting sniffer")
+		// TODO update to support address specification for interface
+		if err := eavesarp_ng.MainSniff(sniffCtx, m.eCfg, m.arpSpoofCh); err != nil {
+			return eavesarpError(err)
+		}
+		close(m.arpSpoofCh)
+		return nil
+	})
 
 	return tea.Batch(cmds...)
 }

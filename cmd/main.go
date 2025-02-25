@@ -1,8 +1,6 @@
 package main
 
 import (
-	"context"
-	"database/sql"
 	"fmt"
 	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/spinner"
@@ -14,6 +12,7 @@ import (
 	"github.com/impostorkeanu/eavesarp-ng/cmd/panes"
 	zone "github.com/lrstanley/bubblezone"
 	"github.com/spf13/cobra"
+	"go.uber.org/zap"
 	_ "modernc.org/sqlite"
 	"os"
 )
@@ -21,9 +20,11 @@ import (
 var (
 	dbFile    string
 	ifaceName string
+	logFile   string
+	logLevel  string
 	rootCmd   = &cobra.Command{
 		Use:   "run",
-		Short: "ARP reconnaissance tool",
+		Short: "ARP reconnaissance and SNAC exploitation tool",
 		Run:   start,
 	}
 	poisonPaneLm = eavesarp_ng.NewConvoLockMap(make(map[string]*panes.PoisonPane))
@@ -34,6 +35,10 @@ func init() {
 		"Database file to use")
 	rootCmd.PersistentFlags().StringVarP(&ifaceName, "interface", "i", "",
 		"Name of the network interface to monitor")
+	rootCmd.PersistentFlags().StringVarP(&logFile, "log-file", "l", "",
+		"Where to send logs")
+	rootCmd.PersistentFlags().StringVarP(&logLevel, "log-level", "v", "info",
+		"Logging level. Valid values: debug, info, warn, error, dpanic, panic, fatal")
 	if err := rootCmd.MarkPersistentFlagRequired("db-file"); err != nil {
 		fmt.Println("db-file is required")
 		os.Exit(1)
@@ -51,24 +56,8 @@ func main() {
 	}
 }
 
-func initDb(dsn string) (db *sql.DB, err error) {
-	db, err = sql.Open("sqlite", dsn)
-	if err != nil {
-		fmt.Println("error opening the database the database")
-		return
-	}
-	db.SetMaxOpenConns(1)
-	// TODO test the connection by pinging the database
-	// Apply schema and configurations
-	_, err = db.ExecContext(context.Background(), eavesarp_ng.SchemaSql)
-	if err != nil {
-		fmt.Println("error while applying database schema")
-		return
-	}
-	return
-}
+func runUi(cfg eavesarp_ng.Cfg) (err error) {
 
-func runUi(db *sql.DB, startMainSniffer bool) (err error) {
 	zone.NewGlobal()
 	selectedArpStyles := convosTableStyle
 	selectedArpStyles.Selected = lipgloss.NewStyle()
@@ -76,14 +65,14 @@ func runUi(db *sql.DB, startMainSniffer bool) (err error) {
 	lCh, lPane := panes.NewLogsPane(misc.MaxLogLength, misc.MaxLogCount, misc.LogPaneId.String())
 
 	ui := model{
-		db: db,
+		eCfg: cfg,
+		db:   cfg.DB(),
 		convosTable: table.New(
 			table.WithStyles(convosTableStyle),
 			table.WithKeyMap(table.DefaultKeyMap())),
-		convoPane: panes.NewCurConvoPane(db, zone.DefaultManager, &activeAttacks, poisonPaneLm, CfgPoisonButtonId),
+		convoPane: panes.NewCurConvoPane(cfg.DB(), zone.DefaultManager, &activeAttacks, poisonPaneLm, CfgPoisonButtonId),
 		focusedId: misc.ConvosPaneId,
 		eWriter:   misc.NewEventWriter(lCh),
-		mainSniff: startMainSniffer,
 		convosSpinner: spinner.Model{
 			Spinner: spinner.Dot,
 			Style:   spinnerStyle,
@@ -97,8 +86,6 @@ func runUi(db *sql.DB, startMainSniffer bool) (err error) {
 	}
 	ui.convosTable.Focus()
 
-	//ui.mainSniff = false
-
 	if _, err = tea.NewProgram(ui, tea.WithAltScreen(), tea.WithMouseCellMotion()).Run(); err != nil {
 		fmt.Printf("error starting the ui: %v", err.Error())
 	}
@@ -106,23 +93,39 @@ func runUi(db *sql.DB, startMainSniffer bool) (err error) {
 }
 
 func start(cmd *cobra.Command, args []string) {
+	var logOutputs []string
+	if logFile != "" {
+		logOutputs = append(logOutputs, logFile)
+	}
+	if logLevel == "" {
+		logLevel = "info"
+	}
 
-	db, err := initDb(dbFile)
+	var logger *zap.Logger
+	var err error
+	logger, err = eavesarp_ng.NewLogger(logLevel, logOutputs, logOutputs)
 	if err != nil {
-		fmt.Printf("error initializing database: %s\n", err.Error())
+		panic(err)
+	}
+
+	var cfg eavesarp_ng.Cfg
+	cfg, err = eavesarp_ng.NewCfg(dbFile, ifaceName, "", logger)
+	if err != nil {
 		panic(err)
 	}
 
 	defer func() {
-		if err := db.Close(); err != nil {
-			fmt.Println("failed to close the database connection")
-			panic(err)
+		db := cfg.DB()
+		if db != nil {
+			if err := cfg.DB().Close(); err != nil {
+				fmt.Println("failed to close the database connection")
+				panic(err)
+			}
 		}
 	}()
 
-	if err = runUi(db, true); err != nil {
+	if err = runUi(cfg); err != nil {
 		fmt.Printf("error running the ui: %v", err.Error())
 		panic(err)
 	}
-
 }

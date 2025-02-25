@@ -2,10 +2,10 @@ package eavesarp_ng
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"github.com/google/gopacket/pcap"
+	"go.uber.org/zap"
 	"net"
 	"time"
 )
@@ -126,67 +126,82 @@ func SendDns(dA DoDnsCfg) error {
 
 // handlePtrName processes string DNS name values resolved
 // via reverse name resolution. It:
-func handlePtrName(db *sql.DB, depth int, cfg handlePtrNameArgs[DoDnsCfg, ActiveArp], eWriters *EventWriters) {
+func handlePtrName(cfg Cfg, depth int, args handlePtrNameArgs[DoDnsCfg, ActiveArp]) {
 
-	dnsName, err := GetOrCreateDnsName(db, cfg.name)
+	dnsName, err := GetOrCreateDnsName(cfg.db, args.name)
 	if err != nil {
-		eWriters.Writef("failed to create dns name: %v", err.Error())
+		cfg.log.Error("failed to create dns name", zap.Error(err))
 		return
 	}
 
-	if _, err = GetOrCreateDnsPtrRecord(db, *cfg.ip, dnsName); err != nil {
-		eWriters.Writef("failed to create dns ptr record: %v", err.Error())
+	if _, err = GetOrCreateDnsPtrRecord(cfg.db, *args.ip, dnsName); err != nil {
+		cfg.log.Error("failed to create dns ptr record", zap.Error(err))
 		return
 	}
 
 	// Avoid duplicate forward name resolution
-	if !dnsName.IsNew || dnsFailCounter.Exceeded() || cfg.activeDns.Get(FmtDnsKey(cfg.name, ADnsKind)) != nil {
+	if !dnsName.IsNew || dnsFailCounter.Exceeded() || args.activeDns.Get(FmtDnsKey(args.name, ADnsKind)) != nil {
 		return
 	}
+
+	cfg.log.Info("doing forward dns resolution", zap.String("name", args.name))
 
 	// Do forward lookups for each newly discovered name
 	dArgs := DoDnsCfg{
 		Kind:    ADnsKind,
-		SenderC: cfg.dnsSenderC,
-		Target:  cfg.name,
+		SenderC: args.dnsSenderC,
+		Target:  args.name,
 		FailureF: func(err error) {
-			cfg.activeDns.Delete(FmtDnsKey(cfg.name, ADnsKind))
+			args.activeDns.Delete(FmtDnsKey(args.name, ADnsKind))
 		},
 		AfterF: func(newIpStrings []string) {
 			for _, newIpS := range newIpStrings {
 
-				newIp, err := GetOrCreateIp(db, newIpS, nil, ForwardDnsMeth,
+				cfg.log.Info("forward name resolution found ip",
+					zap.String("name", args.name), zap.String("ip", newIpS))
+
+				newIp, err := GetOrCreateIp(cfg.db, newIpS, nil, ForwardDnsMeth,
 					false, false)
 
 				if newIp.IsNew || newIp.MacId == nil {
+					cfg.log.Info("arp resolving ip discovered via dns", zap.String("ip", newIp.Value))
+
 					// arp resolve newly discovered ip addresses
 					//go doArpRequest(db, &newIp, cfg.srcIfaceIp, cfg.srcIfaceHw, net.ParseIP(newIp.Value).To4(),
 					//	nil, cfg.handle, cfg.arpSenderC, cfg.activeArp, eWriters)
-					go doArpRequest(db, doArpRequestArgs[ActiveArp]{
+					go doArpRequest(cfg, doArpRequestArgs[ActiveArp]{
 						tarIpRecord: &newIp,
-						senIp:       cfg.srcIfaceIp,
-						senHw:       cfg.srcIfaceHw,
+						senIp:       args.srcIfaceIp,
+						senHw:       args.srcIfaceHw,
 						tarIp:       net.ParseIP(newIp.Value).To4(),
 						tarHw:       nil,
-						senderC:     cfg.arpSenderC,
-						activeArps:  cfg.activeArp,
-						handle:      cfg.handle,
-					}, eWriters)
+						senderC:     args.arpSenderC,
+						activeArps:  args.activeArp,
+						handle:      args.handle,
+					})
 				}
 
 				if err != nil {
-					eWriters.Writef("failed to create new ip: %v", err.Error())
+					cfg.log.Error("failed to create new ip", zap.Error(err))
 					return
-				} else if _, err = GetOrCreateDnsARecord(db, newIp, dnsName); err != nil {
-					eWriters.Writef("failed to create dns a record: %v", err.Error())
+				} else if _, err = GetOrCreateDnsARecord(cfg.db, newIp, dnsName); err != nil {
+					cfg.log.Error("failed to create dns a record", zap.Error(err))
 					return
 				}
 
 				// speculate if the host that had the original ip has since
 				// moved to the newly discovered one
-				if newIpS != cfg.ip.Value {
-					if _, err = GetOrCreateAitmOpt(db, cfg.ip.Id, newIp.Id); err != nil {
-						eWriters.Writef("failed to create aitm_opt record: ", err.Error())
+				if newIpS != args.ip.Value {
+					cfg.log.Info("found new potential aitm opportunity",
+						zap.String("name", args.name),
+						zap.String("targetIp", args.ip.Value),
+						zap.String("newIp", newIpS),
+						zap.String("reason",
+							"recursive name resolution revealed a pointer to an a record "+
+							  "that resolves to a new ip address, suggesting dhcp may have issued "+
+							  "the target a new ip address"))
+					if _, err = GetOrCreateAitmOpt(cfg.db, args.ip.Id, newIp.Id); err != nil {
+						cfg.log.Error("failed to create aitm_opt record", zap.Error(err))
 						return
 					}
 				}
@@ -194,45 +209,46 @@ func handlePtrName(db *sql.DB, depth int, cfg handlePtrNameArgs[DoDnsCfg, Active
 				// determine if we should reverse resolve the new ip
 				if depth <= 0 ||
 				  newIp.PtrResolved ||
-				  cfg.activeDns.Get(FmtDnsKey(newIp.Value, PtrDnsKind)) == nil {
+				  args.activeDns.Get(FmtDnsKey(newIp.Value, PtrDnsKind)) == nil {
 					return
 				}
 
 				dArgs := DoDnsCfg{
-					SenderC: cfg.dnsSenderC,
+					SenderC: args.dnsSenderC,
 					Kind:    PtrDnsKind,
 					Target:  newIp.Value,
 					FailureF: func(e error) {
-						if err := SetPtrResolved(db, *cfg.ip); err != nil {
-							eWriters.Writef("failed to set ptr to resolved: %v", err.Error())
+						if err := SetPtrResolved(cfg.db, *args.ip); err != nil {
+							cfg.log.Error("failed to set ptr to resolved: %v", zap.Error(err))
 						}
-						cfg.activeDns.Delete(FmtDnsKey(newIp.Value, PtrDnsKind))
+						args.activeDns.Delete(FmtDnsKey(newIp.Value, PtrDnsKind))
 					},
 					AfterF: func(names []string) {
-						if err := SetPtrResolved(db, *cfg.ip); err != nil {
-							eWriters.Writef("failed to set ptr to resolved: %v", err.Error())
-							cfg.activeDns.Delete(FmtDnsKey(newIp.Value, PtrDnsKind))
+						if err := SetPtrResolved(cfg.db, *args.ip); err != nil {
+							cfg.log.Error("failed to set ptr to resolved", zap.Error(err))
+							args.activeDns.Delete(FmtDnsKey(newIp.Value, PtrDnsKind))
 							return
 						}
 						// call recursively for each friendly name
+						cfg.log.Info("recursively resolving newly discovered names", zap.Strings("names", names))
 						for _, name := range names {
 							depth -= 1
-							cfg.name = name
-							handlePtrName(db, depth, cfg, eWriters)
+							args.name = name
+							handlePtrName(cfg, depth, args)
 						}
-						cfg.activeDns.Delete(FmtDnsKey(newIp.Value, PtrDnsKind))
+						args.activeDns.Delete(FmtDnsKey(newIp.Value, PtrDnsKind))
 					},
 				}
 
-				cfg.activeDns.Set(FmtDnsKey(newIp.Value, PtrDnsKind), &dArgs)
-				cfg.dnsSenderC <- dArgs
+				args.activeDns.Set(FmtDnsKey(newIp.Value, PtrDnsKind), &dArgs)
+				args.dnsSenderC <- dArgs
 
 			}
 
-			cfg.activeDns.Delete(FmtDnsKey(cfg.name, ADnsKind))
+			args.activeDns.Delete(FmtDnsKey(args.name, ADnsKind))
 		},
 	}
 
-	cfg.activeDns.Set(FmtDnsKey(cfg.name, ADnsKind), &dArgs)
-	cfg.dnsSenderC <- dArgs
+	args.activeDns.Set(FmtDnsKey(args.name, ADnsKind), &dArgs)
+	args.dnsSenderC <- dArgs
 }

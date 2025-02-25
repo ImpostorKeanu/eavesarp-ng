@@ -3,13 +3,12 @@ package eavesarp_ng
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
-	"io"
+	"go.uber.org/zap"
 	"net"
 	"sync"
 )
@@ -17,57 +16,6 @@ import (
 var (
 	NoTransportLayerErr = errors.New("no transport layer found")
 )
-
-// getInterface gets the network interface described by name and addr.
-//
-// addr is optional (can be empty) and is used to specify which address
-// to listen for when multiple IPv4 addresses are assigned to the interface.
-func getInterface(name string, addr string, eWriters *EventWriters) (iface *net.Interface, ipnet *net.IPNet, err error) {
-
-	var iAddr net.IP
-	if addr != "" {
-		if iAddr = net.ParseIP(addr); iAddr == nil {
-			err = errors.New("invalid addr")
-			return
-		}
-	}
-
-	iface, err = net.InterfaceByName(name)
-	if err != nil {
-		eWriters.Writef("error looking up network interface: %v", err.Error())
-		return
-	}
-
-	var addrs []net.Addr
-	addrs, err = iface.Addrs()
-	if err != nil {
-		eWriters.Writef("failed to obtain ip address from network interface: %v", err.Error())
-		return
-	} else {
-		for _, a := range addrs {
-			if n, ok := a.(*net.IPNet); ok && !n.IP.IsLoopback() {
-				if ip4 := n.IP.To4(); ip4 != nil {
-					if addr != "" && ip4.String() != addr {
-						continue
-					}
-					ipnet = &net.IPNet{
-						IP:   ip4,
-						Mask: n.Mask[len(n.Mask)-4:],
-					}
-				}
-			}
-		}
-	}
-
-	if ipnet == nil {
-		err = fmt.Errorf("failed to find network interface %v", name)
-		if addr != "" {
-			err = fmt.Errorf("%v with ip address %v", err, addr)
-		}
-	}
-
-	return
-}
 
 // MainSniff starts the ARP and DNS background routines and sniffs network traffic
 // from the interface until ctx is done or an error occurs.
@@ -77,11 +25,8 @@ func getInterface(name string, addr string, eWriters *EventWriters) (iface *net.
 //    on the interface to sniff for.
 // - When attackCh receives an AttackSnacCfg, a new background routine
 //   to perform an ARP spoofing attack is started.
-func MainSniff(ctx context.Context, db *sql.DB, iName, iAddr string, attackCh chan AttackSnacCfg,
-  eventWriters ...io.StringWriter) (err error) {
+func MainSniff(ctx context.Context, cfg Cfg, attackCh chan AttackSnacCfg) (err error) {
 	// SOURCE: https://github.com/google/gopacket/blob/master/examples/arpscan/arpscan.go
-
-	eWriters := NewEventWriters(eventWriters...)
 
 	arpSleeper := NewSleeper(1, 5, 30)
 	dnsSleeper := NewSleeper(1, 5, 30)
@@ -131,14 +76,23 @@ func MainSniff(ctx context.Context, db *sql.DB, iName, iAddr string, attackCh ch
 					return
 				case args := <-attackCh: // receive spoof attack configurations
 
+					fields := []zap.Field{zap.String("senderIp", args.SenderIp.String()),
+						zap.String("targetIp", args.TargetIp.String())}
+
+					cfg.log.Info("poisoning conversation", fields...)
+
 					go func() { // start the attack in a new routine
+						fields := fields[:]
 
 						ctx, cancel := context.WithCancel(args.Ctx)
 						go func() {
-							err := AttackSnac(ctx, iName, iAddr, arpSenderC,
-								args.SenderIp, args.TargetIp, eWriters, args.Handlers...)
+							err := AttackSnac(ctx, cfg, arpSenderC, args.SenderIp, args.TargetIp, args.Handlers...)
 							if err != nil { // error while performing attack
+								fields = append(fields, zap.Error(err))
+								cfg.log.Error("error while poisoning conversation", fields...)
 								died <- err
+							} else {
+								cfg.log.Info("done poisoning", fields...)
 							}
 						}()
 
@@ -148,24 +102,28 @@ func MainSniff(ctx context.Context, db *sql.DB, iName, iAddr string, attackCh ch
 						case <-args.Ctx.Done(): // caller has canceled the attack
 							cancel()
 						}
+
 					}()
 				}
 			}
 
 		}()
 
+		cfg.log.Info("starting arp sender routine")
 		go func() { // arp sender routine
 			died <- SenderServer(sniffCtx, arpSleeper, arpSenderC, SendArp)
 			wg.Done()
 		}()
 
+		cfg.log.Info("starting dns sender routine")
 		go func() { // dns sender routine
 			died <- SenderServer(sniffCtx, dnsSleeper, dnsSenderC, SendDns)
 			wg.Done()
 		}()
 
+		cfg.log.Info("starting arp sniffer routine")
 		go func() { // main sniffer routine
-			died <- WatchArp(sniffCtx, db, iName, iAddr, arpSenderC, dnsSenderC, eventWriters...)
+			died <- WatchArp(sniffCtx, cfg, arpSenderC, dnsSenderC)
 			wg.Done()
 		}()
 
@@ -187,35 +145,23 @@ func MainSniff(ctx context.Context, db *sql.DB, iName, iAddr string, attackCh ch
 
 // WatchArp monitors ARP requests and initiates DNS name
 // resolution for newly discovered IP addresses.
-func WatchArp(ctx context.Context, db *sql.DB, iName, iAddr string,
-  arpSenderC chan SendArpCfg, dnsSenderC chan DoDnsCfg, eventWriters ...io.StringWriter) (err error) {
+func WatchArp(ctx context.Context, cfg Cfg, arpSenderC chan SendArpCfg, dnsSenderC chan DoDnsCfg) (err error) {
 
-	eWriters := EventWriters{writers: eventWriters}
 	activeArps := NewLockMap(make(map[string]*ActiveArp)) // track arp requests
 	activeDns := NewLockMap(make(map[string]*DoDnsCfg))   // track dns requests
-
-	//==========================
-	// PREPARE NETWORK INTERFACE
-	//==========================
-
-	iface, ifaceAddr, err := getInterface(iName, iAddr, &eWriters)
-	if err != nil {
-		eWriters.Writef("failed to obtain interface: %s", err.Error())
-		return err
-	}
 
 	//============================
 	// PERPETUALLY CAPTURE PACKETS
 	//============================
 
-	handle, err := pcap.OpenLive(iface.Name, 65536, true, pcap.BlockForever)
+	handle, err := pcap.OpenLive(cfg.iface.Name, 65536, true, pcap.BlockForever)
 	if err != nil {
-		eWriters.Writef("error opening packet capture: %v", err.Error())
+		cfg.log.Error("error opening packet capture", zap.Error(err))
 		return err
 	}
 	defer handle.Close()
 	if err = handle.SetBPFFilter("arp"); err != nil {
-		eWriters.Writef("failed to set bpf filter: %v", err.Error())
+		cfg.log.Error("failed to set bpf filter", zap.Error(err))
 		return err
 	}
 
@@ -227,7 +173,7 @@ outer:
 		var packet gopacket.Packet
 		select {
 		case <-ctx.Done():
-			eWriters.Write("killing sniff routine")
+			cfg.log.Info("killing arp watch routine")
 			return
 		case packet = <-in:
 			arpL := GetArpLayer(packet)
@@ -243,37 +189,47 @@ outer:
 				// HANDLE PASSIVELY CAPTURED ARP REQUEST
 				//======================================
 
-				if bytes.Equal(iface.HardwareAddr, arpL.SourceHwAddress) {
+				if bytes.Equal(cfg.iface.HardwareAddr, arpL.SourceHwAddress) {
 					// ignore arp requests from our nic
 					continue outer
-				} else if ifaceAddr.IP.Equal(arpL.DstProtAddress) {
+				} else if cfg.ipNet.IP.Equal(arpL.DstProtAddress) {
 					// capture ARP requests for senders wanting our mac address
-					if _, srcIp, e := sAddrs.getOrCreateSourceDbValues(db, PassiveArpMeth, &eWriters); e != nil {
+					if _, srcIp, e := sAddrs.getOrCreateSenderDbValues(cfg, PassiveArpMeth); e != nil {
 						err = e
 						return
 					} else if srcIp.IsNew {
-						eWriters.Writef("new ip requested our mac: %v", srcIp.Value)
+						cfg.log.Info("new ip requested our mac", zap.String("ip", srcIp.Value))
 					}
 					continue outer
 				}
 
-				_, senIp, tarIp, err := sAddrs.getOrCreateSnifferDbValues(db, PassiveArpMeth, &eWriters)
+				_, senIp, tarIp, err := sAddrs.getOrCreateSnifferDbValues(cfg, PassiveArpMeth)
 
 				if senIp.IsNew {
-					eWriters.Writef("new sender ip passively discovered: %v", senIp.Value)
+					cfg.log.Info("new sender ip discovered passively", zap.String("ip", senIp.Value))
 				}
 				if tarIp.IsNew {
-					eWriters.Writef("new target ip passively discovered: %v", tarIp.Value)
+					cfg.log.Info("new target ip discovered passively", zap.String("ip", tarIp.Value))
 				}
 
 				//====================
 				// INCREMENT ARP COUNT
 				//====================
 
-				_, err = IncArpCount(db, senIp.Id, tarIp.Id)
+				var arpCount int
+				arpCount, err = IncArpCount(cfg.db, senIp.Id, tarIp.Id)
 				if err != nil {
-					eWriters.Writef("failed to increment arp count: %v", err.Error())
+					cfg.log.Error("failed to increment arp count",
+						zap.String("senderIp", sAddrs.SenIp),
+						zap.String("senderMac", sAddrs.SenHw),
+						zap.String("targetIp", sAddrs.TarIp),
+						zap.Error(err))
 					continue outer
+				} else if arpCount == 1 {
+					cfg.log.Info("new conversation discovered",
+						zap.String("senderIp", sAddrs.SenIp),
+						zap.String("senderMac", sAddrs.SenHw),
+						zap.String("targetIp", sAddrs.TarIp))
 				}
 
 				if tarIp.MacId == nil && activeArps.Get(tarIp.Value) == nil && !tarIp.ArpResolved {
@@ -282,18 +238,16 @@ outer:
 					// SEND ARP REQUEST FOR TARGET
 					//============================
 
-					//go doArpRequest(db, tarIp, ifaceAddr.IP.To4(), iface.HardwareAddr, arpL.DstProtAddress, nil,
-					//	handle, arpSenderC, activeArps, &eWriters)
-					go doArpRequest(db, doArpRequestArgs[ActiveArp]{
+					go doArpRequest(cfg, doArpRequestArgs[ActiveArp]{
 						tarIpRecord: tarIp,
-						senIp:       ifaceAddr.IP.To4(),
-						senHw:       iface.HardwareAddr,
+						senIp:       cfg.ipNet.IP.To4(),
+						senHw:       cfg.iface.HardwareAddr,
 						tarIp:       arpL.DstProtAddress,
 						tarHw:       nil,
 						senderC:     arpSenderC,
 						activeArps:  activeArps,
 						handle:      handle,
-					}, &eWriters)
+					})
 
 				}
 
@@ -310,6 +264,7 @@ outer:
 				var toResolve []*Ip
 				for _, ip := range []*Ip{senIp, tarIp} {
 					if !ip.PtrResolved && activeDns.Get(FmtDnsKey(ip.Value, PtrDnsKind)) == nil {
+						cfg.log.Info("reverse dns resolving", zap.String("ip", ip.Value))
 						toResolve = append(toResolve, ip)
 					}
 				}
@@ -326,31 +281,32 @@ outer:
 							Kind:    PtrDnsKind,
 							Target:  ip.Value,
 							FailureF: func(e error) {
-								if err := SetPtrResolved(db, *ip); err != nil {
+								if err := SetPtrResolved(cfg.db, *ip); err != nil {
 									activeDns.Delete(FmtDnsKey(ip.Value, PtrDnsKind))
-									eWriters.Writef("failed to set ptr to resolved: %v", err.Error())
+									cfg.log.Error("failed to set ptr to resolved", zap.String("ip", ip.Value), zap.Error(err))
 									return
 								}
 								activeDns.Delete(FmtDnsKey(ip.Value, PtrDnsKind))
 							},
 							AfterF: func(names []string) {
-								if err := SetPtrResolved(db, *ip); err != nil {
+								if err := SetPtrResolved(cfg.db, *ip); err != nil {
 									activeDns.Delete(FmtDnsKey(ip.Value, PtrDnsKind))
-									eWriters.Writef("failed to set ptr to resolved: %v", err.Error())
+									cfg.log.Error("failed to set ptr to resolved", zap.String("ip", ip.Value), zap.Error(err))
 									return
 								}
 								for _, name := range names {
-									handlePtrName(db, 10, handlePtrNameArgs[DoDnsCfg, ActiveArp]{
+									cfg.log.Info("reverse dns resolution found", zap.String("ip", ip.Value), zap.String("name", name))
+									handlePtrName(cfg, 10, handlePtrNameArgs[DoDnsCfg, ActiveArp]{
 										ip:         ip,
 										name:       name,
-										srcIfaceIp: ifaceAddr.IP.To4(),
-										srcIfaceHw: iface.HardwareAddr,
+										srcIfaceIp: cfg.ipNet.IP.To4(),
+										srcIfaceHw: cfg.iface.HardwareAddr,
 										activeArp:  activeArps,
 										arpSenderC: arpSenderC,
 										activeDns:  activeDns,
 										dnsSenderC: dnsSenderC,
 										handle:     handle,
-									}, &eWriters)
+									})
 								}
 								activeDns.Delete(FmtDnsKey(ip.Value, PtrDnsKind))
 							},
@@ -370,38 +326,38 @@ outer:
 					aa.cancel()
 					var srcIp *Ip
 					var srcMac *Mac
-					srcMac, srcIp, _, err = sAddrs.getOrCreateSnifferDbValues(db, ActiveArpMeth, &eWriters)
+					srcMac, srcIp, _, err = sAddrs.getOrCreateSnifferDbValues(cfg, ActiveArpMeth)
 					if err != nil {
-						eWriters.Writef("failed to Handle arp reply: %v", err.Error())
+						cfg.log.Error("failed to handle arp reply", zap.String("ip", sAddrs.SenIp), zap.Error(err))
 						return err
 					}
-					eWriters.Writef("received arp reply: %s (%s)", srcIp.Value, srcMac.Value)
+					cfg.log.Info("received arp reply", zap.String("ip", srcIp.Value), zap.String("mac", srcMac.Value))
 				}
 			}
 		}
 	}
 }
 
-func (u arpStringAddrs) getOrCreateSourceDbValues(db *sql.DB, arpMethod DiscMethod, eWriters *EventWriters) (srcMac *Mac, srcIp *Ip, err error) {
+func (u arpStringAddrs) getOrCreateSenderDbValues(cfg Cfg, arpMethod DiscMethod) (senderMac *Mac, senderIp *Ip, err error) {
 
 	//===========
 	// HANDLE SRC
 	//===========
 
 	// MAC
-	srcMacBuff, err := GetOrCreateMac(db, u.SenHw, arpMethod)
+	senderMacBuff, err := GetOrCreateMac(cfg.db, u.SenHw, arpMethod)
 	if err != nil {
-		eWriters.Writef("failed to create mac: %v", err.Error())
+		cfg.log.Error("failed to create mac", zap.String("mac", u.SenHw), zap.Error(err))
 		return
 	}
-	srcMac = &srcMacBuff
+	senderMac = &senderMacBuff
 
 	// IP
-	srcIpBuff, err := GetOrCreateIp(db, u.SenIp, &srcMacBuff.Id, arpMethod, true, false)
+	senderIpBuff, err := GetOrCreateIp(cfg.db, u.SenIp, &senderMacBuff.Id, arpMethod, true, false)
 	if err != nil {
-		eWriters.Writef("failed to create mac: %v", err.Error())
+		cfg.log.Error("failed to create ip", zap.String("ip", u.SenIp), zap.Error(err))
 		return
-	} else if srcIpBuff.MacId == nil {
+	} else if senderIpBuff.MacId == nil {
 
 		//============
 		// SET SRC MAC
@@ -409,32 +365,41 @@ func (u arpStringAddrs) getOrCreateSourceDbValues(db *sql.DB, arpMethod DiscMeth
 		// - the mac is unavailable when a _target_ IP address was discovered via ARP request
 		// - since goc doesn't update records, we'll need to update it manually
 
-		if _, err = db.Exec(`UPDATE ip SET mac_id=? WHERE id=?`, srcMac.Id, srcIpBuff.Id); err != nil {
-			eWriters.Writef("failed to update ip with mac address: %v", err.Error())
+		if _, err = cfg.db.Exec(`UPDATE ip SET mac_id=? WHERE id=?`, senderMac.Id, senderIpBuff.Id); err != nil {
+			cfg.log.Error("failed to associate ip with mac address", zap.String("mac", u.SenHw), zap.Error(err))
 			return
 		}
-		srcIpBuff.MacId = &srcMac.Id
+		senderIpBuff.MacId = &senderMac.Id
+		cfg.log.Info("found new sender", zap.String("senderMac", u.SenHw), zap.String("senderIp", senderIpBuff.Value))
 	}
-	srcIp = &srcIpBuff
+	senderIp = &senderIpBuff
 
 	return
 }
 
-func (u arpStringAddrs) getOrCreateSnifferDbValues(db *sql.DB, arpMethod DiscMethod, eWriters *EventWriters) (srcMac *Mac, srcIp *Ip,
-  dstIp *Ip, err error) {
+func (u arpStringAddrs) getOrCreateSnifferDbValues(cfg Cfg, arpMethod DiscMethod) (senMac *Mac, senIp *Ip,
+  tarIp *Ip, err error) {
 
-	if srcMac, srcIp, err = u.getOrCreateSourceDbValues(db, arpMethod, eWriters); err != nil {
+	if senMac, senIp, err = u.getOrCreateSenderDbValues(cfg, arpMethod); err != nil {
 		return
+	}
+	if senIp != nil && senIp.IsNew {
+		cfg.log.Info("passively discovered new arp sender",
+			zap.String("senderIp", u.SenIp),
+			zap.String("senderMac", u.SenHw))
 	}
 
 	if arpMethod == PassiveArpMeth {
-		var dstIpBuff Ip
-		dstIpBuff, err = GetOrCreateIp(db, u.TarIp, nil, arpMethod, false, false)
+		var tarIpBuff Ip
+		tarIpBuff, err = GetOrCreateIp(cfg.db, u.TarIp, nil, arpMethod, false, false)
 		if err != nil {
-			eWriters.Writef("failed to create mac: %v", err.Error())
+			cfg.log.Error("failed to create arp mac", zap.String("mac", u.TarHw), zap.Error(err))
 			return
 		}
-		dstIp = &dstIpBuff
+		tarIp = &tarIpBuff
+		if tarIp != nil && tarIp.IsNew {
+			cfg.log.Info("passively discovered new arp target", zap.String("targetIp", u.TarIp))
+		}
 	}
 
 	return
@@ -447,7 +412,7 @@ func (u arpStringAddrs) getOrCreateSnifferDbValues(db *sql.DB, arpMethod DiscMet
 // proto and dstPort are zero values.
 //
 // Known protocols transport layer protocols: `tcp`, `udp`, `sctp`
-func GetPacketTransportLayerInfo(packet gopacket.Packet, eWriters *EventWriters) (proto string, dstPort int, err error) {
+func GetPacketTransportLayerInfo(packet gopacket.Packet) (proto string, dstPort int, err error) {
 	transLayer := packet.TransportLayer()
 	if transLayer == nil {
 		err = NoTransportLayerErr
@@ -468,7 +433,6 @@ func GetPacketTransportLayerInfo(packet gopacket.Packet, eWriters *EventWriters)
 		dstPort = int(layer.DstPort)
 	default:
 		err = errors.New("unknown transport layer type captured")
-		eWriters.Write(err.Error())
 	}
 	return
 }
@@ -489,25 +453,19 @@ func GetArpLayer(packet gopacket.Packet) *layers.ARP {
 //
 // NOTE: Before poisoning the sender's ARP table, this function passively
 // waits for the sender to broadcast an ARP request.
-func AttackSnac(ctx context.Context, iName, iAddr string, arpSenderC chan SendArpCfg, senIp net.IP, tarIp net.IP,
-  eWriters *EventWriters, handlers ...ArpSpoofHandler) (err error) {
-
-	iface, _, err := getInterface(iName, iAddr, eWriters)
-	if err != nil {
-		eWriters.Writef("failed to retrive interface and addr: %v", err.Error())
-		return
-	}
+func AttackSnac(ctx context.Context, cfg Cfg, arpSenderC chan SendArpCfg, senIp net.IP, tarIp net.IP,
+  handlers ...ArpSpoofHandler) (err error) {
 
 	var handle *pcap.Handle
-	handle, err = pcap.OpenLive(iface.Name, 65536, true, pcap.BlockForever)
+	handle, err = pcap.OpenLive(cfg.iface.Name, 65536, true, pcap.BlockForever)
 	if err != nil {
-		eWriters.Writef("failed to start packet capture: %v", err.Error())
+		cfg.log.Error("failed to start packet capture while attacking snac", zap.Error(err))
 		return
 	}
 	defer handle.Close()
 
 	if err = handle.SetBPFFilter(fmt.Sprintf("src host %s && dst host %s", senIp.String(), tarIp.String())); err != nil {
-		eWriters.Writef("failed to set bpf filter: %v", err.Error())
+		cfg.log.Error("failed to set bpf filter while attacking snac", zap.Error(err))
 		return
 	}
 
@@ -521,11 +479,14 @@ func AttackSnac(ctx context.Context, iName, iAddr string, arpSenderC chan SendAr
 		case packet := <-in:
 
 			if arp := GetArpLayer(packet); arp != nil && arp.Operation == layers.ARPRequest {
+				fields := []zap.Field{zap.String("senderIp", senIp.String()), zap.String("targetIp", tarIp.String())}
+				cfg.log.Info("received arp request for poisoned conversation", fields...)
+				cfg.log.Info("poisoning sender arp table", fields...)
 				// Respond with our MAC
 				arpSenderC <- SendArpCfg{
 					Handle:    handle,
 					Operation: layers.ARPReply,
-					SenderHw:  iface.HardwareAddr,
+					SenderHw:  cfg.iface.HardwareAddr,
 					SenderIp:  tarIp,
 					TargetHw:  arp.SourceHwAddress,
 					TargetIp:  arp.SourceProtAddress,
