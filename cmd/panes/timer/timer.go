@@ -13,16 +13,20 @@ type (
 	TickMsg struct {
 		Id      string
 		Timeout bool
+		tag     int
 	}
 	TimeoutMsg struct {
-		Id string
+		Id  string
+		tag int
 	}
 	Model struct {
 		Timeout  time.Duration
 		Interval time.Duration
-		last     time.Time
+		start    time.Time
+		end      time.Time
 		id       string
 		running  bool
+		tag      int
 	}
 )
 
@@ -47,11 +51,11 @@ func (m Model) Running() bool {
 }
 
 func (m Model) Timedout() bool {
-	return m.Timeout <= 0
+	return time.Now().Equal(m.end) || time.Now().After(m.end)
 }
 
 func (m Model) View() string {
-	return m.Timeout.Round(time.Second).String()
+	return m.end.Sub(time.Now()).Round(time.Second).String()
 }
 
 func (m *Model) Start() tea.Cmd {
@@ -68,7 +72,7 @@ func (m *Model) Toggle() tea.Cmd {
 
 func (m Model) tick() tea.Cmd {
 	return tea.Tick(m.Interval, func(_ time.Time) tea.Msg {
-		return TickMsg{Id: m.id, Timeout: m.Timedout()}
+		return TickMsg{Id: m.id, Timeout: m.Timedout(), tag: m.tag}
 	})
 }
 
@@ -80,19 +84,20 @@ func (m Model) Update(msg tea.Msg) (_ Model, cmd tea.Cmd) {
 			break
 		}
 		m.running = msg.running
-		if !m.Running() {
+		m.tag++
+		if m.running && m.start.IsZero() {
+			m.start = time.Now()
+			m.end = m.start.Add(m.Timeout).Round(time.Second)
+		} else if !m.Running() {
 			break
-		} else if !m.last.IsZero() {
-			m.Timeout -= time.Since(m.last)
 		}
 		cmd = m.tick()
 
 	case TickMsg:
-		if !m.Running() || msg.Id != m.id {
+		if !m.Running() || msg.Id != m.id || msg.tag != m.tag {
 			break
 		}
-		m.last = time.Now()
-		m.Timeout -= m.Interval
+		m.tag++
 		cmd = tea.Batch(m.tick(), m.timedout())
 	}
 
@@ -104,7 +109,7 @@ func (m Model) timedout() tea.Cmd {
 		return nil
 	}
 	return func() tea.Msg {
-		return TimeoutMsg{Id: m.id}
+		return TimeoutMsg{Id: m.id, tag: m.tag}
 	}
 }
 

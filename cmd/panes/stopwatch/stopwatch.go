@@ -14,24 +14,26 @@ type (
 	// It works by capturing a timestamp of each received tick. When
 	// a Model is stopped and started again, the running duration
 	// is derived by summing it with the time passed since receipt of
-	// the last stop message.
+	// the start stop message.
 	Model struct {
 		id       string
 		d        time.Duration // How long the Model has been ticking
 		running  bool          // is the Model running?
 		interval time.Duration // interval to tick
-		// Time of last tick.
+		// Time of start tick.
 		//
 		// When restarted, this value is used to determine how long
 		// the Model has actually been running.
-		last time.Time
+		start time.Time
+		tag   int
 	}
 	StartStopMsg struct {
 		Id      string
 		running bool
 	}
 	TickMsg struct {
-		Id string
+		Id  string
+		tag int
 	}
 )
 
@@ -39,7 +41,7 @@ func NewStopwatch(id string, last time.Time, interval time.Duration) Model {
 	return Model{
 		id:       id,
 		running:  false,
-		last:     last,
+		start:    last,
 		interval: interval,
 	}
 }
@@ -65,7 +67,7 @@ func (m Model) Running() bool {
 }
 
 func (m Model) View() string {
-	return m.d.String()
+	return time.Since(m.start).Round(time.Second).String()
 }
 
 func (m Model) Update(msg tea.Msg) (_ Model, cmd tea.Cmd) {
@@ -74,26 +76,26 @@ func (m Model) Update(msg tea.Msg) (_ Model, cmd tea.Cmd) {
 		if m.id != msg.Id {
 			break
 		}
+		m.tag++
 		m.running = msg.running
 		if msg.running {
-			if !m.last.IsZero() {
-				m.d += time.Since(m.last).Round(time.Second)
+			if m.start.IsZero() {
+				m.start = time.Now()
 			}
-			cmd = tick(m.id, m.interval)
+			cmd = tick(m.id, m.interval, m.tag)
 		}
 	case TickMsg:
-		if !m.running || m.id != msg.Id {
+		if !m.running || m.id != msg.Id || m.tag != msg.tag {
 			break
 		}
-		m.last = time.Now()
-		m.d += m.interval
-		cmd = tick(m.id, m.interval)
+		m.tag++
+		cmd = tick(m.id, m.interval, m.tag)
 	}
 	return m, cmd
 }
 
-func tick(id string, d time.Duration) tea.Cmd {
+func tick(id string, d time.Duration, tag int) tea.Cmd {
 	return tea.Tick(d, func(_ time.Time) tea.Msg {
-		return TickMsg{Id: id}
+		return TickMsg{Id: id, tag: tag}
 	})
 }
