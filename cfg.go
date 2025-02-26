@@ -8,7 +8,6 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"net"
-	"strings"
 )
 
 type (
@@ -46,25 +45,9 @@ func NewLogger(level string, outputPaths, errOutputPaths []string) (*zap.Logger,
 		errOutputPaths = []string{"stderr"}
 	}
 
-	var lvl zap.AtomicLevel
-	switch strings.ToLower(level) {
-	case "debug":
-		lvl = zap.NewAtomicLevelAt(zap.DebugLevel)
-	case "info":
-		lvl = zap.NewAtomicLevelAt(zap.InfoLevel)
-	case "warn":
-		lvl = zap.NewAtomicLevelAt(zap.WarnLevel)
-	case "error":
-		lvl = zap.NewAtomicLevelAt(zap.ErrorLevel)
-	case "dpanic":
-		lvl = zap.NewAtomicLevelAt(zap.DPanicLevel)
-	case "panic":
-		lvl = zap.NewAtomicLevelAt(zap.PanicLevel)
-	case "fatal":
-		lvl = zap.NewAtomicLevelAt(zap.FatalLevel)
-	default:
-		return nil, fmt.Errorf(
-			"invalid log level supplied (%s); supported: debug, info, warn, error, dpanic, panic, fatal", level)
+	lvl, err := zap.ParseAtomicLevel(level)
+	if err != nil {
+		return nil, fmt.Errorf("error parsing log level: %v", err)
 	}
 
 	zapCfg := zap.Config{
