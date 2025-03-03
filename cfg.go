@@ -12,11 +12,15 @@ import (
 
 type (
 	Cfg struct {
-		db    *sql.DB
-		ipNet *net.IPNet
-		iface *net.Interface
-		log   *zap.Logger
-		zap   *zap.Config
+		db         *sql.DB
+		ipNet      *net.IPNet
+		iface      *net.Interface
+		log        *zap.Logger
+		zap        *zap.Config
+		arpSenderC chan SendArpCfg
+		activeArps *LockMap[ActiveArp]
+		dnsSenderC chan DoDnsCfg
+		activeDns  *LockMap[DoDnsCfg]
 	}
 )
 
@@ -90,6 +94,10 @@ func NewCfg(dsn string, ifaceName, ifaceAddr string, log *zap.Logger) (cfg Cfg, 
 	if err = cfg.getInterface(ifaceName, ifaceAddr); err != nil {
 		return
 	}
+	cfg.dnsSenderC = make(chan DoDnsCfg, 50)
+	cfg.activeDns = NewLockMap(make(map[string]*DoDnsCfg))
+	cfg.arpSenderC = make(chan SendArpCfg, 50)
+	cfg.activeArps = NewLockMap(make(map[string]*ActiveArp))
 	cfg.db, err = cfg.initDb(dsn)
 	return
 }
@@ -97,6 +105,14 @@ func NewCfg(dsn string, ifaceName, ifaceAddr string, log *zap.Logger) (cfg Cfg, 
 // DB returns the database connection initialized by NewCfg.
 func (cfg *Cfg) DB() *sql.DB {
 	return cfg.db
+}
+
+func (cfg *Cfg) Shutdown() {
+	if cfg.db != nil {
+		cfg.db.Close()
+	}
+	close(cfg.arpSenderC)
+	close(cfg.dnsSenderC)
 }
 
 func (cfg *Cfg) initDb(dsn string) (db *sql.DB, err error) {

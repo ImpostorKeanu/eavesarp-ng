@@ -54,21 +54,17 @@ type (
 	// handlePtrNameArgs is a structure used to document args required
 	// for handling reverse resolved names.
 	handlePtrNameArgs[DT DoDnsCfg, AT ActiveArp] struct {
-		ip         *Ip             // ip that was reverse resolved
-		name       string          // name obtained through reverse resolution
-		srcIfaceIp []byte          // srcIfaceIp address used to send arp requests for new ips
-		srcIfaceHw []byte          // srcIfaceHw address used to send arp requests for new ips
-		activeArp  *LockMap[AT]    // track active arp requests
-		arpSenderC chan SendArpCfg // channel used to send arp requests
-		activeDns  *LockMap[DT]    // track active dns resolutions
-		dnsSenderC chan DoDnsCfg   // channel used to send dns queries
-		handle     *pcap.Handle    // pcap handle used to send arp requests and dns queries
+		ip         *Ip          // ip that was reverse resolved
+		name       string       // name obtained through reverse resolution
+		srcIfaceIp []byte       // srcIfaceIp address used to send arp requests for new ips
+		srcIfaceHw []byte       // srcIfaceHw address used to send arp requests for new ips
+		handle     *pcap.Handle // pcap handle used to send arp requests and dns queries
 	}
 )
 
 // SendDns is a background process that receives DNS resolution
 // jobs via dnsSenderC.
-func SendDns(dA DoDnsCfg) error {
+func SendDns(cfg Cfg, dA DoDnsCfg) error {
 
 	if dnsFailCounter.Exceeded() {
 		// TODO log this event
@@ -84,7 +80,6 @@ func SendDns(dA DoDnsCfg) error {
 	var resolved []string
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	//dnsKind := string(dA.Kind)
 	switch dA.Kind {
 	case PtrDnsKind:
 		resolved, err = dnsResolver.LookupAddr(ctx, dA.Target)
@@ -99,11 +94,10 @@ func SendDns(dA DoDnsCfg) error {
 		if dA.FailureF != nil {
 			dA.FailureF(err)
 		}
-		//eWriters.Writef("no %v record found for %v", dnsKind, dA.Target)
-		//continue
+		cfg.log.Debug("no dns record found", zap.String("target", dA.Target), zap.String("kind", string(dA.Kind)), zap.Error(err))
 		return nil
 	} else if ok {
-		//eWriters.Writef("dns FailureF: %v", e.Error())
+		cfg.log.Error("error while resolving dns", zap.String("target", dA.Target), zap.String("kind", string(dA.Kind)), zap.Error(err))
 		dnsFailCounter.Inc() // Increment the maximum fail counter
 		return nil
 	}
@@ -140,7 +134,7 @@ func handlePtrName(cfg Cfg, depth int, args handlePtrNameArgs[DoDnsCfg, ActiveAr
 	}
 
 	// Avoid duplicate forward name resolution
-	if !dnsName.IsNew || dnsFailCounter.Exceeded() || args.activeDns.Get(FmtDnsKey(args.name, ADnsKind)) != nil {
+	if !dnsName.IsNew || dnsFailCounter.Exceeded() || cfg.activeDns.Get(FmtDnsKey(args.name, ADnsKind)) != nil {
 		return
 	}
 
@@ -149,10 +143,10 @@ func handlePtrName(cfg Cfg, depth int, args handlePtrNameArgs[DoDnsCfg, ActiveAr
 	// Do forward lookups for each newly discovered name
 	dArgs := DoDnsCfg{
 		Kind:    ADnsKind,
-		SenderC: args.dnsSenderC,
+		SenderC: cfg.dnsSenderC,
 		Target:  args.name,
 		FailureF: func(err error) {
-			args.activeDns.Delete(FmtDnsKey(args.name, ADnsKind))
+			cfg.activeDns.Delete(FmtDnsKey(args.name, ADnsKind))
 		},
 		AfterF: func(newIpStrings []string) {
 			for _, newIpS := range newIpStrings {
@@ -160,6 +154,11 @@ func handlePtrName(cfg Cfg, depth int, args handlePtrNameArgs[DoDnsCfg, ActiveAr
 				cfg.log.Info("forward name resolution found ip",
 					zap.String("name", args.name), zap.String("ip", newIpS))
 
+				if i := net.ParseIP(newIpS); i == nil || i.To4() == nil {
+					continue
+				} else {
+					newIpS = i.To4().String()
+				}
 				newIp, err := GetOrCreateIp(cfg.db, newIpS, nil, ForwardDnsMeth,
 					false, false)
 
@@ -175,10 +174,8 @@ func handlePtrName(cfg Cfg, depth int, args handlePtrNameArgs[DoDnsCfg, ActiveAr
 						senHw:       args.srcIfaceHw,
 						tarIp:       net.ParseIP(newIp.Value).To4(),
 						tarHw:       nil,
-						senderC:     args.arpSenderC,
-						activeArps:  args.activeArp,
 						handle:      args.handle,
-					})
+					}, maxArpRetries)
 				}
 
 				if err != nil {
@@ -209,24 +206,24 @@ func handlePtrName(cfg Cfg, depth int, args handlePtrNameArgs[DoDnsCfg, ActiveAr
 				// determine if we should reverse resolve the new ip
 				if depth <= 0 ||
 				  newIp.PtrResolved ||
-				  args.activeDns.Get(FmtDnsKey(newIp.Value, PtrDnsKind)) == nil {
+				  cfg.activeDns.Get(FmtDnsKey(newIp.Value, PtrDnsKind)) == nil {
 					return
 				}
 
 				dArgs := DoDnsCfg{
-					SenderC: args.dnsSenderC,
+					SenderC: cfg.dnsSenderC,
 					Kind:    PtrDnsKind,
 					Target:  newIp.Value,
 					FailureF: func(e error) {
 						if err := SetPtrResolved(cfg.db, *args.ip); err != nil {
 							cfg.log.Error("failed to set ptr to resolved: %v", zap.Error(err))
 						}
-						args.activeDns.Delete(FmtDnsKey(newIp.Value, PtrDnsKind))
+						cfg.activeDns.Delete(FmtDnsKey(newIp.Value, PtrDnsKind))
 					},
 					AfterF: func(names []string) {
 						if err := SetPtrResolved(cfg.db, *args.ip); err != nil {
 							cfg.log.Error("failed to set ptr to resolved", zap.Error(err))
-							args.activeDns.Delete(FmtDnsKey(newIp.Value, PtrDnsKind))
+							cfg.activeDns.Delete(FmtDnsKey(newIp.Value, PtrDnsKind))
 							return
 						}
 						// call recursively for each friendly name
@@ -236,19 +233,19 @@ func handlePtrName(cfg Cfg, depth int, args handlePtrNameArgs[DoDnsCfg, ActiveAr
 							args.name = name
 							handlePtrName(cfg, depth, args)
 						}
-						args.activeDns.Delete(FmtDnsKey(newIp.Value, PtrDnsKind))
+						cfg.activeDns.Delete(FmtDnsKey(newIp.Value, PtrDnsKind))
 					},
 				}
 
-				args.activeDns.Set(FmtDnsKey(newIp.Value, PtrDnsKind), &dArgs)
-				args.dnsSenderC <- dArgs
+				cfg.activeDns.Set(FmtDnsKey(newIp.Value, PtrDnsKind), &dArgs)
+				cfg.dnsSenderC <- dArgs
 
 			}
 
-			args.activeDns.Delete(FmtDnsKey(args.name, ADnsKind))
+			cfg.activeDns.Delete(FmtDnsKey(args.name, ADnsKind))
 		},
 	}
 
-	args.activeDns.Set(FmtDnsKey(args.name, ADnsKind), &dArgs)
-	args.dnsSenderC <- dArgs
+	cfg.activeDns.Set(FmtDnsKey(args.name, ADnsKind), &dArgs)
+	cfg.dnsSenderC <- dArgs
 }

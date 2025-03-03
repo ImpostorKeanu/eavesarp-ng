@@ -1,7 +1,6 @@
 package eavesarp_ng
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -32,8 +31,6 @@ func MainSniff(ctx context.Context, cfg Cfg, attackCh chan AttackSnacCfg) (err e
 	dnsSleeper := NewSleeper(1, 5, 30)
 
 	ch := make(chan error) // channel to receive notification of routine death
-	dnsSenderC := make(chan DoDnsCfg, 50)
-	arpSenderC := make(chan SendArpCfg, 50)
 
 	// create child contexts for each subroutine
 	sniffCtx, sniffCancel := context.WithCancel(ctx)
@@ -86,7 +83,7 @@ func MainSniff(ctx context.Context, cfg Cfg, attackCh chan AttackSnacCfg) (err e
 
 						ctx, cancel := context.WithCancel(args.Ctx)
 						go func() {
-							err := AttackSnac(ctx, cfg, arpSenderC, args.SenderIp, args.TargetIp, args.Handlers...)
+							err := AttackSnac(ctx, cfg, args.SenderIp, args.TargetIp, args.Handlers...)
 							if err != nil { // error while performing attack
 								fields = append(fields, zap.Error(err))
 								cfg.log.Error("error while poisoning conversation", fields...)
@@ -111,27 +108,25 @@ func MainSniff(ctx context.Context, cfg Cfg, attackCh chan AttackSnacCfg) (err e
 
 		cfg.log.Info("starting arp sender routine")
 		go func() { // arp sender routine
-			died <- SenderServer(sniffCtx, arpSleeper, arpSenderC, SendArp)
+			died <- SenderServer(sniffCtx, cfg, arpSleeper, cfg.arpSenderC, SendArp)
 			wg.Done()
 		}()
 
 		cfg.log.Info("starting dns sender routine")
 		go func() { // dns sender routine
-			died <- SenderServer(sniffCtx, dnsSleeper, dnsSenderC, SendDns)
+			died <- SenderServer(sniffCtx, cfg, dnsSleeper, cfg.dnsSenderC, SendDns)
 			wg.Done()
 		}()
 
 		cfg.log.Info("starting arp sniffer routine")
 		go func() { // main sniffer routine
-			died <- WatchArp(sniffCtx, cfg, arpSenderC, dnsSenderC)
+			died <- WatchArp(sniffCtx, cfg)
 			wg.Done()
 		}()
 
 		wg.Wait()
 		// close channels
 		close(died)
-		close(arpSenderC)
-		close(dnsSenderC)
 		err := <-errCh // block until an error or nil is received
 		ch <- err      // notify main routine
 
@@ -145,30 +140,36 @@ func MainSniff(ctx context.Context, cfg Cfg, attackCh chan AttackSnacCfg) (err e
 
 // WatchArp monitors ARP requests and initiates DNS name
 // resolution for newly discovered IP addresses.
-func WatchArp(ctx context.Context, cfg Cfg, arpSenderC chan SendArpCfg, dnsSenderC chan DoDnsCfg) (err error) {
-
-	activeArps := NewLockMap(make(map[string]*ActiveArp)) // track arp requests
-	activeDns := NewLockMap(make(map[string]*DoDnsCfg))   // track dns requests
+func WatchArp(ctx context.Context, cfg Cfg) (err error) {
 
 	//============================
 	// PERPETUALLY CAPTURE PACKETS
 	//============================
 
-	handle, err := pcap.OpenLive(cfg.iface.Name, 65536, true, pcap.BlockForever)
+	rHandle, err := pcap.OpenLive(cfg.iface.Name, 65536, true, pcap.BlockForever)
 	if err != nil {
 		cfg.log.Error("error opening packet capture", zap.Error(err))
 		return err
 	}
-	defer handle.Close()
-	if err = handle.SetBPFFilter("arp"); err != nil {
+	defer rHandle.Close()
+
+	var wHandle *pcap.Handle
+	wHandle, err = pcap.OpenLive(cfg.iface.Name, 65536, true, pcap.BlockForever)
+	if err != nil {
+		cfg.log.Error("error opening packet capture", zap.Error(err))
+		return err
+	}
+	defer wHandle.Close()
+
+	if err = rHandle.SetBPFFilter("arp"); err != nil {
 		cfg.log.Error("failed to set bpf filter", zap.Error(err))
 		return err
 	}
 
-	src := gopacket.NewPacketSource(handle, layers.LayerTypeEthernet)
+	src := gopacket.NewPacketSource(rHandle, layers.LayerTypeEthernet)
 	in := src.Packets()
+	var requestedArps []string
 
-outer:
 	for {
 		var packet gopacket.Packet
 		select {
@@ -176,164 +177,7 @@ outer:
 			cfg.log.Info("killing arp watch routine")
 			return
 		case packet = <-in:
-			arpL := GetArpLayer(packet)
-			if arpL == nil {
-				continue outer
-			}
-			sAddrs := newUnpackedArp(arpL)
-
-			switch arpL.Operation {
-			case layers.ARPRequest:
-
-				//======================================
-				// HANDLE PASSIVELY CAPTURED ARP REQUEST
-				//======================================
-
-				if bytes.Equal(cfg.iface.HardwareAddr, arpL.SourceHwAddress) {
-					// ignore arp requests from our nic
-					continue outer
-				} else if cfg.ipNet.IP.Equal(arpL.DstProtAddress) {
-					// capture ARP requests for senders wanting our mac address
-					if _, srcIp, e := sAddrs.getOrCreateSenderDbValues(cfg, PassiveArpMeth); e != nil {
-						err = e
-						return
-					} else if srcIp.IsNew {
-						cfg.log.Info("new ip requested our mac", zap.String("ip", srcIp.Value))
-					}
-					continue outer
-				}
-
-				_, senIp, tarIp, err := sAddrs.getOrCreateSnifferDbValues(cfg, PassiveArpMeth)
-
-				if senIp.IsNew {
-					cfg.log.Info("new sender ip discovered passively", zap.String("ip", senIp.Value))
-				}
-				if tarIp.IsNew {
-					cfg.log.Info("new target ip discovered passively", zap.String("ip", tarIp.Value))
-				}
-
-				//====================
-				// INCREMENT ARP COUNT
-				//====================
-
-				var arpCount int
-				arpCount, err = IncArpCount(cfg.db, senIp.Id, tarIp.Id)
-				if err != nil {
-					cfg.log.Error("failed to increment arp count",
-						zap.String("senderIp", sAddrs.SenIp),
-						zap.String("senderMac", sAddrs.SenHw),
-						zap.String("targetIp", sAddrs.TarIp),
-						zap.Error(err))
-					continue outer
-				} else if arpCount == 1 {
-					cfg.log.Info("new conversation discovered",
-						zap.String("senderIp", sAddrs.SenIp),
-						zap.String("senderMac", sAddrs.SenHw),
-						zap.String("targetIp", sAddrs.TarIp))
-				}
-
-				if tarIp.MacId == nil && activeArps.Get(tarIp.Value) == nil && !tarIp.ArpResolved {
-
-					//============================
-					// SEND ARP REQUEST FOR TARGET
-					//============================
-
-					go doArpRequest(cfg, doArpRequestArgs[ActiveArp]{
-						tarIpRecord: tarIp,
-						senIp:       cfg.ipNet.IP.To4(),
-						senHw:       cfg.iface.HardwareAddr,
-						tarIp:       arpL.DstProtAddress,
-						tarHw:       nil,
-						senderC:     arpSenderC,
-						activeArps:  activeArps,
-						handle:      handle,
-					})
-
-				}
-
-				//===================
-				// DO NAME RESOLUTION
-				//===================
-
-				// skip name resolution AfterF excess failures
-				if dnsFailCounter.Exceeded() {
-					continue outer
-				}
-
-				// determine which ips to reverse resolve
-				var toResolve []*Ip
-				for _, ip := range []*Ip{senIp, tarIp} {
-					if !ip.PtrResolved && activeDns.Get(FmtDnsKey(ip.Value, PtrDnsKind)) == nil {
-						cfg.log.Info("reverse dns resolving", zap.String("ip", ip.Value))
-						toResolve = append(toResolve, ip)
-					}
-				}
-
-				if len(toResolve) == 0 {
-					continue outer
-				}
-
-				// reverse resolve each ip
-				go func() {
-					for _, ip := range toResolve {
-						dArgs := DoDnsCfg{
-							SenderC: dnsSenderC,
-							Kind:    PtrDnsKind,
-							Target:  ip.Value,
-							FailureF: func(e error) {
-								if err := SetPtrResolved(cfg.db, *ip); err != nil {
-									activeDns.Delete(FmtDnsKey(ip.Value, PtrDnsKind))
-									cfg.log.Error("failed to set ptr to resolved", zap.String("ip", ip.Value), zap.Error(err))
-									return
-								}
-								activeDns.Delete(FmtDnsKey(ip.Value, PtrDnsKind))
-							},
-							AfterF: func(names []string) {
-								if err := SetPtrResolved(cfg.db, *ip); err != nil {
-									activeDns.Delete(FmtDnsKey(ip.Value, PtrDnsKind))
-									cfg.log.Error("failed to set ptr to resolved", zap.String("ip", ip.Value), zap.Error(err))
-									return
-								}
-								for _, name := range names {
-									cfg.log.Info("reverse dns resolution found", zap.String("ip", ip.Value), zap.String("name", name))
-									handlePtrName(cfg, 10, handlePtrNameArgs[DoDnsCfg, ActiveArp]{
-										ip:         ip,
-										name:       name,
-										srcIfaceIp: cfg.ipNet.IP.To4(),
-										srcIfaceHw: cfg.iface.HardwareAddr,
-										activeArp:  activeArps,
-										arpSenderC: arpSenderC,
-										activeDns:  activeDns,
-										dnsSenderC: dnsSenderC,
-										handle:     handle,
-									})
-								}
-								activeDns.Delete(FmtDnsKey(ip.Value, PtrDnsKind))
-							},
-						}
-						activeDns.Set(FmtDnsKey(ip.Value, PtrDnsKind), &dArgs)
-						dnsSenderC <- dArgs
-					}
-				}()
-
-			case layers.ARPReply:
-
-				//===================================
-				// HANDLE REPLIES TO OUR ARP REQUESTS
-				//===================================
-
-				if aa := activeArps.Get(sAddrs.SenIp); aa != nil {
-					aa.cancel()
-					var srcIp *Ip
-					var srcMac *Mac
-					srcMac, srcIp, _, err = sAddrs.getOrCreateSnifferDbValues(cfg, ActiveArpMeth)
-					if err != nil {
-						cfg.log.Error("failed to handle arp reply", zap.String("ip", sAddrs.SenIp), zap.Error(err))
-						return err
-					}
-					cfg.log.Info("received arp reply", zap.String("ip", srcIp.Value), zap.String("mac", srcMac.Value))
-				}
-			}
+			go handlePacket(cfg, wHandle, packet, &requestedArps)
 		}
 	}
 }
@@ -453,7 +297,7 @@ func GetArpLayer(packet gopacket.Packet) *layers.ARP {
 //
 // NOTE: Before poisoning the sender's ARP table, this function passively
 // waits for the sender to broadcast an ARP request.
-func AttackSnac(ctx context.Context, cfg Cfg, arpSenderC chan SendArpCfg, senIp net.IP, tarIp net.IP,
+func AttackSnac(ctx context.Context, cfg Cfg, senIp net.IP, tarIp net.IP,
   handlers ...ArpSpoofHandler) (err error) {
 
 	var handle *pcap.Handle
@@ -483,7 +327,7 @@ func AttackSnac(ctx context.Context, cfg Cfg, arpSenderC chan SendArpCfg, senIp 
 				cfg.log.Info("received arp request for poisoned conversation", fields...)
 				cfg.log.Info("poisoning sender arp table", fields...)
 				// Respond with our MAC
-				arpSenderC <- SendArpCfg{
+				cfg.arpSenderC <- SendArpCfg{
 					Handle:    handle,
 					Operation: layers.ARPReply,
 					SenderHw:  cfg.iface.HardwareAddr,
