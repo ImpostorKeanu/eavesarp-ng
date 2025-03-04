@@ -35,7 +35,7 @@ func init() {
 		"Database file to use")
 	rootCmd.PersistentFlags().StringVarP(&ifaceName, "interface", "i", "",
 		"Name of the network interface to monitor")
-	rootCmd.PersistentFlags().StringVarP(&logFile, "log-file", "l", "",
+	rootCmd.PersistentFlags().StringVarP(&logFile, "log-file", "l", "eavesarp.log",
 		"Where to send logs")
 	rootCmd.PersistentFlags().StringVarP(&logLevel, "log-level", "v", "info",
 		"Logging level. Valid values: debug, info, warn, error, dpanic, panic, fatal")

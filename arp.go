@@ -43,11 +43,13 @@ type (
 		Handle *pcap.Handle
 		// Operation indicating the type of packet, i.e., request or
 		// response. See layers.ARP for more information.
-		Operation uint64
-		SenderHw  net.HardwareAddr
-		SenderIp  net.IP
-		TargetHw  net.HardwareAddr
-		TargetIp  net.IP
+		Operation  uint64
+		SenderHw   net.HardwareAddr
+		SenderIp   net.IP
+		TargetHw   net.HardwareAddr
+		TargetIp   net.IP
+		ReqTarget  *Ip
+		ReqRetries int
 	}
 
 	// ArpSpoofHandler defines the signature for functions that handle
@@ -87,14 +89,25 @@ func newUnpackedArp(arp *layers.ARP) arpStringAddrs {
 }
 
 // SendArp sends an ARP request described by SendArpCfg.
-func SendArp(cfg Cfg, sA SendArpCfg) error {
+func SendArp(cfg Cfg, sA SendArpCfg) (err error) {
 	// SOURCE: https://github.com/google/gopacket/blob/master/examples/arpscan/arpscan.go
+
+	logFields := []zap.Field{
+		zap.String("senderIp", sA.SenderIp.String()), zap.String("senderMac", sA.SenderHw.String()),
+		zap.String("targetIp", sA.TargetIp.String()), zap.String("targetMac", sA.TargetHw.String())}
+	if sA.Operation == layers.ARPReply {
+		logFields = append(logFields, zap.String("arpOperation", "reply"))
+	} else {
+		logFields = append(logFields, zap.String("arpOperation", "request"))
+	}
 
 	if sA.TargetHw == nil {
 		if sA.Operation == layers.ARPReply {
 			return errors.New("sending arp replies require a TargetHw value")
 		}
 		sA.TargetHw = net.HardwareAddr{0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
+	} else if sA.Operation == layers.ARPRequest && sA.ReqTarget == nil {
+		return errors.New("sending arp requests ReqTarget")
 	}
 
 	eth := layers.Ethernet{
@@ -119,62 +132,53 @@ func SendArp(cfg Cfg, sA SendArpCfg) error {
 	}
 
 	buff := gopacket.NewSerializeBuffer()
-	err := gopacket.SerializeLayers(buff, opts, &eth, &arp)
-	cfg.log.Debug("sending arp packet",
-		zap.String("senderIp", sA.SenderIp.String()), zap.String("senderMac", sA.SenderHw.String()),
-		zap.String("targetIp", sA.TargetIp.String()), zap.String("targetMac", sA.TargetHw.String()),
-	)
+	err = gopacket.SerializeLayers(buff, opts, &eth, &arp)
+
+	cfg.log.Debug("sent arp", logFields...)
 	if err != nil {
 		cfg.log.Error("error serializing packet", zap.Error(err))
 		return fmt.Errorf("failed to build arp packet: %w", err)
 	} else if err = sA.Handle.WritePacketData(buff.Bytes()); err != nil {
-		cfg.log.Error("error writing packet data", zap.Error(err),
-			zap.String("senderIp", sA.SenderIp.String()), zap.String("senderMac", sA.SenderHw.String()),
-			zap.String("targetIp", sA.TargetIp.String()), zap.String("targetMac", sA.TargetHw.String()),
-		)
+		logFields = append(logFields, zap.Error(err))
+		cfg.log.Error("error writing packet data", logFields...)
 		return fmt.Errorf("failed to send arp packet: %w", err)
 	}
 
-	return nil
-}
+	if sA.Operation == layers.ARPRequest {
 
-// doArpRequest configures and sends an ARP request.
-func doArpRequest(cfg Cfg, args doArpRequestArgs[ActiveArp], maxRetries int) {
+		ctx, cancel := context.WithTimeout(context.Background(), arpTimeout)
+		cfg.activeArps.Set(sA.ReqTarget.Value, &ActiveArp{TarIp: sA.ReqTarget, ctx: ctx, cancel: cancel})
 
-	cfg.log.Info("initiating arp request", zap.String("ip", args.tarIpRecord.Value))
-
-	ctx, cancel := context.WithTimeout(context.Background(), arpTimeout)
-	context.AfterFunc(ctx, func() {
-		cancel()
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			if maxRetries > 0 {
-				go doArpRequest(cfg, args, maxRetries-1)
-				cfg.log.Info("retrying arp request",
-					zap.String("targetIp", args.tarIpRecord.Value),
-					zap.Int("remainingRetries", maxRetries))
-				return
+		context.AfterFunc(ctx, func() {
+			cancel()
+			cfg.activeArps.Delete(sA.ReqTarget.Value)
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				if sA.ReqRetries > 0 {
+					sA.ReqRetries--
+					cfg.log.Info("retrying arp", logFields...)
+					if err := SendArp(cfg, sA); err != nil {
+						logFields = append(logFields, zap.Error(err))
+						cfg.log.Error("error retrying arp", logFields...)
+					}
+					return
+				}
+				cfg.log.Info("never received arp response", logFields...)
 			}
-			cfg.log.Info("never received arp response", zap.String("targetIp", args.tarIpRecord.Value))
-		}
-		if err := SetArpResolved(cfg.db, args.tarIpRecord.Id); err != nil {
-			cfg.log.Error("failed to set arp as resolved for ip", zap.String("targetIp", args.tarIpRecord.Value))
-		}
-		cfg.activeArps.Delete(args.tarIpRecord.Value)
-	})
-
-	cfg.activeArps.Set(args.tarIpRecord.Value, &ActiveArp{TarIp: args.tarIpRecord, ctx: ctx, cancel: cancel})
-
-	cfg.arpSenderC <- SendArpCfg{
-		Operation: layers.ARPRequest,
-		Handle:    args.handle,
-		SenderHw:  args.senHw,
-		SenderIp:  args.senIp,
-		TargetIp:  args.tarIp,
-		TargetHw:  args.tarHw,
+			if err := SetArpResolved(cfg.db, sA.ReqTarget.Id); err != nil {
+				cfg.log.Error("failed to set arp as resolved for ip", logFields...)
+			}
+		})
 	}
+
+	return
 }
 
-func handlePacket(cfg Cfg, handle *pcap.Handle, packet gopacket.Packet, requestedArps *[]string) (err error) {
+// handleWatchArpPacket handles a packet received by WatchArp.
+//
+// resolvedTargets tracks which target MAC addresses have been
+// actively resolved, allowing us to avoid duplicate resolution
+// attempts. This function has side effects on resolvedTargets.
+func handleWatchArpPacket(cfg Cfg, handle *pcap.Handle, packet gopacket.Packet, resolvedTargets *[]string) (err error) {
 
 	arpL := GetArpLayer(packet)
 	if arpL == nil {
@@ -247,22 +251,25 @@ func handlePacket(cfg Cfg, handle *pcap.Handle, packet gopacket.Packet, requeste
 		}
 
 		if tarIp.MacId == nil && !tarIp.ArpResolved &&
-		  !slices.Contains(*requestedArps, tarIp.Value) && cfg.activeArps.Get(tarIp.Value) == nil {
+		  !slices.Contains(*resolvedTargets, tarIp.Value) && cfg.activeArps.Get(tarIp.Value) == nil {
 
-			*requestedArps = append(*requestedArps, tarIp.Value)
+			*resolvedTargets = append(*resolvedTargets, tarIp.Value)
 
 			//============================
 			// SEND ARP REQUEST FOR TARGET
 			//============================
 
-			go doArpRequest(cfg, doArpRequestArgs[ActiveArp]{
-				tarIpRecord: tarIp,
-				senIp:       cfg.ipNet.IP.To4(),
-				senHw:       cfg.iface.HardwareAddr,
-				tarIp:       arpL.DstProtAddress,
-				tarHw:       nil,
-				handle:      handle,
-			}, 5)
+			go func() {
+				cfg.arpSenderC <- SendArpCfg{
+					Handle:     handle,
+					Operation:  layers.ARPRequest,
+					SenderHw:   cfg.iface.HardwareAddr,
+					SenderIp:   cfg.ipNet.IP.To4(),
+					TargetIp:   arpL.DstProtAddress,
+					ReqTarget:  tarIp,
+					ReqRetries: maxArpRetries,
+				}
+			}()
 
 		}
 

@@ -170,7 +170,9 @@ func WatchArp(ctx context.Context, cfg Cfg) (err error) {
 
 	src := gopacket.NewPacketSource(rHandle, layers.LayerTypeEthernet)
 	in := src.Packets()
-	var requestedArps []string
+
+	// track which targets have been resolved to avoid duplicates
+	var resolvedTargets []string
 
 	for {
 		var packet gopacket.Packet
@@ -179,7 +181,7 @@ func WatchArp(ctx context.Context, cfg Cfg) (err error) {
 			cfg.log.Info("killing arp watch routine")
 			return
 		case packet = <-in:
-			go handlePacket(cfg, wHandle, packet, &requestedArps)
+			go handleWatchArpPacket(cfg, wHandle, packet, &resolvedTargets)
 		}
 	}
 }

@@ -24,7 +24,7 @@ func SenderServer[T SenderTypeConst](ctx context.Context, cfg Cfg, sleeper Sleep
 	// start a perpetual sender loop
 	go func() {
 		for {
-			//sleeper.Sleep()
+			sleeper.Sleep()
 			select {
 			case <-ctx.Done():
 				return

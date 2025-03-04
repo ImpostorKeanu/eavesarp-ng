@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
 	"go.uber.org/zap"
 	"net"
@@ -168,14 +169,17 @@ func handlePtrName(cfg Cfg, depth int, args handlePtrNameArgs[DoDnsCfg, ActiveAr
 					// arp resolve newly discovered ip addresses
 					//go doArpRequest(db, &newIp, cfg.srcIfaceIp, cfg.srcIfaceHw, net.ParseIP(newIp.Value).To4(),
 					//	nil, cfg.handle, cfg.arpSenderC, cfg.activeArp, eWriters)
-					go doArpRequest(cfg, doArpRequestArgs[ActiveArp]{
-						tarIpRecord: &newIp,
-						senIp:       args.srcIfaceIp,
-						senHw:       args.srcIfaceHw,
-						tarIp:       net.ParseIP(newIp.Value).To4(),
-						tarHw:       nil,
-						handle:      args.handle,
-					}, maxArpRetries)
+					go func() {
+						cfg.arpSenderC <- SendArpCfg{
+							Handle:     args.handle,
+							Operation:  layers.ARPRequest,
+							SenderIp:   args.srcIfaceIp,
+							SenderHw:   args.srcIfaceHw,
+							TargetIp:   net.ParseIP(newIp.Value).To4(),
+							ReqTarget:  &newIp,
+							ReqRetries: maxArpRetries,
+						}
+					}()
 				}
 
 				if err != nil {
