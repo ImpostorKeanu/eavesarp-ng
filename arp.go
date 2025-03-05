@@ -152,6 +152,7 @@ func SendArp(cfg Cfg, sA SendArpCfg) (err error) {
 		context.AfterFunc(ctx, func() {
 			cancel()
 			cfg.activeArps.Delete(sA.ReqTarget.Value)
+
 			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 				if sA.ReqRetries > 0 {
 					sA.ReqRetries--
@@ -164,6 +165,7 @@ func SendArp(cfg Cfg, sA SendArpCfg) (err error) {
 				}
 				cfg.log.Info("never received arp response", logFields...)
 			}
+
 			if err := SetArpResolved(cfg.db, sA.ReqTarget.Id); err != nil {
 				cfg.log.Error("failed to set arp as resolved for ip", logFields...)
 			}

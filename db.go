@@ -322,6 +322,8 @@ func GetOrCreateDnsARecord(db *sql.DB, ip Ip, name DnsName) (aRec ARecord, err e
 	return
 }
 
+// IncArpCount increments the arp_count value for the row identified by senderIpId and
+// targetIpId by 1.
 func IncArpCount(db *sql.DB, senderIpId int, targetIpId int) (count int, err error) {
 	err = GetRow(db,
 		`INSERT INTO arp_count (sender_ip_id, target_ip_id) VALUES (?, ?)
@@ -330,6 +332,8 @@ ON CONFLICT DO UPDATE SET count=count+1 RETURNING count`,
 	return
 }
 
+// SetArpResolved updates the Ip database record identified by ipId such that the arp_resolved
+// field is true.
 func SetArpResolved(db *sql.DB, ipId int) (err error) {
 	if _, err = db.Exec(`UPDATE ip SET arp_resolved=1 WHERE id=?`, ipId); err != nil {
 		return fmt.Errorf("failed to update arp_resolved attribute: %v", err.Error())
