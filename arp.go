@@ -10,7 +10,6 @@ import (
 	"github.com/google/gopacket/pcap"
 	"go.uber.org/zap"
 	"net"
-	"slices"
 	"time"
 )
 
@@ -146,14 +145,37 @@ func SendArp(cfg Cfg, sA SendArpCfg) (err error) {
 
 	if sA.Operation == layers.ARPRequest {
 
-		ctx, cancel := context.WithTimeout(context.Background(), arpTimeout)
-		cfg.activeArps.Set(sA.ReqTarget.Value, &ActiveArp{TarIp: sA.ReqTarget, ctx: ctx, cancel: cancel})
+		if sA.ReqTarget == nil {
+			err = errors.New("sending arp requests requires a ReqTarget")
+			cfg.log.Error("failed to send arp requests", zap.Error(err))
+			return err
+		}
 
-		context.AfterFunc(ctx, func() {
-			cancel()
+		aa := cfg.activeArps.Get(sA.ReqTarget.Value)
+		if aa == nil {
+			aa = new(ActiveArp)
+			cfg.activeArps.Set(sA.ReqTarget.Value, aa)
+		}
+
+		if aa.ctx == nil && aa.cancel == nil {
+			aa.ctx, aa.cancel = context.WithTimeout(context.Background(), arpTimeout)
+		} else if aa.ctx == nil {
+			ctx, cancel := context.WithTimeout(context.Background(), arpTimeout)
+			aa.ctx = ctx
+			c := aa.cancel
+			aa.cancel = func() {
+				c()
+				cancel()
+			}
+		} else if aa.cancel == nil {
+			aa.ctx, aa.cancel = context.WithTimeout(aa.ctx, arpTimeout)
+		}
+
+		context.AfterFunc(aa.ctx, func() {
+			aa.cancel()
 			cfg.activeArps.Delete(sA.ReqTarget.Value)
 
-			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			if errors.Is(aa.ctx.Err(), context.DeadlineExceeded) {
 				if sA.ReqRetries > 0 {
 					sA.ReqRetries--
 					cfg.log.Info("retrying arp", logFields...)
@@ -180,7 +202,7 @@ func SendArp(cfg Cfg, sA SendArpCfg) (err error) {
 // resolvedTargets tracks which target MAC addresses have been
 // actively resolved, allowing us to avoid duplicate resolution
 // attempts. This function has side effects on resolvedTargets.
-func handleWatchArpPacket(cfg Cfg, handle *pcap.Handle, packet gopacket.Packet, resolvedTargets *[]string) (err error) {
+func handleWatchArpPacket(cfg Cfg, handle *pcap.Handle, packet gopacket.Packet) (err error) {
 
 	arpL := GetArpLayer(packet)
 	if arpL == nil {
@@ -252,14 +274,20 @@ func handleWatchArpPacket(cfg Cfg, handle *pcap.Handle, packet gopacket.Packet, 
 				zap.String("targetIp", sAddrs.TarIp))
 		}
 
-		if tarIp.MacId == nil && !tarIp.ArpResolved &&
-		  !slices.Contains(*resolvedTargets, tarIp.Value) && cfg.activeArps.Get(tarIp.Value) == nil {
+		//==================
+		// DO ARP RESOLUTION
+		//==================
 
-			*resolvedTargets = append(*resolvedTargets, tarIp.Value)
+		if tarIp.MacId == nil && !tarIp.ArpResolved && cfg.activeArps.Get(tarIp.Value) == nil {
 
-			//============================
-			// SEND ARP REQUEST FOR TARGET
-			//============================
+			// SendArp will set ctx and cancel
+			// We set this here to avoid duplicate resolution attempts, but
+			// let SendArp set the timeout to avoid race conditions
+			cfg.activeArps.Set(tarIp.Value, &ActiveArp{
+				TarIp:  tarIp,
+				ctx:    nil,
+				cancel: nil,
+			})
 
 			go func() {
 				cfg.arpSenderC <- SendArpCfg{
@@ -345,7 +373,9 @@ func handleWatchArpPacket(cfg Cfg, handle *pcap.Handle, packet gopacket.Packet, 
 		var srcIp *Ip
 		var srcMac *Mac
 		if aa := cfg.activeArps.Get(sAddrs.SenIp); aa != nil {
-			aa.cancel()
+			if aa.cancel != nil {
+				aa.cancel()
+			}
 			if srcMac, srcIp, _, err = sAddrs.getOrCreateSnifferDbValues(cfg, ActiveArpMeth); err == nil {
 				cfg.log.Info("received active arp reply", zap.String("ip", srcIp.Value),
 					zap.String("mac", srcMac.Value), zap.String("replyType", "active"))
