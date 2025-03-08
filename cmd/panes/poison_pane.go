@@ -471,6 +471,7 @@ func (p *PoisonPane) startPoisoning(msg BtnPressMsg) tea.Cmd {
 	// close all channels upon context timeout/cancellation
 	var hasClosed atomic.Bool
 	p.cancelPoisonCtx = func() {
+		p.eWriter.WriteStringf("ending poisoning attack: %s -> %s", sIp.Value, tIp.Value)
 		cancel()
 		if !hasClosed.Load() {
 			hasClosed.Store(true)
@@ -533,7 +534,6 @@ func (p *PoisonPane) startPoisoning(msg BtnPressMsg) tea.Cmd {
 			TargetIp: targetIp,
 			Handlers: []eavesarp_ng.ArpSpoofHandler{pktCntHandler, attackPortHandler, outputFileHandler, pktLimitHandler},
 		}
-		p.eWriter.WriteStringf("ending poisoning attack: %s -> %s", sIp.Value, tIp.Value)
 		return nil
 	}
 
