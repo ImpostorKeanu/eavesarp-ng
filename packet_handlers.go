@@ -48,8 +48,6 @@ func PacketCounterHandler(ctx context.Context, limit int) (chan int, ArpSpoofHan
 			// NOP
 		case pktCh <- pkt:
 			// NOP
-		default:
-			// TODO log that the buffer is full
 		}
 	}
 }
@@ -91,8 +89,6 @@ func OutputFileHandler(ctx context.Context, f *os.File, errF func(error)) (ArpSp
 			// NOP
 		case pktCh <- pkt:
 			// NOP
-		default:
-			// TODO log that the buffer is full
 		}
 	}, nil
 }
@@ -139,8 +135,6 @@ func AttackPortHandler(ctx context.Context, db *sql.DB, attackId int, errF func(
 			// NOP
 		case pktCh <- pkt:
 			// NOP
-		default:
-			// TODO log that the buffer is full
 		}
 	}
 }
@@ -175,8 +169,6 @@ func PacketLimitHandler(ctx context.Context, limit int, onLimitF func()) ArpSpoo
 			// NOP
 		case pktCh <- pkt:
 			// NOP
-		default:
-			// TODO log that the buffer is full
 		}
 	}
 }
