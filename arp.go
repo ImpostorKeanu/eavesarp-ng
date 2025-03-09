@@ -15,7 +15,7 @@ import (
 
 const (
 	maxArpRetries = 3
-	arpTimeout    = 8 * time.Second
+	arpTimeout    = 4 * time.Second
 )
 
 var (
@@ -23,11 +23,15 @@ var (
 )
 
 type (
-	// ActiveArp represents an ARP request.
+	// ActiveArp represents an ARP request that we're waiting on a
+	// response for.
 	ActiveArp struct {
-		TarIp  *Ip
-		ctx    context.Context
-		cancel context.CancelFunc
+		// TargetIpRec is the database record associated with the
+		// ARP target.
+		TargetIpRec Ip
+		// Cancel is any cancel function that should be called
+		// later.
+		Cancel context.CancelFunc
 	}
 
 	// arpStringAddrs consists of network addresses in string format that
@@ -37,18 +41,39 @@ type (
 	}
 
 	// SendArpCfg represent values needed to send an ARP request/response.
+	//
+	// Instances of this type are sent to a SenderServer routine that writes
+	// ARP requests and responses to the wire.
+	//
+	// Any name prefixed with "Req" indicates a field relevant only to ARP
+	// requests, specifically:
+	//
+	// - ReqCtx
+	// - ReqMaxRetries
+	// - ReqTimeout
 	SendArpCfg struct {
 		// Handle that will be used to send the ARP request/response.
 		Handle *pcap.Handle
 		// Operation indicating the type of packet, i.e., request or
 		// response. See layers.ARP for more information.
-		Operation  uint64
-		SenderHw   net.HardwareAddr
-		SenderIp   net.IP
-		TargetHw   net.HardwareAddr
-		TargetIp   net.IP
-		ReqTarget  *Ip
-		ReqRetries int
+		Operation uint64
+		SenderHw  net.HardwareAddr
+		SenderIp  net.IP
+		TargetHw  net.HardwareAddr
+		TargetIp  net.IP
+		// ReqCtx allows one to set a context for the request, enabling
+		// timeouts and cancellation. This field is relevant only for ARP
+		// requests.
+		//
+		// ActiveArp records can retain the cancel function (ActiveArp.Cancel)
+		// for use upon receiving a response.
+		ReqCtx context.Context
+		// ReqMaxRetries indicates the maximum number of retries for an
+		// ARP request.
+		ReqMaxRetries int
+		// ReqTimeout determines the duration of time before an ARP request
+		// without a response is canceled.
+		ReqTimeout time.Duration
 	}
 
 	// ArpSpoofHandler defines the signature for functions that handle
@@ -57,7 +82,7 @@ type (
 
 	// AttackSnacCfg is used to configure an ARP spoofing attack.
 	AttackSnacCfg struct {
-		// Calling the cancel func associated with Ctx stops the
+		// Calling the Cancel func associated with Ctx stops the
 		// ARP spoofing attack.
 		Ctx      context.Context
 		SenderIp net.IP
@@ -65,24 +90,14 @@ type (
 		// Handlers are functions that each packet is passed to.
 		Handlers []ArpSpoofHandler
 	}
-
-	// doArpRequestArgs enables documentation of arguments.
-	doArpRequestArgs[AT ActiveArp] struct {
-		tarIpRecord *Ip          // current ip db record being resolved for
-		senIp       []byte       // sender ip address
-		senHw       []byte       // sender hw address
-		tarIp       []byte       // target ip address
-		tarHw       []byte       // target hardware address
-		handle      *pcap.Handle // handle used to write the arp packet to the wire
-	}
 )
 
 // newUnpackedArp converts binary address values to string.
 func newUnpackedArp(arp *layers.ARP) arpStringAddrs {
 	return arpStringAddrs{
-		SenIp: net.IP(arp.SourceProtAddress).String(),
+		SenIp: net.IP(arp.SourceProtAddress).To4().String(),
 		SenHw: net.HardwareAddr(arp.SourceHwAddress).String(),
-		TarIp: net.IP(arp.DstProtAddress).String(),
+		TarIp: net.IP(arp.DstProtAddress).To4().String(),
 		TarHw: net.HardwareAddr(arp.DstHwAddress).String(),
 	}
 }
@@ -94,24 +109,75 @@ func SendArp(cfg Cfg, sA SendArpCfg) (err error) {
 	logFields := []zap.Field{
 		zap.String("senderIp", sA.SenderIp.String()), zap.String("senderMac", sA.SenderHw.String()),
 		zap.String("targetIp", sA.TargetIp.String()), zap.String("targetMac", sA.TargetHw.String())}
-	if sA.Operation == layers.ARPReply {
-		logFields = append(logFields, zap.String("arpOperation", "reply"))
-	} else {
-		logFields = append(logFields, zap.String("arpOperation", "request"))
-	}
 
-	if sA.TargetHw == nil {
-		if sA.Operation == layers.ARPReply {
-			return errors.New("sending arp replies require a TargetHw value")
+	ethDstHw := sA.TargetHw
+	arpDstHw := sA.TargetHw
+
+	if sA.Operation == layers.ARPReply {
+
+		if sA.TargetHw == nil {
+			return errors.New("sending arp replies requires a target hardware address value")
 		}
-		sA.TargetHw = net.HardwareAddr{0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
-	} else if sA.Operation == layers.ARPRequest && sA.ReqTarget == nil {
-		return errors.New("sending arp requests ReqTarget")
+		logFields = append(logFields, zap.String("arpOperation", "reply"))
+
+	} else {
+
+		if sA.TargetHw == nil {
+			// looks like we're broadcasting a request
+			ethDstHw = net.HardwareAddr{0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
+			arpDstHw = net.HardwareAddr{0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
+		}
+
+		aa := cfg.activeArps.Get(sA.TargetIp.String())
+		if aa == nil {
+			err = errors.New("active arp record not found")
+			cfg.log.Error("failed to find active arp record", zap.Error(err))
+			return
+		}
+
+		// should always have a request timeout greater than zero
+		if sA.ReqTimeout == 0 {
+			sA.ReqTimeout = arpTimeout
+		}
+
+		var (
+			ctx    context.Context
+			cancel context.CancelFunc
+		)
+		ctx = sA.ReqCtx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		ctx, cancel = context.WithTimeout(ctx, sA.ReqTimeout)
+
+		// set an afterfunc that recursively retries arp resolution
+		// until retries is exhausted
+		context.AfterFunc(ctx, func() {
+			cancel()
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				if sA.ReqMaxRetries > 0 {
+					sA.ReqMaxRetries--
+					fields := logFields[:]
+					fields = append(fields, zap.Int("remainingRetries", sA.ReqMaxRetries))
+					cfg.log.Info("retrying arp", fields...)
+					if err := SendArp(cfg, sA); err != nil {
+						logFields = append(logFields, zap.Error(err))
+						cfg.log.Error("error retrying arp", logFields...)
+					}
+					return
+				}
+				cfg.log.Info("never received arp response", logFields...)
+			}
+			if err := SetArpResolved(cfg.db, aa.TargetIpRec.Id); err != nil {
+				cfg.log.Error("failed to set arp as resolved for ip", logFields...)
+			}
+			cfg.activeArps.Delete(aa.TargetIpRec.Value)
+		})
 	}
 
 	eth := layers.Ethernet{
 		SrcMAC:       sA.SenderHw,
-		DstMAC:       sA.TargetHw,
+		DstMAC:       ethDstHw,
 		EthernetType: layers.EthernetTypeARP,
 	}
 	arp := layers.ARP{
@@ -122,7 +188,7 @@ func SendArp(cfg Cfg, sA SendArpCfg) (err error) {
 		Operation:         uint16(sA.Operation),
 		SourceHwAddress:   sA.SenderHw,
 		SourceProtAddress: sA.SenderIp.To4(),
-		DstHwAddress:      sA.TargetHw,
+		DstHwAddress:      arpDstHw,
 		DstProtAddress:    sA.TargetIp.To4(),
 	}
 	opts := gopacket.SerializeOptions{
@@ -141,57 +207,6 @@ func SendArp(cfg Cfg, sA SendArpCfg) (err error) {
 		logFields = append(logFields, zap.Error(err))
 		cfg.log.Error("error writing packet data", logFields...)
 		return fmt.Errorf("failed to send arp packet: %w", err)
-	}
-
-	if sA.Operation == layers.ARPRequest {
-
-		if sA.ReqTarget == nil {
-			err = errors.New("sending arp requests requires a ReqTarget")
-			cfg.log.Error("failed to send arp requests", zap.Error(err))
-			return err
-		}
-
-		aa := cfg.activeArps.Get(sA.ReqTarget.Value)
-		if aa == nil {
-			aa = new(ActiveArp)
-			cfg.activeArps.Set(sA.ReqTarget.Value, aa)
-		}
-
-		if aa.ctx == nil && aa.cancel == nil {
-			aa.ctx, aa.cancel = context.WithTimeout(context.Background(), arpTimeout)
-		} else if aa.ctx == nil {
-			ctx, cancel := context.WithTimeout(context.Background(), arpTimeout)
-			aa.ctx = ctx
-			c := aa.cancel
-			aa.cancel = func() {
-				c()
-				cancel()
-			}
-		} else if aa.cancel == nil {
-			aa.ctx, aa.cancel = context.WithTimeout(aa.ctx, arpTimeout)
-		}
-
-		context.AfterFunc(aa.ctx, func() {
-			aa.cancel()
-			cfg.activeArps.Delete(sA.ReqTarget.Value)
-
-			if errors.Is(aa.ctx.Err(), context.DeadlineExceeded) {
-				if sA.ReqRetries > 0 {
-					sA.ReqRetries--
-					cfg.log.Info("retrying arp", logFields...)
-					if err := SendArp(cfg, sA); err != nil {
-						logFields = append(logFields, zap.Error(err))
-						cfg.log.Error("error retrying arp", logFields...)
-					}
-					return
-				}
-				cfg.log.Info("never received arp response", logFields...)
-			}
-
-			if err := SetArpResolved(cfg.db, sA.ReqTarget.Id); err != nil {
-				cfg.log.Error("failed to set arp as resolved for ip", logFields...)
-			}
-		})
 	}
 
 	return
@@ -280,24 +295,22 @@ func handleWatchArpPacket(cfg Cfg, handle *pcap.Handle, packet gopacket.Packet) 
 
 		if tarIp.MacId == nil && !tarIp.ArpResolved && cfg.activeArps.Get(tarIp.Value) == nil {
 
-			// SendArp will set ctx and cancel
-			// We set this here to avoid duplicate resolution attempts, but
-			// let SendArp set the timeout to avoid race conditions
+			// SendArp will set ctx and Cancel
+			// - We set this here to avoid duplicate resolution attempts, but
+			//   let SendArp set the timeout to avoid race conditions
 			cfg.activeArps.Set(tarIp.Value, &ActiveArp{
-				TarIp:  tarIp,
-				ctx:    nil,
-				cancel: nil,
+				TargetIpRec: *tarIp,
 			})
 
 			go func() {
 				cfg.arpSenderC <- SendArpCfg{
-					Handle:     handle,
-					Operation:  layers.ARPRequest,
-					SenderHw:   cfg.iface.HardwareAddr,
-					SenderIp:   cfg.ipNet.IP.To4(),
-					TargetIp:   arpL.DstProtAddress,
-					ReqTarget:  tarIp,
-					ReqRetries: maxArpRetries,
+					Handle:        handle,
+					Operation:     layers.ARPRequest,
+					SenderHw:      cfg.iface.HardwareAddr,
+					SenderIp:      cfg.ipNet.IP.To4(),
+					TargetIp:      arpL.DstProtAddress,
+					ReqCtx:        nil,
+					ReqMaxRetries: maxArpRetries,
 				}
 			}()
 
@@ -308,7 +321,7 @@ func handleWatchArpPacket(cfg Cfg, handle *pcap.Handle, packet gopacket.Packet) 
 		//===================
 
 		// skip name resolution AfterF excess failures
-		if dnsFailCounter.Exceeded() {
+		if cfg.dnsFailCounter.Exceeded() {
 			return
 		}
 
@@ -329,9 +342,8 @@ func handleWatchArpPacket(cfg Cfg, handle *pcap.Handle, packet gopacket.Packet) 
 		go func() {
 			for _, ip := range toResolve {
 				dArgs := DoDnsCfg{
-					SenderC: cfg.dnsSenderC,
-					Kind:    PtrDnsKind,
-					Target:  ip.Value,
+					Kind:   PtrDnsKind,
+					Target: ip.Value,
 					FailureF: func(e error) {
 						if err := SetPtrResolved(cfg.db, *ip); err != nil {
 							cfg.activeDns.Delete(FmtDnsKey(ip.Value, PtrDnsKind))
@@ -373,8 +385,8 @@ func handleWatchArpPacket(cfg Cfg, handle *pcap.Handle, packet gopacket.Packet) 
 		var srcIp *Ip
 		var srcMac *Mac
 		if aa := cfg.activeArps.Get(sAddrs.SenIp); aa != nil {
-			if aa.cancel != nil {
-				aa.cancel()
+			if aa.Cancel != nil {
+				aa.Cancel()
 			}
 			if srcMac, srcIp, _, err = sAddrs.getOrCreateSnifferDbValues(cfg, ActiveArpMeth); err == nil {
 				cfg.log.Info("received active arp reply", zap.String("ip", srcIp.Value),

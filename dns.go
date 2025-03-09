@@ -3,17 +3,12 @@ package eavesarp_ng
 import (
 	"context"
 	"errors"
-	"fmt"
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
 	"go.uber.org/zap"
 	"net"
 	"time"
 )
-
-func init() {
-	dnsFailCounter = NewFailCounter(DnsMaxFailures)
-}
 
 const (
 	PtrDnsKind     DnsRecordKind = "ptr"
@@ -32,9 +27,8 @@ var (
 	// https://pkg.go.dev/net#hdr-Name_Resolution
 	dnsResolver = net.Resolver{}
 	// unsupportedDnsError is returned when an unsupported DnsRecordKind
-	// is supplied to SendDns via DoDnsCfg.
+	// is supplied to ResolveDns via DoDnsCfg.
 	unsupportedDnsError = errors.New("unsupported dns record type")
-	dnsFailCounter      *FailCounter
 )
 
 type (
@@ -43,13 +37,14 @@ type (
 	// DoDnsCfg has all necessary values to perform a name
 	// resolution job.
 	//
-	// These are passed to SendDns via dnsSenderC.
+	// These are passed to ResolveDns via dnsSenderC.
 	DoDnsCfg struct {
-		Kind     DnsRecordKind
-		Target   string
+		Kind   DnsRecordKind
+		Target string
+		// FailureF is a function to run upon DNS failure.
 		FailureF func(error)
-		AfterF   func([]string)
-		SenderC  chan DoDnsCfg
+		// AfterF is a function to run upon successful resolution.
+		AfterF func([]string)
 	}
 
 	// handlePtrNameArgs is a structure used to document args required
@@ -59,17 +54,19 @@ type (
 		name       string       // name obtained through reverse resolution
 		srcIfaceIp []byte       // srcIfaceIp address used to send arp requests for new ips
 		srcIfaceHw []byte       // srcIfaceHw address used to send arp requests for new ips
-		handle     *pcap.Handle // pcap handle used to send arp requests and dns queries
+		handle     *pcap.Handle // pcap handle used to send arp requests
 	}
 )
 
-// SendDns is a background process that receives DNS resolution
-// jobs via dnsSenderC.
-func SendDns(cfg Cfg, dA DoDnsCfg) error {
+// ResolveDns performs name resolution based on details supplied vai
+// DoDnsCfg.
+//
+// This function is called from a SenderServer running in a background
+// routine.
+func ResolveDns(cfg Cfg, dA DoDnsCfg) error {
 
-	if dnsFailCounter.Exceeded() {
-		// TODO log this event
-		//eWriters.Write("dns FailureF count exceeded; skipping name resolution")
+	if cfg.dnsFailCounter.Exceeded() {
+		cfg.log.Warn("dns failure limit reached; disabling name resolution")
 		return nil
 	}
 
@@ -99,13 +96,13 @@ func SendDns(cfg Cfg, dA DoDnsCfg) error {
 		return nil
 	} else if ok {
 		cfg.log.Error("error while resolving dns", zap.String("target", dA.Target), zap.String("kind", string(dA.Kind)), zap.Error(err))
-		dnsFailCounter.Inc() // Increment the maximum fail counter
+		cfg.dnsFailCounter.Inc() // Increment the maximum fail counter
 		return nil
 	}
 
 	if err != nil {
-		//eWriters.Writef("error while performing name resolution: %v", err.Error())
-		return fmt.Errorf("unhandled dns exception: %w", err)
+		cfg.log.Error("unhandled dns exception", zap.Error(err))
+		return err
 	}
 
 	// Handle the output
@@ -135,7 +132,7 @@ func handlePtrName(cfg Cfg, depth int, args handlePtrNameArgs[DoDnsCfg, ActiveAr
 	}
 
 	// Avoid duplicate forward name resolution
-	if !dnsName.IsNew || dnsFailCounter.Exceeded() || cfg.activeDns.Get(FmtDnsKey(args.name, ADnsKind)) != nil {
+	if !dnsName.IsNew || cfg.dnsFailCounter.Exceeded() || cfg.activeDns.Get(FmtDnsKey(args.name, ADnsKind)) != nil {
 		return
 	}
 
@@ -143,9 +140,8 @@ func handlePtrName(cfg Cfg, depth int, args handlePtrNameArgs[DoDnsCfg, ActiveAr
 
 	// Do forward lookups for each newly discovered name
 	dArgs := DoDnsCfg{
-		Kind:    ADnsKind,
-		SenderC: cfg.dnsSenderC,
-		Target:  args.name,
+		Kind:   ADnsKind,
+		Target: args.name,
 		FailureF: func(err error) {
 			cfg.activeDns.Delete(FmtDnsKey(args.name, ADnsKind))
 		},
@@ -163,21 +159,25 @@ func handlePtrName(cfg Cfg, depth int, args handlePtrNameArgs[DoDnsCfg, ActiveAr
 				newIp, err := GetOrCreateIp(cfg.db, newIpS, nil, ForwardDnsMeth,
 					false, false)
 
-				if newIp.IsNew || newIp.MacId == nil {
+				if newIp.IsNew || newIp.MacId == nil && cfg.activeArps.Get(newIp.Value) == nil {
 					cfg.log.Info("arp resolving ip discovered via dns", zap.String("ip", newIp.Value))
+
+					cfg.activeArps.Set(newIp.Value, &ActiveArp{
+						TargetIpRec: newIp,
+					})
 
 					// arp resolve newly discovered ip addresses
 					//go doArpRequest(db, &newIp, cfg.srcIfaceIp, cfg.srcIfaceHw, net.ParseIP(newIp.Value).To4(),
 					//	nil, cfg.handle, cfg.arpSenderC, cfg.activeArp, eWriters)
 					go func() {
 						cfg.arpSenderC <- SendArpCfg{
-							Handle:     args.handle,
-							Operation:  layers.ARPRequest,
-							SenderIp:   args.srcIfaceIp,
-							SenderHw:   args.srcIfaceHw,
-							TargetIp:   net.ParseIP(newIp.Value).To4(),
-							ReqTarget:  &newIp,
-							ReqRetries: maxArpRetries,
+							Handle:        args.handle,
+							Operation:     layers.ARPRequest,
+							SenderIp:      args.srcIfaceIp,
+							SenderHw:      args.srcIfaceHw,
+							TargetIp:      net.ParseIP(newIp.Value).To4(),
+							ReqCtx:        nil,
+							ReqMaxRetries: maxArpRetries,
 						}
 					}()
 				}
@@ -215,9 +215,8 @@ func handlePtrName(cfg Cfg, depth int, args handlePtrNameArgs[DoDnsCfg, ActiveAr
 				}
 
 				dArgs := DoDnsCfg{
-					SenderC: cfg.dnsSenderC,
-					Kind:    PtrDnsKind,
-					Target:  newIp.Value,
+					Kind:   PtrDnsKind,
+					Target: newIp.Value,
 					FailureF: func(e error) {
 						if err := SetPtrResolved(cfg.db, *args.ip); err != nil {
 							cfg.log.Error("failed to set ptr to resolved: %v", zap.Error(err))

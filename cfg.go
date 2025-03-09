@@ -12,15 +12,16 @@ import (
 
 type (
 	Cfg struct {
-		db         *sql.DB
-		ipNet      *net.IPNet
-		iface      *net.Interface
-		log        *zap.Logger
-		zap        *zap.Config
-		arpSenderC chan SendArpCfg
-		activeArps *LockMap[ActiveArp]
-		dnsSenderC chan DoDnsCfg
-		activeDns  *LockMap[DoDnsCfg]
+		db             *sql.DB
+		ipNet          *net.IPNet
+		iface          *net.Interface
+		log            *zap.Logger
+		zap            *zap.Config
+		arpSenderC     chan SendArpCfg
+		activeArps     *LockMap[ActiveArp]
+		dnsSenderC     chan DoDnsCfg
+		activeDns      *LockMap[DoDnsCfg]
+		dnsFailCounter *FailCounter
 	}
 )
 
@@ -99,6 +100,7 @@ func NewCfg(dsn string, ifaceName, ifaceAddr string, log *zap.Logger) (cfg Cfg, 
 	cfg.arpSenderC = make(chan SendArpCfg, 50)
 	cfg.activeArps = NewLockMap(make(map[string]*ActiveArp))
 	cfg.db, err = cfg.initDb(dsn)
+	cfg.dnsFailCounter = NewFailCounter(DnsMaxFailures)
 	return
 }
 

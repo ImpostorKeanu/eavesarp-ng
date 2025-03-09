@@ -56,7 +56,7 @@ func MainSniff(ctx context.Context, cfg Cfg, attackCh chan AttackSnacCfg) (err e
 						// retain first error
 						err = iErr
 					}
-					// call all cancel functions
+					// call all Cancel functions
 					sniffCancel()
 				}
 			}
@@ -114,7 +114,7 @@ func MainSniff(ctx context.Context, cfg Cfg, attackCh chan AttackSnacCfg) (err e
 
 		cfg.log.Info("starting dns sender routine")
 		go func() { // dns sender routine
-			died <- SenderServer(sniffCtx, cfg, dnsSleeper, cfg.dnsSenderC, SendDns)
+			died <- SenderServer(sniffCtx, cfg, dnsSleeper, cfg.dnsSenderC, ResolveDns)
 			wg.Done()
 		}()
 

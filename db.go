@@ -366,7 +366,7 @@ func GetOrCreate(db *sql.DB, args GoCArgs) (created bool, err error) {
 		}
 	}
 
-	// try the get query first
+	// reqTry the get query first
 	if err = GetRow(db, args.GetStmt, getValues, args.Outputs...); errors.Is(err, sql.ErrNoRows) {
 		// looks like it needs to be created
 		if err = GetRow(db, args.CreateStmt, createValues, args.Outputs...); err != nil {
