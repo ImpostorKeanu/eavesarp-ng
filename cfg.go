@@ -8,6 +8,7 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"net"
+	"sync"
 )
 
 type (
@@ -22,8 +23,70 @@ type (
 		dnsSenderC     chan DoDnsCfg
 		activeDns      *LockMap[DoDnsCfg]
 		dnsFailCounter *FailCounter
+		// aitmUpstreams maps the sender IP of an AITM attack to an upstream
+		// that will receive proxied connections, allowing us to use a single
+		// ProxyServer listening on a local port for multiple upstreams.
+		aitmUpstreams *LockMap[aitmUpstream]
+		// defaultAitmUpstream describes a TCP listener that will receive connections
+		// during an AITM attack that _without_ an AITM target.
+		//
+		// This allows us to complete the TCP connection and receive TCP segments
+		// and its data.
+		defaultAitmUpstream aitmUpstream
+		// aitmProxies tracks proxies by local socket.
+		//
+		// used to send traffic to upstream
+		// servers during an AITM attack.
+		aitmProxies *LockMap[aitmProxyRef]
+	}
+
+	// aitmUpstream has details necessary to contact the
+	// Upstream server during an AITM attack.
+	aitmUpstream struct {
+		addr net.Addr
+	}
+
+	// aitmProxyRef tracks the cancel function and count of
+	// references for a ProxyServer by local socket, allowing us
+	// to determine if any AITM attacks are using the server and
+	// if the ProxyServer can be stopped.
+	aitmProxyRef struct {
+		mu *sync.RWMutex
+		// cancel to be called once rC is zero.
+		cancel context.CancelFunc
+		// rC tracks the number of aitmUpstreams instances
+		// using this Upstream. Once at zero, the associated
+		// proxy listener can be shut down.
+		rC *refCounter
+	}
+
+	refCounter struct {
+		mu sync.RWMutex
+		c  int
 	}
 )
+
+func (a *refCounter) inc() {
+	a.mu.Lock()
+	a.c++
+	a.mu.Unlock()
+}
+
+func (a *refCounter) dec() (int, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.c == 0 {
+		return 0, errors.New("ref count is zero")
+	}
+	a.c--
+	return a.c, nil
+}
+
+func (a *refCounter) count() int {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.c
+}
 
 // NewLogger instantiates a Zap logger for the eavesarp_ng module.
 //
