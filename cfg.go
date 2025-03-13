@@ -64,6 +64,8 @@ func NewCfg(dsn string, ifaceName, ifaceAddr string, log *zap.Logger) (cfg Cfg, 
 	cfg.activeArps = NewLockMap(make(map[string]*ActiveArp))
 	cfg.db, err = cfg.initDb(dsn)
 	cfg.dnsFailCounter = NewFailCounter(DnsMaxFailures)
+	cfg.aitmUpstreams = NewLockMap(make(map[string]*proxyUpstream))
+	cfg.aitmProxies = NewLockMap(make(map[string]*proxyRef))
 	return
 }
 

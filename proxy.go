@@ -38,7 +38,7 @@ type (
 	// proxyUpstream has details necessary to contact the
 	// Upstream server during an AITM attack.
 	proxyUpstream struct {
-		addr net.Addr
+		addr net.IP
 	}
 
 	// proxyRef tracks the cancel function and count of
@@ -95,19 +95,19 @@ func (l *proxyListener) Accept() (_ net.Conn, err error) {
 		return
 	}
 	c.Upstream, err =
-	  net.Dial("tcp4", fmt.Sprintf("%s:%s", u.addr, lPort))
+	  net.Dial("tcp4", fmt.Sprintf("%s:%s", u.addr.To4().String(), lPort))
 
-	if c.Upstream != nil {
+	if err != nil {
+		c.Conn.Close()
 		c.Upstream.Close()
 	}
 
-	return
+	return c, err
 }
 
 // handle proxying a TCP connection.
-func (c *proxyConn) handle(ctx context.Context, decCh chan int) {
-	conCtx, cancel := context.WithCancel(ctx)
-	context.AfterFunc(conCtx, func() {
+func (c proxyConn) handle(ctx context.Context, decCh chan int) {
+	context.AfterFunc(ctx, func() {
 		// close connections
 		c.Conn.Close()
 		c.Upstream.Close()
@@ -118,8 +118,10 @@ func (c *proxyConn) handle(ctx context.Context, decCh chan int) {
 	//  will need to intercept
 
 	go io.Copy(c.Conn, c.Upstream) // put one side of the connection in routine
-	io.Copy(c.Upstream, c.Conn)    // block until one side of the connection dies
-	cancel()
+	// block until one side of the connection dies
+	if _, err := io.Copy(c.Upstream, c.Conn); err != nil {
+		// TODO handle the error
+	}
 }
 
 // handleRefCounter runs in a distinct routine and listens
@@ -146,10 +148,10 @@ func (s *ProxyServer) Serve(ctx context.Context, port int) (err error) {
 		return
 	}
 
-	// create a child context so that we can stop the
-	// control loop when an error occurs
-	var cancel context.CancelFunc
-	ctx, cancel = context.WithCancel(ctx)
+	context.AfterFunc(ctx, func() {
+		// TODO
+		l.Close()
+	})
 
 	conDeathCh := make(chan int) // used by connections to indicate death
 	killRefCh := make(chan int)  // used to tell the reference counter routine to die
@@ -161,7 +163,6 @@ ctrl:
 	for {
 		select {
 		case <-ctx.Done():
-			l.Close()
 			break ctrl
 		default:
 			//====================================
@@ -174,7 +175,6 @@ ctrl:
 				if !errors.Is(e, net.ErrClosed) {
 					err = e
 				}
-				cancel()
 				break
 			}
 			// increment the reference counter
@@ -184,7 +184,6 @@ ctrl:
 			go pC.handle(ctx, conDeathCh)
 		}
 	}
-	cancel()
 
 	// stop the routine used to watch for connection deaths
 	killRefCh <- 0
