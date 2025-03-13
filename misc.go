@@ -3,6 +3,8 @@ package eavesarp_ng
 import (
 	"errors"
 	"fmt"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 	"math"
 	"math/rand"
 	"strings"
@@ -72,7 +74,39 @@ type (
 	}
 
 	CtxKey string
+
+	// refCounter is used to track the number of items referencing
+	// a type instance.
+	refCounter struct {
+		mu sync.RWMutex
+		c  int
+	}
 )
+
+// inc Increments c.
+func (a *refCounter) inc() {
+	a.mu.Lock()
+	a.c++
+	a.mu.Unlock()
+}
+
+// dec decrements c.
+func (a *refCounter) dec() (int, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.c == 0 {
+		return 0, errors.New("ref count is zero")
+	}
+	a.c--
+	return a.c, nil
+}
+
+// count returns c.
+func (a *refCounter) count() int {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.c
+}
 
 func NewLockMap[T any](m map[string]*T) *LockMap[T] {
 	return &LockMap[T]{m: m}
@@ -211,4 +245,55 @@ func SplitConvoKey(v string) (senderIp string, targetIp string, err error) {
 // for use various eavesarp_ng functions and methods.
 func FmtDnsKey(target string, kind DnsRecordKind) string {
 	return fmt.Sprintf("%s%s%s", target, DnsKeyDelimiter, kind)
+}
+
+// NewLogger instantiates a Zap logger for the eavesarp_ng module.
+//
+// level is one of:
+//
+// - debug
+// - info
+// - warn
+// - error
+// - dpanic
+// - panic
+// - fatal
+//
+// outputPaths and errOutputPaths is file paths or URLs to write logs
+// to. Setting outputPaths to nil configures the logger to send non-error
+// records to stdout, and setting errOutputPaths to nil configures the
+// logger to send error records to stderr.
+func NewLogger(level string, outputPaths, errOutputPaths []string) (*zap.Logger, error) {
+
+	if outputPaths == nil {
+		outputPaths = []string{"stdout"}
+	}
+	if errOutputPaths == nil {
+		errOutputPaths = []string{"stderr"}
+	}
+
+	lvl, err := zap.ParseAtomicLevel(level)
+	if err != nil {
+		return nil, fmt.Errorf("error parsing log level: %v", err)
+	}
+
+	zapCfg := zap.Config{
+		Level:             lvl,
+		Development:       false,
+		DisableCaller:     false,
+		DisableStacktrace: false,
+		Sampling:          nil,
+		Encoding:          "json",
+		EncoderConfig: zapcore.EncoderConfig{
+			MessageKey:  "message",
+			LevelKey:    "level",
+			TimeKey:     "time",
+			EncodeLevel: zapcore.LowercaseLevelEncoder,
+			EncodeTime:  zapcore.ISO8601TimeEncoder,
+		},
+		OutputPaths:      outputPaths,
+		ErrorOutputPaths: errOutputPaths,
+	}
+
+	return zapCfg.Build()
 }

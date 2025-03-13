@@ -6,9 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
 	"net"
-	"sync"
 )
 
 type (
@@ -18,126 +16,28 @@ type (
 		iface          *net.Interface
 		log            *zap.Logger
 		zap            *zap.Config
-		arpSenderC     chan SendArpCfg
-		activeArps     *LockMap[ActiveArp]
-		dnsSenderC     chan DoDnsCfg
-		activeDns      *LockMap[DoDnsCfg]
-		dnsFailCounter *FailCounter
+		arpSenderC     chan SendArpCfg     // Sends ARP requests and responses to the ARP SenderServer routine.
+		activeArps     *LockMap[ActiveArp] // Track ARP ongoing requests.
+		dnsSenderC     chan DoDnsCfg       // Sends DNS requests to the DNS SenderServer routine.
+		activeDns      *LockMap[DoDnsCfg]  // Track ongoing DNS transactions.
+		dnsFailCounter *FailCounter        // Track DNS failures
 		// aitmUpstreams maps the sender IP of an AITM attack to an upstream
 		// that will receive proxied connections, allowing us to use a single
 		// ProxyServer listening on a local port for multiple upstreams.
-		aitmUpstreams *LockMap[aitmUpstream]
+		aitmUpstreams *LockMap[proxyUpstream]
 		// defaultAitmUpstream describes a TCP listener that will receive connections
 		// during an AITM attack that _without_ an AITM target.
 		//
 		// This allows us to complete the TCP connection and receive TCP segments
 		// and its data.
-		defaultAitmUpstream aitmUpstream
+		defaultAitmUpstream proxyUpstream
 		// aitmProxies tracks proxies by local socket.
 		//
 		// used to send traffic to upstream
 		// servers during an AITM attack.
-		aitmProxies *LockMap[aitmProxyRef]
-	}
-
-	// aitmUpstream has details necessary to contact the
-	// Upstream server during an AITM attack.
-	aitmUpstream struct {
-		addr net.Addr
-	}
-
-	// aitmProxyRef tracks the cancel function and count of
-	// references for a ProxyServer by local socket, allowing us
-	// to determine if any AITM attacks are using the server and
-	// if the ProxyServer can be stopped.
-	aitmProxyRef struct {
-		mu *sync.RWMutex
-		// cancel to be called once rC is zero.
-		cancel context.CancelFunc
-		// rC tracks the number of aitmUpstreams instances
-		// using this Upstream. Once at zero, the associated
-		// proxy listener can be shut down.
-		rC *refCounter
-	}
-
-	refCounter struct {
-		mu sync.RWMutex
-		c  int
+		aitmProxies *LockMap[proxyRef]
 	}
 )
-
-func (a *refCounter) inc() {
-	a.mu.Lock()
-	a.c++
-	a.mu.Unlock()
-}
-
-func (a *refCounter) dec() (int, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.c == 0 {
-		return 0, errors.New("ref count is zero")
-	}
-	a.c--
-	return a.c, nil
-}
-
-func (a *refCounter) count() int {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	return a.c
-}
-
-// NewLogger instantiates a Zap logger for the eavesarp_ng module.
-//
-// level is one of:
-//
-// - debug
-// - info
-// - warn
-// - error
-// - dpanic
-// - panic
-// - fatal
-//
-// outputPaths and errOutputPaths is file paths or URLs to write logs
-// to. Setting outputPaths to nil configures the logger to send non-error
-// records to stdout, and setting errOutputPaths to nil configures the
-// logger to send error records to stderr.
-func NewLogger(level string, outputPaths, errOutputPaths []string) (*zap.Logger, error) {
-
-	if outputPaths == nil {
-		outputPaths = []string{"stdout"}
-	}
-	if errOutputPaths == nil {
-		errOutputPaths = []string{"stderr"}
-	}
-
-	lvl, err := zap.ParseAtomicLevel(level)
-	if err != nil {
-		return nil, fmt.Errorf("error parsing log level: %v", err)
-	}
-
-	zapCfg := zap.Config{
-		Level:             lvl,
-		Development:       false,
-		DisableCaller:     false,
-		DisableStacktrace: false,
-		Sampling:          nil,
-		Encoding:          "json",
-		EncoderConfig: zapcore.EncoderConfig{
-			MessageKey:  "message",
-			LevelKey:    "level",
-			TimeKey:     "time",
-			EncodeLevel: zapcore.LowercaseLevelEncoder,
-			EncodeTime:  zapcore.ISO8601TimeEncoder,
-		},
-		OutputPaths:      outputPaths,
-		ErrorOutputPaths: errOutputPaths,
-	}
-
-	return zapCfg.Build()
-}
 
 // NewCfg creates a Cfg for various eavesarp_ng functions.
 //
