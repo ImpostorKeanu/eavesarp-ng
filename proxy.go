@@ -1,13 +1,33 @@
 package eavesarp_ng
 
 import (
+	"bufio"
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
+	"go.uber.org/zap"
 	"io"
+	"log"
 	"net"
 	"sync"
 )
+
+var (
+	tlsConfig *tls.Config
+	tlsCert   tls.Certificate
+)
+
+func init() {
+	var err error
+	if tlsCert, err = tls.LoadX509KeyPair("/tmp/cert.pem", "/tmp/key.pem"); err != nil {
+		log.Fatal(err)
+	}
+	tlsConfig = &tls.Config{
+		InsecureSkipVerify: true,
+		Certificates:       []tls.Certificate{tlsCert},
+	}
+}
 
 type (
 	// proxyListener provides configuration information to the
@@ -20,8 +40,27 @@ type (
 	// proxyConn maps the local connection to the upstream connection.
 	proxyConn struct {
 		net.Conn
-		Upstream net.Conn
+		peeker   *peekConn
+		upstream *upstreamConn
+		tlsConn  *tls.Conn
+		mu       sync.RWMutex
+		cfg      Cfg
 	}
+
+	peekConn struct {
+		net.Conn
+		buf *bufio.Reader
+	}
+
+	upstreamConn struct {
+		net.Conn
+		proxy *proxyConn
+	}
+
+	//peekConn struct {
+	//	net.Conn
+	//	parent *proxyConn
+	//}
 
 	// ProxyServer proxies TCP traffic to upstream servers during AITM
 	// attacks.
@@ -36,7 +75,7 @@ type (
 	}
 
 	// proxyUpstream has details necessary to contact the
-	// Upstream server during an AITM attack.
+	// upstream server during an AITM attack.
 	proxyUpstream struct {
 		addr net.IP
 	}
@@ -50,76 +89,159 @@ type (
 		// cancel to be called once rC is zero.
 		cancel context.CancelFunc
 		// rC tracks the number of aitmUpstreams instances
-		// using this Upstream. Once at zero, the associated
+		// using this upstream. Once at zero, the associated
 		// proxy listener can be shut down.
 		rC *refCounter
 	}
 )
+
+func (u *upstreamConn) Write(b []byte) (n int, err error) {
+	u.proxy.mu.RLock()
+	if u.proxy.tlsConn != nil {
+		u.Conn = tls.Client(u.Conn, &tls.Config{InsecureSkipVerify: false})
+	}
+	u.proxy.mu.RUnlock()
+	return u.Conn.Write(b)
+}
+
+func isHandshake(buf []byte) bool {
+	// TODO SSL is no longer supported by the tls package
+	//  may need to see about implementing it manually
+
+	// https://tls12.xargs.org/#client-hello/annotated
+	if len(buf) >= 2 && buf[0] == 0x16 && buf[1] == 0x03 {
+		return true
+	}
+	return false
+}
 
 func newProxyListener(cfg Cfg, port int) (*proxyListener, error) {
 	l, err := net.Listen("tcp4", fmt.Sprintf("%s:%d", cfg.ipNet.IP.String(), port))
 	return &proxyListener{Listener: l, cfg: cfg}, err
 }
 
+func (c *peekConn) Peek(n int) ([]byte, error) {
+	return c.buf.Peek(n)
+}
+
+func (c *peekConn) Read(b []byte) (n int, err error) {
+	return c.buf.Read(b)
+}
+
+func (c *peekConn) isHandshake() bool {
+	peek, err := c.Peek(5)
+	if err != nil {
+		// TODO handle error
+		return false
+	}
+	return isHandshake(peek)
+}
+
+func (c *proxyConn) Write(b []byte) (n int, err error) {
+	if c.tlsConn != nil {
+		return c.tlsConn.Write(b)
+	}
+	return c.Conn.Write(b)
+}
+
+func (c *proxyConn) Read(b []byte) (n int, err error) {
+
+	if c.tlsConn == nil && c.peeker.isHandshake() {
+
+		c.cfg.log.Debug("upgrading server connection to tls")
+		c.mu.Lock()
+		c.tlsConn = tls.Server(c.peeker, tlsConfig)
+		c.mu.Unlock()
+		if err = c.tlsConn.Handshake(); err != nil {
+			// TODO handle handshake error
+			c.cfg.log.Error("tls handshake failure", zap.Error(err))
+		}
+		return c.tlsConn.Read(b)
+
+	} else if c.tlsConn != nil {
+
+		return c.tlsConn.Read(b)
+
+	}
+
+	return c.peeker.Read(b)
+}
+
 // Accept calls net.Listener.Accept and establishes a connection with
 // the AITM upstream, returning an error when either step fails. Both
 // connections are closed if an error occurs.
-func (l *proxyListener) Accept() (_ net.Conn, err error) {
+func (l *proxyListener) Accept() (c *proxyConn, err error) {
 
 	//==========================
 	// ACCEPT INBOUND CONNECTION
 	//==========================
 
-	var c proxyConn
-	c.Conn, err = l.Listener.Accept()
+	c = &proxyConn{cfg: l.cfg}
+	c.Conn, err = l.Listener.Accept() // block until connection
 	if err != nil {
 		if c.Conn != nil {
 			c.Conn.Close()
 		}
 		return
 	}
+	c.peeker = &peekConn{Conn: c.Conn, buf: bufio.NewReader(c.Conn)}
 
 	//================================================
 	// ESTABLISH CONNECTION WITH UPSTREAM FOR PROXYING
 	//================================================
 
 	var (
-		rIp   string
-		lPort string
-		u     *proxyUpstream
+		cIp  string         // ip of client that initiated connection
+		port string         // port the proxy and upstream are listening on
+		u    *proxyUpstream // where to connect
 	)
-	rIp, _, err = net.SplitHostPort(c.RemoteAddr().String())
-	if u = l.cfg.aitmUpstreams.Get(rIp); u == nil {
+
+	// get ip of the client
+	cIp, _, err = net.SplitHostPort(c.RemoteAddr().String())
+
+	// get the upstream address set by the aitm config
+	if u = l.cfg.aitmUpstreams.Get(cIp); u == nil {
 		return c, errors.New("no aitm upstream for connection")
-	} else if _, lPort, err = net.SplitHostPort(c.LocalAddr().String()); err != nil {
+	}
+
+	// get the port of the local proxy server, which matches the listening
+	// port of the upstream server
+	if _, port, err = net.SplitHostPort(c.LocalAddr().String()); err != nil {
 		return
 	}
-	c.Upstream, err =
-	  net.Dial("tcp4", fmt.Sprintf("%s:%s", u.addr.To4().String(), lPort))
+
+	// connect to the upstream
+	c.upstream = &upstreamConn{
+		proxy: c,
+	}
+	c.upstream.Conn, err =
+	  net.Dial("tcp4", fmt.Sprintf("%s:%s", u.addr.To4().String(), port))
 
 	if err != nil {
-		c.Conn.Close()
-		c.Upstream.Close()
+		if c.Conn != nil {
+			c.Conn.Close()
+		}
 	}
 
 	return c, err
 }
 
 // handle proxying a TCP connection.
-func (c proxyConn) handle(ctx context.Context, decCh chan int) {
+func (c *proxyConn) handle(ctx context.Context, decCh chan int) {
 	context.AfterFunc(ctx, func() {
 		// close connections
-		c.Conn.Close()
-		c.Upstream.Close()
+		if c.Conn != nil {
+			c.Conn.Close()
+		}
+		if c.upstream != nil {
+			c.upstream.Close()
+		}
 		decCh <- 1 // tell ProxyServer that a connection has died
 	})
 
-	// TODO check ssl/tls magic number for connection establishment
-	//  will need to intercept
-
-	go io.Copy(c.Conn, c.Upstream) // put one side of the connection in routine
+	go io.Copy(c, c.upstream) // put one side of the connection in routine
 	// block until one side of the connection dies
-	if _, err := io.Copy(c.Upstream, c.Conn); err != nil {
+	if _, err := io.Copy(c.upstream, c); err != nil {
 		// TODO handle the error
 	}
 }
@@ -180,8 +302,8 @@ ctrl:
 			// increment the reference counter
 			s.refC.inc()
 			// handle the connection in a new routine
-			pC := c.(proxyConn)
-			go pC.handle(ctx, conDeathCh)
+			//pC := c.(*proxyConn)
+			go c.handle(ctx, conDeathCh)
 		}
 	}
 

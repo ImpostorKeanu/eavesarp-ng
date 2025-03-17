@@ -5,7 +5,6 @@ import (
 	"go.uber.org/zap"
 	"net"
 	"testing"
-	"time"
 )
 
 func TestProxyServer_Serve(t *testing.T) {
@@ -22,7 +21,8 @@ func TestProxyServer_Serve(t *testing.T) {
 
 	cfg.aitmUpstreams.Set("192.168.86.174", &proxyUpstream{addr: net.ParseIP("192.168.86.3").To4()})
 
-	ctx, cancel := context.WithTimeout(context.TODO(), 5*time.Second)
+	//ctx, cancel := context.WithTimeout(context.TODO(), 5*time.Second)
+	ctx := context.TODO()
 
 	tests := []struct {
 		name    string
@@ -43,5 +43,5 @@ func TestProxyServer_Serve(t *testing.T) {
 			}
 		})
 	}
-	cancel()
+	//cancel()
 }
