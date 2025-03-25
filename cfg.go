@@ -21,19 +21,19 @@ type (
 		dnsSenderC     chan DoDnsCfg       // Sends DNS requests to the DNS SenderServer routine.
 		activeDns      *LockMap[DoDnsCfg]  // Track ongoing DNS transactions.
 		dnsFailCounter *FailCounter        // Track DNS failures
-		// aitmUpstreams maps the sender IP of an AITM attack to an upstream
+		// aitmDownstreams maps the sender IP of an AITM attack to a downstream
 		// that will receive proxied connections, allowing us to use a single
-		// ProxyServer listening on a local port for multiple upstreams.
-		aitmUpstreams *LockMap[proxyUpstream]
-		// defaultAitmUpstream describes a TCP listener that will receive connections
+		// ProxyServer listening on a local port for multiple downstreams.
+		aitmDownstreams *LockMap[proxyDownstream]
+		// defaultAitmDownstream describes a TCP listener that will receive connections
 		// during an AITM attack that _without_ an AITM target.
 		//
 		// This allows us to complete the TCP connection and receive TCP segments
 		// and its data.
-		defaultAitmUpstream proxyUpstream
+		defaultAitmDownstream proxyDownstream
 		// aitmProxies tracks proxies by local socket.
 		//
-		// used to send traffic to upstream
+		// used to send traffic to downstream
 		// servers during an AITM attack.
 		aitmProxies *LockMap[proxyRef]
 	}
@@ -64,7 +64,7 @@ func NewCfg(dsn string, ifaceName, ifaceAddr string, log *zap.Logger) (cfg Cfg, 
 	cfg.activeArps = NewLockMap(make(map[string]*ActiveArp))
 	cfg.db, err = cfg.initDb(dsn)
 	cfg.dnsFailCounter = NewFailCounter(DnsMaxFailures)
-	cfg.aitmUpstreams = NewLockMap(make(map[string]*proxyUpstream))
+	cfg.aitmDownstreams = NewLockMap(make(map[string]*proxyDownstream))
 	cfg.aitmProxies = NewLockMap(make(map[string]*proxyRef))
 	return
 }

@@ -111,13 +111,13 @@ type (
 	// AitmOpt indicates a potential AITM opportunity discovered through
 	// DNS resolution, which occurs when a PTR record reveals an A record
 	// that resolves to a distinct IP address. This indicates that the host
-	// that was once assigned the SnacTargetIp has a new IP address, and
+	// that was once assigned the SNACTargetIP has a new IP address, and
 	// the expected service may be available for AITM by NAT techniques.
 	AitmOpt struct {
-		IsNew                    bool
-		SnacTargetIpId           int // Original IP
-		UpstreamIpId             int // IP that we should NAT traffic to
-		SnacTargetIp, UpstreamIp *Ip
+		IsNew                      bool
+		SNACTargetIPID             int // Original IP
+		DownstreamIPID             int // IP that we should NAT traffic to
+		SNACTargetIP, DownstreamIP *Ip
 	}
 
 	// Port records indicate ports and protocols observed during poisoning
@@ -190,14 +190,14 @@ func GetSnacs(db *sql.DB) (ips []Ip, err error) {
 	return
 }
 
-func GetOrCreateAitmOpt(db *sql.DB, snacTargetIpId, upstreamIpId int) (opt AitmOpt, err error) {
+func GetOrCreateAitmOpt(db *sql.DB, snacTargetIpId, downstreamIPID int) (opt AitmOpt, err error) {
 	opt.IsNew, err = GetOrCreate(db, GoCArgs{
-		GetStmt:      "SELECT * FROM aitm_opt WHERE snac_target_ip_id = ? AND upstream_ip_id = ?",
-		CreateStmt:   "INSERT INTO aitm_opt (snac_target_ip_id, upstream_ip_id) VALUES (?, ?) RETURNING *",
-		Params:       map[string]any{"snac_target_ip_id": snacTargetIpId, "upstream_ip_id": upstreamIpId},
-		GetParams:    []string{"snac_target_ip_id", "upstream_ip_id"},
-		CreateParams: []string{"snac_target_ip_id", "upstream_ip_id"},
-		Outputs:      []any{&opt.SnacTargetIpId, &opt.SnacTargetIpId},
+		GetStmt:      "SELECT * FROM aitm_opt WHERE snac_target_ip_id = ? AND downstream_ip_id = ?",
+		CreateStmt:   "INSERT INTO aitm_opt (snac_target_ip_id, downstream_ip_id) VALUES (?, ?) RETURNING *",
+		Params:       map[string]any{"snac_target_ip_id": snacTargetIpId, "downstream_ip_id": downstreamIPID},
+		GetParams:    []string{"snac_target_ip_id", "downstream_ip_id"},
+		CreateParams: []string{"snac_target_ip_id", "downstream_ip_id"},
+		Outputs:      []any{&opt.SNACTargetIPID, &opt.SNACTargetIPID},
 	})
 	return
 }

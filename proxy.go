@@ -37,14 +37,14 @@ type (
 		cfg Cfg
 	}
 
-	// proxyConn maps the local connection to the upstream connection.
+	// proxyConn maps the local connection to the downstream connection.
 	proxyConn struct {
 		net.Conn
-		peeker   *peekConn
-		upstream *upstreamConn
-		tlsConn  *tls.Conn
-		mu       sync.RWMutex
-		cfg      Cfg
+		peeker     *peekConn
+		downstream *downstreamConn
+		tlsConn    *tls.Conn
+		mu         sync.RWMutex
+		cfg        Cfg
 	}
 
 	peekConn struct {
@@ -52,7 +52,7 @@ type (
 		buf *bufio.Reader
 	}
 
-	upstreamConn struct {
+	downstreamConn struct {
 		net.Conn
 		proxy *proxyConn
 	}
@@ -62,7 +62,7 @@ type (
 	//	parent *proxyConn
 	//}
 
-	// ProxyServer proxies TCP traffic to upstream servers during AITM
+	// ProxyServer proxies TCP traffic to downstream servers during AITM
 	// attacks.
 	ProxyServer struct {
 		// cfg is used to obtain the proper listening address the
@@ -74,9 +74,9 @@ type (
 		refC refCounter
 	}
 
-	// proxyUpstream has details necessary to contact the
-	// upstream server during an AITM attack.
-	proxyUpstream struct {
+	// proxyDownstream has details necessary to contact the
+	// downstream server during an AITM attack.
+	proxyDownstream struct {
 		addr net.IP
 	}
 
@@ -88,14 +88,14 @@ type (
 		mu *sync.RWMutex
 		// cancel to be called once rC is zero.
 		cancel context.CancelFunc
-		// rC tracks the number of aitmUpstreams instances
-		// using this upstream. Once at zero, the associated
+		// rC tracks the number of aitmDownstreams instances
+		// using this downstream. Once at zero, the associated
 		// proxy listener can be shut down.
 		rC *refCounter
 	}
 )
 
-func (u *upstreamConn) Write(b []byte) (n int, err error) {
+func (u *downstreamConn) Write(b []byte) (n int, err error) {
 	u.proxy.mu.RLock()
 	if u.proxy.tlsConn != nil {
 		u.Conn = tls.Client(u.Conn, &tls.Config{InsecureSkipVerify: false})
@@ -168,7 +168,7 @@ func (c *proxyConn) Read(b []byte) (n int, err error) {
 }
 
 // Accept calls net.Listener.Accept and establishes a connection with
-// the AITM upstream, returning an error when either step fails. Both
+// the AITM downstream, returning an error when either step fails. Both
 // connections are closed if an error occurs.
 func (l *proxyListener) Accept() (c *proxyConn, err error) {
 
@@ -186,35 +186,35 @@ func (l *proxyListener) Accept() (c *proxyConn, err error) {
 	}
 	c.peeker = &peekConn{Conn: c.Conn, buf: bufio.NewReader(c.Conn)}
 
-	//================================================
-	// ESTABLISH CONNECTION WITH UPSTREAM FOR PROXYING
-	//================================================
+	//==================================================
+	// ESTABLISH CONNECTION WITH DOWNSTREAM FOR PROXYING
+	//==================================================
 
 	var (
-		cIp  string         // ip of client that initiated connection
-		port string         // port the proxy and upstream are listening on
-		u    *proxyUpstream // where to connect
+		cIp  string           // ip of client that initiated connection
+		port string           // port the proxy and downstream are listening on
+		u    *proxyDownstream // where to connect
 	)
 
 	// get ip of the client
 	cIp, _, err = net.SplitHostPort(c.RemoteAddr().String())
 
-	// get the upstream address set by the aitm config
-	if u = l.cfg.aitmUpstreams.Get(cIp); u == nil {
-		return c, errors.New("no aitm upstream for connection")
+	// get the downstream address set by the aitm config
+	if u = l.cfg.aitmDownstreams.Get(cIp); u == nil {
+		return c, errors.New("no aitm downstream for connection")
 	}
 
 	// get the port of the local proxy server, which matches the listening
-	// port of the upstream server
+	// port of the downstream server
 	if _, port, err = net.SplitHostPort(c.LocalAddr().String()); err != nil {
 		return
 	}
 
-	// connect to the upstream
-	c.upstream = &upstreamConn{
+	// connect to the downstream
+	c.downstream = &downstreamConn{
 		proxy: c,
 	}
-	c.upstream.Conn, err =
+	c.downstream.Conn, err =
 	  net.Dial("tcp4", fmt.Sprintf("%s:%s", u.addr.To4().String(), port))
 
 	if err != nil {
@@ -233,15 +233,15 @@ func (c *proxyConn) handle(ctx context.Context, decCh chan int) {
 		if c.Conn != nil {
 			c.Conn.Close()
 		}
-		if c.upstream != nil {
-			c.upstream.Close()
+		if c.downstream != nil {
+			c.downstream.Close()
 		}
 		decCh <- 1 // tell ProxyServer that a connection has died
 	})
 
-	go io.Copy(c, c.upstream) // put one side of the connection in routine
+	go io.Copy(c, c.downstream) // put one side of the connection in routine
 	// block until one side of the connection dies
-	if _, err := io.Copy(c.upstream, c); err != nil {
+	if _, err := io.Copy(c.downstream, c); err != nil {
 		// TODO handle the error
 	}
 }

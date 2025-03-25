@@ -93,8 +93,8 @@ the same services desired by the client.
  */
 CREATE TABLE IF NOT EXISTS aitm_opt(
     snac_target_ip_id INTEGER NOT NULL REFERENCES ip(id) ON DELETE CASCADE,
-    upstream_ip_id INTEGER NOT NULL REFERENCES ip(id) ON DELETE CASCADE,
-    CONSTRAINT aitm_opt_comp_keys PRIMARY KEY (snac_target_ip_id, upstream_ip_id));
+    downstream_ip_id INTEGER NOT NULL REFERENCES ip(id) ON DELETE CASCADE,
+    CONSTRAINT aitm_opt_comp_keys PRIMARY KEY (snac_target_ip_id, downstream_ip_id));
 
 -- number of times senders resolve targets
 CREATE TABLE IF NOT EXISTS arp_count(

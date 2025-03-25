@@ -19,7 +19,7 @@ func TestProxyServer_Serve(t *testing.T) {
 	logger := zap.NewExample()
 	cfg, _ := NewCfg("/tmp/junk", "enp13s0", "192.168.86.174", logger)
 
-	cfg.aitmUpstreams.Set("192.168.86.174", &proxyUpstream{addr: net.ParseIP("192.168.86.3").To4()})
+	cfg.aitmDownstreams.Set("192.168.86.174", &proxyDownstream{addr: net.ParseIP("192.168.86.3").To4()})
 
 	//ctx, cancel := context.WithTimeout(context.TODO(), 5*time.Second)
 	ctx := context.TODO()

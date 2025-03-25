@@ -38,11 +38,11 @@ WHERE attack.sender_ip_id = ? AND attack.target_ip_id = ?
 ORDER BY port.number;
 `
 	snacAitmQuery = `
-SELECT snac_ip.value AS snac_ip, upstream_ip.value AS upstream_ip, dns_name.value AS forward_dns_name
+SELECT snac_ip.value AS snac_ip, downstream_ip.value AS downstream_ip, dns_name.value AS forward_dns_name
 FROM aitm_opt
 INNER JOIN ip AS snac_ip ON snac_ip.Id = aitm_opt.snac_target_ip_id
-INNER JOIN ip AS upstream_ip ON upstream_ip.Id = aitm_opt.upstream_ip_id
-LEFT JOIN dns_record ON dns_record.ip_id = aitm_opt.upstream_ip_id AND dns_record.kind = 'a'
+INNER JOIN ip AS downstream_ip ON downstream_ip.Id = aitm_opt.downstream_ip_id
+LEFT JOIN dns_record ON dns_record.ip_id = aitm_opt.downstream_ip_id AND dns_record.kind = 'a'
 LEFT JOIN dns_name ON dns_name.Id = dns_record.dns_name_id
 WHERE aitm_opt.snac_target_ip_id = ?;
 `
@@ -407,12 +407,12 @@ func (c *CurConvoPane) getContent(curConvoRow CurConvoRowDetails) (err error) {
 
 	head := "AITM Opts"
 	for rows.Next() {
-		var snacIp, upstreamIp, forwardDnsName string
-		if err = rows.Scan(&snacIp, &upstreamIp, &forwardDnsName); err != nil {
+		var snacIp, downstreamIP, forwardDnsName string
+		if err = rows.Scan(&snacIp, &downstreamIP, &forwardDnsName); err != nil {
 			err = fmt.Errorf("failed to read aitm row: %w", err)
 			return
 		}
-		tblRows = append(tblRows, table.Row{head, "", fmt.Sprintf("%s (%s)", upstreamIp, forwardDnsName)})
+		tblRows = append(tblRows, table.Row{head, "", fmt.Sprintf("%s (%s)", downstreamIP, forwardDnsName)})
 		if head != "" {
 			head = ""
 		}
