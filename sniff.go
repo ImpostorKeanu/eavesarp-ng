@@ -39,7 +39,7 @@ func MainSniff(ctx context.Context, cfg Cfg, attackCh chan AttackSnacCfg) (err e
 
 		died := make(chan error)  // to listen for routine death
 		errCh := make(chan error) // child routines send errors over this
-		wg := sync.WaitGroup{}    // to watch for completion of 4 key child routines
+		wg := sync.WaitGroup{}    // to watch for completion of 4 md5 child routines
 		wg.Add(4)
 
 		go func() { // watch for child routine death/errors

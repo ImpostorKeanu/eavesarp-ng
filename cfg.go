@@ -2,9 +2,11 @@ package eavesarp_ng
 
 import (
 	"context"
+	"crypto/tls"
 	"database/sql"
 	"errors"
 	"fmt"
+	gs "github.com/impostorkeanu/gosplit"
 	"go.uber.org/zap"
 	"net"
 )
@@ -15,29 +17,48 @@ type (
 		ipNet          *net.IPNet
 		iface          *net.Interface
 		log            *zap.Logger
-		zap            *zap.Config
+		errC           chan error          // Channel to communicate errors to other applications
 		arpSenderC     chan SendArpCfg     // Sends ARP requests and responses to the ARP SenderServer routine.
 		activeArps     *LockMap[ActiveArp] // Track ARP ongoing requests.
 		dnsSenderC     chan DoDnsCfg       // Sends DNS requests to the DNS SenderServer routine.
 		activeDns      *LockMap[DoDnsCfg]  // Track ongoing DNS transactions.
 		dnsFailCounter *FailCounter        // Track DNS failures
-		// aitmDownstreams maps the sender IP of an AITM attack to a downstream
+		tls            tlsCfgFields
+		aitm           aitmCfgFields
+	}
+
+	tlsCfgFields struct {
+		keygen *gs.RSAPrivKeyGenerator
+	}
+
+	aitmCfgFields struct {
+		// downstreams maps the sender IP of an AITM attack to a downstream
 		// that will receive proxied connections, allowing us to use a single
 		// ProxyServer listening on a local port for multiple downstreams.
-		aitmDownstreams *LockMap[proxyDownstream]
-		// defaultAitmDownstream describes a TCP listener that will receive connections
-		// during an AITM attack that _without_ an AITM target.
+		downstreams *LockMap[proxyDownstream]
+		// defDownstream describes a TCP listener that will receive connections
+		// during an AITM attack that _without_ an AITM target. This allows us to complete
+		// the TCP connection and receive TCP segments even when an attack is not
+		// configured with a downstream.
+		defDownstream *proxyDownstream
+		// proxies tracks proxies by local socket.
 		//
-		// This allows us to complete the TCP connection and receive TCP segments
-		// and its data.
-		defaultAitmDownstream proxyDownstream
-		// aitmProxies tracks proxies by local socket.
-		//
-		// used to send traffic to downstream
-		// servers during an AITM attack.
-		aitmProxies *LockMap[proxyRef]
+		// Used to send traffic to downstream servers during an AITM attack.
+		proxies *LockMap[proxyRef]
+
+		defTCPServerCancel context.CancelFunc
+	}
+
+	// proxyDownstream has details necessary to contact the
+	// downstream server during an AITM attack.
+	proxyDownstream struct {
+		ip, port string
 	}
 )
+
+func (cfg *Cfg) Err() <-chan error {
+	return cfg.errC
+}
 
 // NewCfg creates a Cfg for various eavesarp_ng functions.
 //
@@ -49,23 +70,88 @@ type (
 // address should be used.
 //
 // log enables logging. See NewLogger.
-func NewCfg(dsn string, ifaceName, ifaceAddr string, log *zap.Logger) (cfg Cfg, err error) {
+func NewCfg(dsn string, ifaceName, ifaceAddr string, log *zap.Logger, opts ...any) (cfg Cfg, err error) {
+
+	// require a logger
 	if log == nil {
 		err = errors.New("nil logger")
 		return
 	}
 	cfg.log = log
+
+	cfg.errC = make(chan error, 1) // channel to communicate errors
 	if err = cfg.getInterface(ifaceName, ifaceAddr); err != nil {
 		return
 	}
+
 	cfg.dnsSenderC = make(chan DoDnsCfg, 50)
 	cfg.activeDns = NewLockMap(make(map[string]*DoDnsCfg))
+
 	cfg.arpSenderC = make(chan SendArpCfg, 50)
 	cfg.activeArps = NewLockMap(make(map[string]*ActiveArp))
+
 	cfg.db, err = cfg.initDb(dsn)
 	cfg.dnsFailCounter = NewFailCounter(DnsMaxFailures)
-	cfg.aitmDownstreams = NewLockMap(make(map[string]*proxyDownstream))
-	cfg.aitmProxies = NewLockMap(make(map[string]*proxyRef))
+
+	cfg.aitm.downstreams = NewLockMap(make(map[string]*proxyDownstream))
+	cfg.aitm.proxies = NewLockMap(make(map[string]*proxyRef))
+
+	cfg.tls.keygen = &gs.RSAPrivKeyGenerator{}
+	if err = cfg.tls.keygen.Start(2048); err != nil {
+		return
+	}
+
+	for _, opt := range opts {
+		switch v := opt.(type) {
+		case DefaultTCPServerOpts:
+			err = cfg.StartDefaultTCPServer(&v)
+		}
+	}
+
+	return
+}
+
+// StartDefaultTCPServer starts a TLS aware TCP server that will act as a downstream
+// for incoming connections for spoofing attacks that do not have a downstream
+// configured. This ensures that all TCP connections can complete and send packets.
+func (cfg *Cfg) StartDefaultTCPServer(opts *DefaultTCPServerOpts) (err error) {
+
+	//=========================
+	// START DEFAULT TCP SERVER
+	//=========================
+	// - catches all TCP connections when a poisoning attack doesn't
+	//   have a downstream configured
+
+	if opts.Addr == "" {
+		opts.Addr = "127.0.0.1:0"
+	}
+
+	// start a listener on a random port for the default tcp server
+	var defTCPL net.Listener
+	defTCPL, err = net.Listen("tcp4", opts.Addr)
+	if err != nil {
+		cfg.log.Error("failed to start default tcp server", zap.Error(err))
+		return
+	}
+	opts.Addr = defTCPL.Addr().String()
+	cfg.log.Info("default tcp server listener started", zap.String("address", opts.Addr))
+
+	// capture listener the address
+	cfg.aitm.defDownstream = &proxyDownstream{}
+	cfg.aitm.defDownstream.ip, cfg.aitm.defDownstream.ip, _ = net.SplitHostPort(defTCPL.Addr().String())
+
+	// start the tcp server in a distinct routine
+	defCtx, cancel := context.WithCancel(context.Background())
+	go func() {
+		cfg.log.Debug("default tcp server accepting connections", zap.String("address", opts.Addr))
+		e := ServeDefaultTCP(defCtx, defTCPL, cfg, *opts)
+		if e != nil {
+			cfg.log.Error("default tcp server error", zap.Error(e))
+			cancel()
+			cfg.errC <- e
+		}
+	}()
+
 	return
 }
 
@@ -78,8 +164,15 @@ func (cfg *Cfg) Shutdown() {
 	if cfg.db != nil {
 		cfg.db.Close()
 	}
+	if cfg.aitm.defTCPServerCancel != nil {
+		cfg.aitm.defTCPServerCancel()
+	}
+	if cfg.tls.keygen != nil {
+		cfg.tls.keygen.Stop()
+	}
 	close(cfg.arpSenderC)
 	close(cfg.dnsSenderC)
+	close(cfg.errC)
 }
 
 func (cfg *Cfg) initDb(dsn string) (db *sql.DB, err error) {
@@ -148,4 +241,56 @@ func (cfg *Cfg) getInterface(name string, addr string) (err error) {
 	}
 
 	return
+}
+
+//==========================
+// GoSplit INTERFACE METHODS
+//==========================
+
+func (cfg *Cfg) RecvListenerAddr(addr gs.ProxyListenerAddr) {
+	if cfg.aitm.defDownstream != nil {
+		return
+	}
+	cfg.aitm.defDownstream = &proxyDownstream{ip: addr.IP, port: addr.Port}
+	cfg.aitm.downstreams.Set("default", cfg.aitm.defDownstream)
+}
+
+func (cfg *Cfg) RecvConnStart(i gs.ConnInfo) {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (cfg *Cfg) RecvConnEnd(i gs.ConnInfo) {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (cfg *Cfg) RecvVictimData(i gs.ConnInfo, b []byte) {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (cfg *Cfg) RecvDownstreamData(i gs.ConnInfo, b []byte) {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (cfg *Cfg) RecvLog(r gs.LogRecord) {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (cfg *Cfg) GetProxyTLSConfig(proxyA gs.ProxyAddr, vicA gs.VictimAddr) (*tls.Config, error) {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (cfg *Cfg) GetDownstreamAddr(proxyA gs.ProxyAddr, vicA gs.VictimAddr) (ip string, port string, err error) {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (cfg *Cfg) GetDownstreamTLSConfig(proxyA gs.ProxyAddr, vicA gs.VictimAddr) (*tls.Config, error) {
+	//TODO implement me
+	panic("implement me")
 }

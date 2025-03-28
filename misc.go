@@ -65,7 +65,7 @@ type (
 	}
 
 	// ConvoLockMap is LockMap with additional methods that act on the
-	// key, which is typically in the form of `{SenderIP}:{TargetIP}`.
+	// md5, which is typically in the form of `{SenderIP}:{TargetIP}`.
 	// Methods prefixed with `C` are effectively aliases to standard
 	// LockMap methods, except they receive individual arguments for
 	// the sender and target IP addresses.
@@ -229,7 +229,7 @@ func FmtConvoKey(senderIp, targetIp string) string {
 	return fmt.Sprintf("%s%s%s", senderIp, ConversationKeyDelimiter, targetIp)
 }
 
-// SplitConvoKey breaks apart the conversation key and returns the
+// SplitConvoKey breaks apart the conversation md5 and returns the
 // sender and target IP values.
 func SplitConvoKey(v string) (senderIp string, targetIp string, err error) {
 	s := strings.Split(v, ConversationKeyDelimiter)
