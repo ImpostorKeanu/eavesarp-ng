@@ -108,13 +108,13 @@ func MainSniff(ctx context.Context, cfg Cfg, attackCh chan AttackSnacCfg) (err e
 
 		cfg.log.Info("starting arp sender routine")
 		go func() { // arp sender routine
-			died <- SenderServer(sniffCtx, cfg, arpSleeper, cfg.arpSenderC, SendArp)
+			died <- SenderServer(sniffCtx, cfg, arpSleeper, cfg.arp.ch, SendArp)
 			wg.Done()
 		}()
 
 		cfg.log.Info("starting dns sender routine")
 		go func() { // dns sender routine
-			died <- SenderServer(sniffCtx, cfg, dnsSleeper, cfg.dnsSenderC, ResolveDns)
+			died <- SenderServer(sniffCtx, cfg, dnsSleeper, cfg.dns.ch, ResolveDns)
 			wg.Done()
 		}()
 
@@ -340,7 +340,7 @@ func AttackSnac(ctx context.Context, cfg Cfg, senIp net.IP, tarIp net.IP,
 			if arp := GetArpLayer(packet); arp != nil && arp.Operation == layers.ARPRequest {
 				cfg.log.Debug("poisoning sender arp table", logFields...)
 				// Respond with our MAC
-				cfg.arpSenderC <- SendArpCfg{
+				cfg.arp.ch <- SendArpCfg{
 					Handle:    wHandle,
 					Operation: layers.ARPReply,
 					SenderHw:  cfg.iface.HardwareAddr,

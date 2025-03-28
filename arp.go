@@ -128,7 +128,7 @@ func SendArp(cfg Cfg, sA SendArpCfg) (err error) {
 			arpDstHw = net.HardwareAddr{0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
 		}
 
-		aa := cfg.activeArps.Get(sA.TargetIp.String())
+		aa := cfg.arp.active.Get(sA.TargetIp.String())
 		if aa == nil {
 			err = errors.New("active arp record not found")
 			cfg.log.Error("failed to find active arp record", zap.Error(err))
@@ -171,7 +171,7 @@ func SendArp(cfg Cfg, sA SendArpCfg) (err error) {
 			if err := SetArpResolved(cfg.db, aa.TargetIpRec.Id); err != nil {
 				cfg.log.Error("failed to set arp as resolved for ip", logFields...)
 			}
-			cfg.activeArps.Delete(aa.TargetIpRec.Value)
+			cfg.arp.active.Delete(aa.TargetIpRec.Value)
 		})
 	}
 
@@ -293,17 +293,17 @@ func handleWatchArpPacket(cfg Cfg, handle *pcap.Handle, packet gopacket.Packet) 
 		// DO ARP RESOLUTION
 		//==================
 
-		if tarIp.MacId == nil && !tarIp.ArpResolved && cfg.activeArps.Get(tarIp.Value) == nil {
+		if tarIp.MacId == nil && !tarIp.ArpResolved && cfg.arp.active.Get(tarIp.Value) == nil {
 
 			// SendArp will set ctx and Cancel
 			// - We set this here to avoid duplicate resolution attempts, but
 			//   let SendArp set the timeout to avoid race conditions
-			cfg.activeArps.Set(tarIp.Value, &ActiveArp{
+			cfg.arp.active.Set(tarIp.Value, &ActiveArp{
 				TargetIpRec: *tarIp,
 			})
 
 			go func() {
-				cfg.arpSenderC <- SendArpCfg{
+				cfg.arp.ch <- SendArpCfg{
 					Handle:        handle,
 					Operation:     layers.ARPRequest,
 					SenderHw:      cfg.iface.HardwareAddr,
@@ -321,14 +321,14 @@ func handleWatchArpPacket(cfg Cfg, handle *pcap.Handle, packet gopacket.Packet) 
 		//===================
 
 		// skip name resolution AfterF excess failures
-		if cfg.dnsFailCounter.Exceeded() {
+		if cfg.dns.failCount.Exceeded() {
 			return
 		}
 
 		// determine which ips to reverse resolve
 		var toResolve []*Ip
 		for _, ip := range []*Ip{senIp, tarIp} {
-			if !ip.PtrResolved && cfg.activeDns.Get(FmtDnsKey(ip.Value, PtrDnsKind)) == nil {
+			if !ip.PtrResolved && cfg.dns.active.Get(FmtDnsKey(ip.Value, PtrDnsKind)) == nil {
 				cfg.log.Info("reverse dns resolving", zap.String("ip", ip.Value))
 				toResolve = append(toResolve, ip)
 			}
@@ -346,15 +346,15 @@ func handleWatchArpPacket(cfg Cfg, handle *pcap.Handle, packet gopacket.Packet) 
 					Target: ip.Value,
 					FailureF: func(e error) {
 						if err := SetPtrResolved(cfg.db, *ip); err != nil {
-							cfg.activeDns.Delete(FmtDnsKey(ip.Value, PtrDnsKind))
+							cfg.dns.active.Delete(FmtDnsKey(ip.Value, PtrDnsKind))
 							cfg.log.Error("failed to set ptr to resolved", zap.String("ip", ip.Value), zap.Error(err))
 							return
 						}
-						cfg.activeDns.Delete(FmtDnsKey(ip.Value, PtrDnsKind))
+						cfg.dns.active.Delete(FmtDnsKey(ip.Value, PtrDnsKind))
 					},
 					AfterF: func(names []string) {
 						if err := SetPtrResolved(cfg.db, *ip); err != nil {
-							cfg.activeDns.Delete(FmtDnsKey(ip.Value, PtrDnsKind))
+							cfg.dns.active.Delete(FmtDnsKey(ip.Value, PtrDnsKind))
 							cfg.log.Error("failed to set ptr to resolved", zap.String("ip", ip.Value), zap.Error(err))
 							return
 						}
@@ -368,11 +368,11 @@ func handleWatchArpPacket(cfg Cfg, handle *pcap.Handle, packet gopacket.Packet) 
 								handle:     handle,
 							})
 						}
-						cfg.activeDns.Delete(FmtDnsKey(ip.Value, PtrDnsKind))
+						cfg.dns.active.Delete(FmtDnsKey(ip.Value, PtrDnsKind))
 					},
 				}
-				cfg.activeDns.Set(FmtDnsKey(ip.Value, PtrDnsKind), &dArgs)
-				cfg.dnsSenderC <- dArgs
+				cfg.dns.active.Set(FmtDnsKey(ip.Value, PtrDnsKind), &dArgs)
+				cfg.dns.ch <- dArgs
 			}
 		}()
 
@@ -384,7 +384,7 @@ func handleWatchArpPacket(cfg Cfg, handle *pcap.Handle, packet gopacket.Packet) 
 
 		var srcIp *Ip
 		var srcMac *Mac
-		if aa := cfg.activeArps.Get(sAddrs.SenIp); aa != nil {
+		if aa := cfg.arp.active.Get(sAddrs.SenIp); aa != nil {
 			if aa.Cancel != nil {
 				aa.Cancel()
 			}

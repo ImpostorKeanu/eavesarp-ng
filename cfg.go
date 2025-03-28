@@ -13,24 +13,37 @@ import (
 
 type (
 	Cfg struct {
-		db             *sql.DB
-		ipNet          *net.IPNet
-		iface          *net.Interface
-		log            *zap.Logger
-		errC           chan error          // Channel to communicate errors to other applications
-		arpSenderC     chan SendArpCfg     // Sends ARP requests and responses to the ARP SenderServer routine.
-		activeArps     *LockMap[ActiveArp] // Track ARP ongoing requests.
-		dnsSenderC     chan DoDnsCfg       // Sends DNS requests to the DNS SenderServer routine.
-		activeDns      *LockMap[DoDnsCfg]  // Track ongoing DNS transactions.
-		dnsFailCounter *FailCounter        // Track DNS failures
-		tls            tlsCfgFields
-		aitm           aitmCfgFields
+		db    *sql.DB
+		ipNet *net.IPNet
+		iface *net.Interface
+		log   *zap.Logger
+		errC  chan error // Channel to communicate errors to other applications
+		arp   arpCfgFields
+		dns   dnsCfgFields
+		tls   tlsCfgFields
+		aitm  aitmCfgFields
 	}
 
+	// arpCfgFields defines configuration fields related to ARP.
+	arpCfgFields struct {
+		ch     chan SendArpCfg     // channel used to initiate arp requests
+		active *LockMap[ActiveArp] // active arp requests
+	}
+
+	// dnsCfgFields defines configuration fields related to DNS.
+	dnsCfgFields struct {
+		ch        chan DoDnsCfg      // channel used to initiate dns queries
+		active    *LockMap[DoDnsCfg] // active dns queries
+		failCount *FailCounter       // count of failed dns queries
+	}
+
+	// tlsCfgFields defines configuration fields related to TLS.
 	tlsCfgFields struct {
-		keygen *gs.RSAPrivKeyGenerator
+		cache  *TLSCertCache
+		keygen *gs.RSAPrivKeyGenerator // private key generator
 	}
 
+	// aitmCfgFields defines configuration fields related to AITM.
 	aitmCfgFields struct {
 		// downstreams maps the sender IP of an AITM attack to a downstream
 		// that will receive proxied connections, allowing us to use a single
@@ -84,18 +97,19 @@ func NewCfg(dsn string, ifaceName, ifaceAddr string, log *zap.Logger, opts ...an
 		return
 	}
 
-	cfg.dnsSenderC = make(chan DoDnsCfg, 50)
-	cfg.activeDns = NewLockMap(make(map[string]*DoDnsCfg))
+	cfg.dns.ch = make(chan DoDnsCfg, 50)
+	cfg.dns.active = NewLockMap(make(map[string]*DoDnsCfg))
 
-	cfg.arpSenderC = make(chan SendArpCfg, 50)
-	cfg.activeArps = NewLockMap(make(map[string]*ActiveArp))
+	cfg.arp.ch = make(chan SendArpCfg, 50)
+	cfg.arp.active = NewLockMap(make(map[string]*ActiveArp))
 
 	cfg.db, err = cfg.initDb(dsn)
-	cfg.dnsFailCounter = NewFailCounter(DnsMaxFailures)
+	cfg.dns.failCount = NewFailCounter(DnsMaxFailures)
 
 	cfg.aitm.downstreams = NewLockMap(make(map[string]*proxyDownstream))
 	cfg.aitm.proxies = NewLockMap(make(map[string]*proxyRef))
 
+	cfg.tls.cache = &TLSCertCache{cfg: cfg}
 	cfg.tls.keygen = &gs.RSAPrivKeyGenerator{}
 	if err = cfg.tls.keygen.Start(2048); err != nil {
 		return
@@ -170,8 +184,8 @@ func (cfg *Cfg) Shutdown() {
 	if cfg.tls.keygen != nil {
 		cfg.tls.keygen.Stop()
 	}
-	close(cfg.arpSenderC)
-	close(cfg.dnsSenderC)
+	close(cfg.arp.ch)
+	close(cfg.dns.ch)
 	close(cfg.errC)
 }
 

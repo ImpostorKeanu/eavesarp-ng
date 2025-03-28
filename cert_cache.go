@@ -15,13 +15,17 @@ import (
 	"sync"
 )
 
+var (
+	randAlpha []string // used for random value generation
+)
+
 type (
 
-	// CertCache is a map that serves as a grow-only cache, i.e.,
+	// TLSCertCache is a map that serves as a grow-only cache, i.e.,
 	// once a certificate is cached, it exists forever.
 	//
 	// Keys are of type CertCacheKey.
-	CertCache struct {
+	TLSCertCache struct {
 		sync.Map
 		cfg Cfg
 	}
@@ -37,25 +41,21 @@ type (
 	}
 )
 
-var (
-	alphabet []string // used for random value generation
-)
-
 func init() {
-	// populate alphabet with all upper and lowercase letters
+	// populate randAlpha with all upper and lowercase letters
 	for _, s := range [][]rune{{'a', 'z'}, {'A', 'Z'}, {'0', '9'}} {
 		for l := s[0]; l <= s[1]; l++ {
-			alphabet = append(alphabet, string(l))
+			randAlpha = append(randAlpha, string(l))
 		}
 	}
 }
 
 func randLetter() (l string, err error) {
 	var i *big.Int
-	if i, err = rand.Int(rand.Reader, big.NewInt(int64(len(alphabet)))); err != nil {
+	if i, err = rand.Int(rand.Reader, big.NewInt(int64(len(randAlpha)))); err != nil {
 		return
 	}
-	return alphabet[i.Int64()], nil
+	return randAlpha[i.Int64()], nil
 }
 
 func randString(maxLen int64) (s string, err error) {
@@ -109,7 +109,11 @@ func NewCertCacheKey(commonName string, ips []string, dnsNames []string) (*CertC
 	}, nil
 }
 
-func (c *CertCache) Get(key CertCacheKey) (crt *tls.Certificate, err error) {
+func (ck *CertCacheKey) MD5() string {
+	return ck.md5
+}
+
+func (c *TLSCertCache) Get(key CertCacheKey) (crt *tls.Certificate, err error) {
 
 	//==================================
 	// FIND AND RETURN KNOWN CERTIFICATE
@@ -176,5 +180,4 @@ func (c *CertCache) Get(key CertCacheKey) (crt *tls.Certificate, err error) {
 	}
 
 	return
-
 }

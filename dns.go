@@ -17,7 +17,7 @@ const (
 )
 
 var (
-	// dnsSenderC receives DoDnsCfg and runs DNS jobs based
+	// dns.ch receives DoDnsCfg and runs DNS jobs based
 	// on their values.
 	// dnsResolver allows us to configure a custom context for name
 	// resolution, enabling a custom timeout.
@@ -37,7 +37,7 @@ type (
 	// DoDnsCfg has all necessary values to perform a name
 	// resolution job.
 	//
-	// These are passed to ResolveDns via dnsSenderC.
+	// These are passed to ResolveDns via dns.ch.
 	DoDnsCfg struct {
 		Kind   DnsRecordKind
 		Target string
@@ -65,7 +65,7 @@ type (
 // routine.
 func ResolveDns(cfg Cfg, dA DoDnsCfg) error {
 
-	if cfg.dnsFailCounter.Exceeded() {
+	if cfg.dns.failCount.Exceeded() {
 		cfg.log.Warn("dns failure limit reached; disabling name resolution")
 		return nil
 	}
@@ -96,7 +96,7 @@ func ResolveDns(cfg Cfg, dA DoDnsCfg) error {
 		return nil
 	} else if ok {
 		cfg.log.Error("error while resolving dns", zap.String("target", dA.Target), zap.String("kind", string(dA.Kind)), zap.Error(err))
-		cfg.dnsFailCounter.Inc() // Increment the maximum fail counter
+		cfg.dns.failCount.Inc() // Increment the maximum fail counter
 		return nil
 	}
 
@@ -132,7 +132,7 @@ func handlePtrName(cfg Cfg, depth int, args handlePtrNameArgs[DoDnsCfg, ActiveAr
 	}
 
 	// Avoid duplicate forward name resolution
-	if !dnsName.IsNew || cfg.dnsFailCounter.Exceeded() || cfg.activeDns.Get(FmtDnsKey(args.name, ADnsKind)) != nil {
+	if !dnsName.IsNew || cfg.dns.failCount.Exceeded() || cfg.dns.active.Get(FmtDnsKey(args.name, ADnsKind)) != nil {
 		return
 	}
 
@@ -143,7 +143,7 @@ func handlePtrName(cfg Cfg, depth int, args handlePtrNameArgs[DoDnsCfg, ActiveAr
 		Kind:   ADnsKind,
 		Target: args.name,
 		FailureF: func(err error) {
-			cfg.activeDns.Delete(FmtDnsKey(args.name, ADnsKind))
+			cfg.dns.active.Delete(FmtDnsKey(args.name, ADnsKind))
 		},
 		AfterF: func(newIpStrings []string) {
 			for _, newIpS := range newIpStrings {
@@ -159,10 +159,10 @@ func handlePtrName(cfg Cfg, depth int, args handlePtrNameArgs[DoDnsCfg, ActiveAr
 				newIp, err := GetOrCreateIp(cfg.db, newIpS, nil, ForwardDnsMeth,
 					false, false)
 
-				if newIp.IsNew || newIp.MacId == nil && cfg.activeArps.Get(newIp.Value) == nil {
+				if newIp.IsNew || newIp.MacId == nil && cfg.arp.active.Get(newIp.Value) == nil {
 					cfg.log.Info("arp resolving ip discovered via dns", zap.String("ip", newIp.Value))
 
-					cfg.activeArps.Set(newIp.Value, &ActiveArp{
+					cfg.arp.active.Set(newIp.Value, &ActiveArp{
 						TargetIpRec: newIp,
 					})
 
@@ -170,7 +170,7 @@ func handlePtrName(cfg Cfg, depth int, args handlePtrNameArgs[DoDnsCfg, ActiveAr
 					//go doArpRequest(db, &newIp, cfg.srcIfaceIp, cfg.srcIfaceHw, net.ParseIP(newIp.Value).To4(),
 					//	nil, cfg.handle, cfg.arpSenderC, cfg.activeArp, eWriters)
 					go func() {
-						cfg.arpSenderC <- SendArpCfg{
+						cfg.arp.ch <- SendArpCfg{
 							Handle:        args.handle,
 							Operation:     layers.ARPRequest,
 							SenderIp:      args.srcIfaceIp,
@@ -210,7 +210,7 @@ func handlePtrName(cfg Cfg, depth int, args handlePtrNameArgs[DoDnsCfg, ActiveAr
 				// determine if we should reverse resolve the new ip
 				if depth <= 0 ||
 				  newIp.PtrResolved ||
-				  cfg.activeDns.Get(FmtDnsKey(newIp.Value, PtrDnsKind)) == nil {
+				  cfg.dns.active.Get(FmtDnsKey(newIp.Value, PtrDnsKind)) == nil {
 					return
 				}
 
@@ -221,12 +221,12 @@ func handlePtrName(cfg Cfg, depth int, args handlePtrNameArgs[DoDnsCfg, ActiveAr
 						if err := SetPtrResolved(cfg.db, *args.ip); err != nil {
 							cfg.log.Error("failed to set ptr to resolved: %v", zap.Error(err))
 						}
-						cfg.activeDns.Delete(FmtDnsKey(newIp.Value, PtrDnsKind))
+						cfg.dns.active.Delete(FmtDnsKey(newIp.Value, PtrDnsKind))
 					},
 					AfterF: func(names []string) {
 						if err := SetPtrResolved(cfg.db, *args.ip); err != nil {
 							cfg.log.Error("failed to set ptr to resolved", zap.Error(err))
-							cfg.activeDns.Delete(FmtDnsKey(newIp.Value, PtrDnsKind))
+							cfg.dns.active.Delete(FmtDnsKey(newIp.Value, PtrDnsKind))
 							return
 						}
 						// call recursively for each friendly name
@@ -236,19 +236,19 @@ func handlePtrName(cfg Cfg, depth int, args handlePtrNameArgs[DoDnsCfg, ActiveAr
 							args.name = name
 							handlePtrName(cfg, depth, args)
 						}
-						cfg.activeDns.Delete(FmtDnsKey(newIp.Value, PtrDnsKind))
+						cfg.dns.active.Delete(FmtDnsKey(newIp.Value, PtrDnsKind))
 					},
 				}
 
-				cfg.activeDns.Set(FmtDnsKey(newIp.Value, PtrDnsKind), &dArgs)
-				cfg.dnsSenderC <- dArgs
+				cfg.dns.active.Set(FmtDnsKey(newIp.Value, PtrDnsKind), &dArgs)
+				cfg.dns.ch <- dArgs
 
 			}
 
-			cfg.activeDns.Delete(FmtDnsKey(args.name, ADnsKind))
+			cfg.dns.active.Delete(FmtDnsKey(args.name, ADnsKind))
 		},
 	}
 
-	cfg.activeDns.Set(FmtDnsKey(args.name, ADnsKind), &dArgs)
-	cfg.dnsSenderC <- dArgs
+	cfg.dns.active.Set(FmtDnsKey(args.name, ADnsKind), &dArgs)
+	cfg.dns.ch <- dArgs
 }
