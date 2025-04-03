@@ -10,8 +10,11 @@ import (
 )
 
 type (
-	GetDefaultTCPRespBytes func() ([]byte, error)
+	GetTCPServerRespBytes func() ([]byte, error)
 
+	// DefaultTCPServerOpts specifies options to start a TLS-aware TCP
+	// server that will receive TCP connections when no downstream is
+	// configured for a poisoning attack.
 	DefaultTCPServerOpts struct {
 		// Addr is the address the TCP server will listen on. Notes:
 		//
@@ -20,11 +23,11 @@ type (
 		//   with a random port
 		// - This is likely always going to be a localhost address
 		Addr string
-		// TlsCFG is the configuration used to initialize TLS connections.
-		TlsCFG *tls.Config
+		// TLSCfg is the configuration used to initialize TLS connections.
+		TLSCfg *tls.Config
 		// GetRespBytes is a function that allows for random data to
 		// be generated and sent in the TCP response.
-		GetRespBytes GetDefaultTCPRespBytes
+		GetRespBytes GetTCPServerRespBytes
 	}
 
 	peekConn struct {
@@ -41,7 +44,10 @@ func (c *peekConn) Read(b []byte) (n int, err error) {
 	return c.b.Read(b)
 }
 
-func ServeDefaultTCP(ctx context.Context, l net.Listener, cfg *Cfg, opts DefaultTCPServerOpts) (err error) {
+func ServeTCP(ctx context.Context, cfg *Cfg, l net.Listener, opts DefaultTCPServerOpts) (err error) {
+	if opts.TLSCfg == nil {
+		return errors.New("tls config is required for default tcp server")
+	}
 
 	context.AfterFunc(ctx, func() {
 		if err := l.Close(); err != nil {
@@ -71,7 +77,7 @@ ctrl:
 
 			// handle the connection in a distinct routine
 			go func() {
-				if err := handleDefaultTCPConn(cfg, conn, opts); err != nil {
+				if err := handleTCPConn(cfg, conn, opts); err != nil {
 					cfg.log.Error("failed to handle default tcp connection", zap.Error(err))
 				}
 			}()
@@ -82,7 +88,7 @@ ctrl:
 	return
 }
 
-func handleDefaultTCPConn(cfg *Cfg, conn net.Conn, opts DefaultTCPServerOpts) (err error) {
+func handleTCPConn(cfg *Cfg, conn net.Conn, opts DefaultTCPServerOpts) (err error) {
 
 	// always call close on the connection
 	defer func() {
@@ -100,7 +106,7 @@ func handleDefaultTCPConn(cfg *Cfg, conn net.Conn, opts DefaultTCPServerOpts) (e
 	// fingerprint and upgrade tls
 	b, err := conn.(*peekConn).Peek(3)
 	if isHandshake(b) {
-		conn = tls.Server(conn, opts.TlsCFG)
+		conn = tls.Server(conn, opts.TLSCfg)
 		if err = conn.(*tls.Conn).Handshake(); err != nil {
 			cfg.log.Error("failed to tls handshake default tcp connection", zap.Error(err))
 			return

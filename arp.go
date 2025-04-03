@@ -88,7 +88,8 @@ type (
 		SenderIp net.IP
 		TargetIp net.IP
 		// Handlers are functions that each packet is passed to.
-		Handlers []ArpSpoofHandler
+		Handlers   []ArpSpoofHandler
+		downstream *ConntrackInfo
 	}
 )
 

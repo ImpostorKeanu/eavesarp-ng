@@ -297,3 +297,18 @@ func NewLogger(level string, outputPaths, errOutputPaths []string) (*zap.Logger,
 
 	return zapCfg.Build()
 }
+
+// optInt returns an integer weight assigned to known NewCfg options.
+func optInt(v any) (i int, err error) {
+	switch v.(type) {
+	case DefaultDownstreamOpt:
+		i = DefaultDownstreamOptWeight
+	case DefaultProxyServerAddrOpt:
+		i = DefaultProxyServerOptWeight
+	case DefaultTCPServerOpts:
+		i = DefaultTCPServerOptWeight
+	default:
+		err = errors.New("unknown opt type")
+	}
+	return
+}

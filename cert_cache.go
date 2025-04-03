@@ -113,7 +113,7 @@ func (ck *CertCacheKey) MD5() string {
 	return ck.md5
 }
 
-func (c *TLSCertCache) Get(key CertCacheKey) (crt *tls.Certificate, err error) {
+func (c *TLSCertCache) Get(key *CertCacheKey) (crt *tls.Certificate, err error) {
 
 	//==================================
 	// FIND AND RETURN KNOWN CERTIFICATE

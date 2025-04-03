@@ -1,11 +1,29 @@
 package eavesarp_ng
 
 import (
+	"context"
+	"crypto/tls"
+	"crypto/x509/pkix"
+	gs "github.com/impostorkeanu/gosplit"
 	"go.uber.org/zap"
 	"testing"
 )
 
 func TestCfg_StartDefaultTCPServer(t *testing.T) {
+
+	var err error
+	keygen := &gs.RSAPrivKeyGenerator{}
+	if err = keygen.Start(2048); err != nil {
+		return
+	}
+	var crt *tls.Certificate
+	crt, err = gs.GenSelfSignedCert(pkix.Name{}, nil, nil, keygen.Generate())
+	if err != nil {
+		t.Error("error generating self signed certificate for default tcp server", zap.Error(err))
+		return
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
 
 	logger, _ := zap.NewDevelopment()
 	errChan := make(chan error)
@@ -28,8 +46,11 @@ func TestCfg_StartDefaultTCPServer(t *testing.T) {
 	}{
 		// TODO: Add test cases.
 		{name: "default", fields: fields{log: logger, errC: errChan}, args: args{opts: &DefaultTCPServerOpts{
-			Addr:   "",
-			TlsCFG: nil,
+			Addr: "",
+			TLSCfg: &tls.Config{
+				InsecureSkipVerify: true,
+				Certificates:       []tls.Certificate{*crt},
+			},
 			GetRespBytes: func() ([]byte, error) {
 				return []byte("stuff"), nil
 			},
@@ -39,11 +60,11 @@ func TestCfg_StartDefaultTCPServer(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := &Cfg{
-				log:           tt.fields.log,
-				errC:          tt.fields.errC,
-				aitmCfgFields: tt.fields.aitmVals,
+				log:  tt.fields.log,
+				errC: tt.fields.errC,
+				//aitmCfgFields: tt.fields.aitmVals,
 			}
-			if err := cfg.StartDefaultTCPServer(tt.args.opts); (err != nil) != tt.wantErr {
+			if err := cfg.StartDefaultTCPServer(ctx, tt.args.opts); (err != nil) != tt.wantErr {
 				t.Errorf("StartDefaultTCPServer() error = %v, wantErr %v", err, tt.wantErr)
 			}
 			if err := <-cfg.Err(); (err != nil) != tt.wantErr {
@@ -51,4 +72,5 @@ func TestCfg_StartDefaultTCPServer(t *testing.T) {
 			}
 		})
 	}
+	cancel()
 }
