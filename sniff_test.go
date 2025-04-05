@@ -2,6 +2,7 @@ package eavesarp_ng
 
 import (
 	"context"
+	"github.com/impostorkeanu/eavesarp-ng/misc"
 	"github.com/impostorkeanu/eavesarp-ng/nft"
 	"github.com/impostorkeanu/eavesarp-ng/tcpserver"
 	"go.uber.org/zap"
@@ -37,7 +38,7 @@ func TestAttackSnac(t *testing.T) {
 		cfg        Cfg
 		senIp      net.IP
 		tarIp      net.IP
-		downstream *ConntrackInfo
+		downstream *misc.ConntrackInfo
 		handlers   []ArpSpoofHandler
 	}
 	tests := []struct {

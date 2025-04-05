@@ -308,7 +308,7 @@ func attackSnacBpf(sIp, tIp string) string {
 //
 // NOTE: Before poisoning the sender's ARP table, this function passively
 // waits for the sender to broadcast an ARP request.
-func AttackSnac(ctx context.Context, cfg Cfg, senIp net.IP, tarIp net.IP, downstream *ConntrackInfo,
+func AttackSnac(ctx context.Context, cfg Cfg, senIp net.IP, tarIp net.IP, downstream *misc.ConntrackInfo,
   handlers ...ArpSpoofHandler) (err error) {
 
 	logFields := []zap.Field{zap.String("senderIp", senIp.String()), zap.String("targetIp", tarIp.String())}
@@ -361,13 +361,13 @@ func AttackSnac(ctx context.Context, cfg Cfg, senIp net.IP, tarIp net.IP, downst
 		if con.ProtoInfo == nil || con.ProtoInfo.TCP == nil {
 			return 0
 		}
-		k := ConntrackInfo{Addr: misc.Addr{
+		k := misc.ConntrackInfo{Addr: misc.Addr{
 			IP:   con.Origin.Src.To4().String(),
 			Port: fmt.Sprintf("%d", *con.Origin.Proto.SrcPort)},
-			Transport: TCPConntrackTransport,
+			Transport: misc.TCPConntrackTransport,
 		}
 		if _, ok := cfg.aitm.connAddrs.Load(k); !ok {
-			var v ConntrackInfo
+			var v misc.ConntrackInfo
 			if downstreamDefault {
 				// downstream should just hit the default tcp server
 				// NOTE that the port is changed in this case, where it's
@@ -375,10 +375,10 @@ func AttackSnac(ctx context.Context, cfg Cfg, senIp net.IP, tarIp net.IP, downst
 				v = *downstream
 			} else {
 				// downstream should target a real host on the target port
-				v = ConntrackInfo{Addr: misc.Addr{
+				v = misc.ConntrackInfo{Addr: misc.Addr{
 					IP:   downstream.IP,
 					Port: fmt.Sprintf("%d", *con.Origin.Proto.DstPort)},
-					Transport: TCPConntrackTransport,
+					Transport: misc.TCPConntrackTransport,
 				}
 			}
 			cfg.aitm.connAddrs.Store(k, v)

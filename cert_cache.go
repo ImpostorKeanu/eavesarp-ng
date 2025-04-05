@@ -7,16 +7,13 @@ import (
 	"crypto/x509/pkix"
 	"errors"
 	"fmt"
+	mrand "github.com/impostorkeanu/eavesarp-ng/misc/rand"
 	gs "github.com/impostorkeanu/gosplit"
 	"math/big"
 	"net"
 	"slices"
 	"strings"
 	"sync"
-)
-
-var (
-	randAlpha []string // used for random value generation
 )
 
 type (
@@ -40,35 +37,6 @@ type (
 		md5        string
 	}
 )
-
-func init() {
-	// populate randAlpha with all upper and lowercase letters
-	for _, s := range [][]rune{{'a', 'z'}, {'A', 'Z'}, {'0', '9'}} {
-		for l := s[0]; l <= s[1]; l++ {
-			randAlpha = append(randAlpha, string(l))
-		}
-	}
-}
-
-func randLetter() (l string, err error) {
-	var i *big.Int
-	if i, err = rand.Int(rand.Reader, big.NewInt(int64(len(randAlpha)))); err != nil {
-		return
-	}
-	return randAlpha[i.Int64()], nil
-}
-
-func randString(maxLen int64) (s string, err error) {
-	var l string
-	for i := int64(0); i < maxLen; i++ {
-		l, err = randLetter()
-		if err != nil {
-			return s, errors.New("failed to generate random letter: " + err.Error())
-		}
-		s += l
-	}
-	return
-}
 
 func NewCertCacheKey(commonName string, ips []string, dnsNames []string) (*CertCacheKey, error) {
 
@@ -149,7 +117,7 @@ func (c *TLSCertCache) Get(key *CertCacheKey) (crt *tls.Certificate, err error) 
 		CommonName:         key.commonName,
 	}
 
-	name.SerialNumber, err = randString(int64(30)) // randomize serial number
+	name.SerialNumber, err = mrand.String(int64(30)) // randomize serial number
 
 	// additional fields to randomize
 	randFields := []*[]string{&name.Country, &name.Organization,
@@ -163,7 +131,7 @@ func (c *TLSCertCache) Get(key *CertCacheKey) (crt *tls.Certificate, err error) 
 			return nil, errors.New("failed to generate random number: " + err.Error())
 		}
 
-		s, err := randString(l.Int64()) // random string for the field
+		s, err := mrand.String(l.Int64()) // random string for the field
 		if err != nil {
 			return nil, errors.New("failed to generate random string: " + err.Error())
 		}

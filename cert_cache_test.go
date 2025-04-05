@@ -1,6 +1,7 @@
 package eavesarp_ng
 
 import (
+	"github.com/impostorkeanu/eavesarp-ng/misc/rand"
 	"testing"
 )
 
@@ -52,14 +53,14 @@ func Test_randString(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotS, err := randString(tt.args.maxLen)
+			gotS, err := rand.String(tt.args.maxLen)
 			if (err != nil) != tt.wantErr {
-				t.Errorf("randString() error = %v, wantErr %v", err, tt.wantErr)
+				t.Errorf("String() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
-			t.Logf("randString(%v) = %v", tt.args.maxLen, gotS)
+			t.Logf("String(%v) = %v", tt.args.maxLen, gotS)
 			if int64(len(gotS)) != tt.args.maxLen {
-				t.Errorf("randString() len(gotS) = %v, want %v", len(gotS), tt.args.maxLen)
+				t.Errorf("String() len(gotS) = %v, want %v", len(gotS), tt.args.maxLen)
 			}
 		})
 	}

@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"github.com/google/nftables"
 	"github.com/impostorkeanu/eavesarp-ng/misc"
+	"github.com/impostorkeanu/eavesarp-ng/misc/rand"
 	"github.com/impostorkeanu/eavesarp-ng/nft"
+	"github.com/impostorkeanu/eavesarp-ng/proxy"
 	"github.com/impostorkeanu/eavesarp-ng/tcpserver"
 	gs "github.com/impostorkeanu/gosplit"
 	"go.uber.org/zap"
@@ -18,22 +20,12 @@ import (
 	"slices"
 	"sync"
 	"sync/atomic"
-	"time"
 )
 
 const (
 	DefaultDownstreamOptWeight int = iota
 	DefaultTCPServerOptWeight
 	DefaultProxyServerOptWeight
-
-	TCPConntrackTransport ConntrackTransport = "tcp"
-	UDPConntrackTransport ConntrackTransport = "udp"
-)
-
-var (
-	dsTLSCfg = &tls.Config{
-		InsecureSkipVerify: true,
-	}
 )
 
 type (
@@ -93,17 +85,6 @@ type (
 		nftTbl *nftables.Table
 	}
 
-	// ConntrackTransport indicates the transport protocol of the
-	// connection. See TCPConntrackTransport and UDPConntrackTransport.
-	ConntrackTransport string
-
-	// ConntrackInfo contains information related to a poisoned connection
-	// that's being proxied through Eavesarp.
-	ConntrackInfo struct {
-		misc.Addr
-		Transport ConntrackTransport `json:"transport,omitempty"`
-	}
-
 	// DefaultProxyServerAddrOpt sets the default TCP proxy for poisoned
 	// connections.
 	//
@@ -134,7 +115,7 @@ func (cfg *Cfg) newRandID(l int) (err error) {
 		return errors.New("nftable connection is nil")
 	}
 	for {
-		cfg.id, err = randString(int64(l))
+		cfg.id, err = rand.String(int64(l))
 		if err != nil {
 			return fmt.Errorf("failed to generate cfg id: %w", err)
 		}
@@ -253,7 +234,7 @@ func NewCfg(dsn string, ifaceName, ifaceAddr string, log *zap.Logger, opts ...an
 				err = e
 				return
 			} else {
-				cfg.aitm.setDefaultDS(ConntrackInfo{Addr: misc.Addr{IP: defA, Port: defP}, Transport: TCPConntrackTransport})
+				cfg.aitm.setDefaultDS(misc.ConntrackInfo{Addr: misc.Addr{IP: defA, Port: defP}, Transport: misc.TCPConntrackTransport})
 			}
 
 		case DefaultProxyServerAddrOpt:
@@ -298,7 +279,7 @@ func NewCfg(dsn string, ifaceName, ifaceAddr string, log *zap.Logger, opts ...an
 		case DefaultDownstreamOpt:
 			// Default downstream IP address that will receive all
 			// TCP connections
-			x := ConntrackInfo{Transport: TCPConntrackTransport}
+			x := misc.ConntrackInfo{Transport: misc.TCPConntrackTransport}
 			x.IP, x.Port, err = net.SplitHostPort(string(v))
 			if err != nil {
 				err = fmt.Errorf("failed to parse default downstream value: %w", err)
@@ -341,7 +322,8 @@ func (cfg *Cfg) StartDefaultTCPProxy(ctx context.Context, addr string) (err erro
 	cfg.log.Info("default tcp proxy server listener started", zap.String("address", l.Addr().String()))
 	go func() {
 		cfg.log.Debug("default tcp proxy server accepting connections", zap.String("address", l.Addr().String()))
-		if e := gs.NewProxyServer(cfg, l).Serve(ctx); e != nil {
+		pCfg := proxy.NewCfg(cfg.aitm.connAddrs, cfg.GetProxyCertificateFunc, cfg.log)
+		if e := gs.NewProxyServer(pCfg, l).Serve(ctx); e != nil {
 			cfg.log.Error("default tcp proxy server failed", zap.Error(e))
 			cfg.errC <- err
 		}
@@ -511,70 +493,12 @@ func (f *aitmCfgFields) setDefaultTCPServerAddr(a misc.Addr) {
 }
 
 // getDefaultDS gets the default downstream.
-func (f *aitmCfgFields) getDefaultDS() (a *ConntrackInfo) {
-	a, _ = f.defDownstream.Load().(*ConntrackInfo)
+func (f *aitmCfgFields) getDefaultDS() (a *misc.ConntrackInfo) {
+	a, _ = f.defDownstream.Load().(*misc.ConntrackInfo)
 	return
 }
 
 // setDefaultDS sets the default downstream.
-func (f *aitmCfgFields) setDefaultDS(a ConntrackInfo) {
+func (f *aitmCfgFields) setDefaultDS(a misc.ConntrackInfo) {
 	f.defDownstream.Store(&a)
-}
-
-//==========================
-// GoSplit INTERFACE METHODS
-//==========================
-
-//func (cfg *Cfg) RecvVictimData(i gs.ConnInfo, b []byte) {
-//	//TODO implement me
-//	panic("implement me")
-//}
-//
-//func (cfg *Cfg) RecvDownstreamData(i gs.ConnInfo, b []byte) {
-//	//TODO implement me
-//	panic("implement me")
-//}
-
-// RecvConnStart to implement gosplit.ConnInfoReceiver.
-func (cfg *Cfg) RecvConnStart(i gs.ConnInfo) {
-	cfg.log.Debug("new connection started", zap.Any("conn", i))
-}
-
-// RecvConnEnd to implement gosplit.ConnInfoReceiver
-//
-// This removes the cfg.connAddrs entry for the current connection.
-func (cfg *Cfg) RecvConnEnd(i gs.ConnInfo) {
-	cfg.log.Debug("connection ended", zap.Any("conn", i))
-	cfg.aitm.connAddrs.Delete(gs.Addr{
-		IP:   i.VictimAddr.IP,
-		Port: i.VictimAddr.Port,
-	})
-}
-
-func (cfg *Cfg) RecvLog(r gs.LogRecord) {
-	cfg.log.Info("received log event from tcp proxy", zap.Any("record", r))
-}
-
-func (cfg *Cfg) GetProxyTLSConfig(_ gs.ProxyAddr, _ gs.VictimAddr, dsA gs.DownstreamAddr) (*tls.Config, error) {
-	return &tls.Config{
-		InsecureSkipVerify: true,
-		GetCertificate:     cfg.GetProxyCertificateFunc(dsA.IP),
-	}, nil
-}
-
-func (cfg *Cfg) GetDownstreamAddr(_ gs.ProxyAddr, vicA gs.VictimAddr) (ip string, port string, err error) {
-	// try to retrieve downstream connection a few times
-	for i := 0; i < 10; i++ {
-		if ds, ok := cfg.aitm.connAddrs.Load(ConntrackInfo{Addr: misc.Addr{IP: vicA.IP, Port: vicA.Port}, Transport: TCPConntrackTransport}); ok {
-			ip, port = ds.(ConntrackInfo).IP, ds.(ConntrackInfo).Port
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	err = fmt.Errorf("victim ip (%s) has no downstream set", vicA.IP)
-	return
-}
-
-func (cfg *Cfg) GetDownstreamTLSConfig(_ gs.ProxyAddr, _ gs.VictimAddr, _ gs.DownstreamAddr) (*tls.Config, error) {
-	return dsTLSCfg, nil
 }
