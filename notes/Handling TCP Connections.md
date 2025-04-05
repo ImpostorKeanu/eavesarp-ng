@@ -7,16 +7,63 @@ unless a listener is running.
 Even when a TCP listener is available to accept the connection request, SSL/TLS
 becomes a new challenge.
 
-# Solution
+# Solution: Netfilter Prerouting Hook and Destination NAT (DNAT)
 
-## Netfilter CONNTRACK and Destination NAT (DNAT)
+A Netfilter prerouting hook function is used to detect new poisoned connections
+and capture the original connection details before a destination NAT (DNAT) rule
+is applied to redirect the connection to a TLS-aware TCP proxy. The TCP proxy
+references the in-memory connection details set by the hook function and connects
+to either the default TCP server or a downstream set by the poisoning attack.
 
-- Registers filtered function
-  - Runs upon new connection from victim for target
-  - Function updates map with VIC_IP:VIC_PORT=TAR_IP:TAR_PORT
-- On connection end (detected by net.Conn); removes map VIC_IP:VIC_PORT
+The flow looks roughly like:
 
-## Standalone TCP Server
+```mermaid
+flowchart
+
+A(Attacker) -->|Poison ARP Cache| V(Victim)
+DS(Downstream)
+
+subgraph sg-AKern[Attacker Kernel]
+    subgraph NFT[nftables]
+        HookFunc(Hook Function) -->
+        DNAT(DNAT)
+    end
+    eth0(eth0)
+end
+
+subgraph sg-AEa[Attacker Eavesarp Process]
+
+    CTL(Ctrl Routine)
+    subgraph PR[Proxy Routine]
+        portLookup(Lookup Orig. Port) -->
+        dsLookup(Lookup Downstream) -->
+        dsConnect(Connect to Downstream</br>On Orig. Port)
+    end
+
+    DSM(Downstream Map)
+
+    CTL -.->|Manages Netfilter| NFT
+
+    CT(Connection Table)
+end
+
+HookFunc -.->|Updates| CT
+
+A -.-> sg-AKern
+A -..-> sg-AEa
+
+V -->|Poisoned conn| eth0
+
+eth0 --> NFT
+DNAT ---> PR
+CTL -.->|Manages</br>Downstreams| DSM
+
+portLookup <-..->|Look up DST port</br>from conntrack| CT
+dsLookup <-..->|Look up downstream</br>by src IP| DSM
+dsConnect <--> DS
+```
+
+## Default TCP Server
 
 standalone tls-aware tcp server handles all connections for attacks
 without a downstream configured

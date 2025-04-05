@@ -1,17 +1,24 @@
 package eavesarp_ng
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509/pkix"
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/google/nftables"
+	"github.com/google/nftables/binaryutil"
+	"github.com/google/nftables/expr"
 	gs "github.com/impostorkeanu/gosplit"
 	"go.uber.org/zap"
+	"golang.org/x/sys/unix"
 	_ "modernc.org/sqlite"
 	"net"
 	"slices"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -24,6 +31,12 @@ const (
 
 	TCPConntrackTransport ConntrackTransport = "tcp"
 	UDPConntrackTransport ConntrackTransport = "udp"
+
+	NFTTablePrefix   = "eavesarp_"
+	NFTTableTemplate = "eavesarp_%s"
+
+	SpoofedAddrs = "spoofed_addrs"
+	AllPorts     = "all_ports"
 )
 
 var (
@@ -34,16 +47,18 @@ var (
 
 type (
 	Cfg struct {
-		db     *sql.DB
-		ipNet  *net.IPNet
-		iface  *net.Interface
-		log    *zap.Logger
-		errC   chan error // Channel to communicate errors to other applications
-		arp    arpCfgFields
-		dns    dnsCfgFields
-		tls    tlsCfgFields
-		aitm   aitmCfgFields
-		cancel context.CancelFunc
+		id      string
+		nftConn *nftables.Conn
+		db      *sql.DB
+		ipNet   *net.IPNet
+		iface   *net.Interface
+		log     *zap.Logger
+		errC    chan error // Channel to communicate errors to other applications
+		arp     arpCfgFields
+		dns     dnsCfgFields
+		tls     tlsCfgFields
+		aitm    aitmCfgFields
+		cancel  context.CancelFunc
 	}
 
 	// arpCfgFields defines configuration fields related to ARP.
@@ -81,6 +96,10 @@ type (
 		// the TCP connection and receive TCP segments even when an attack is not
 		// configured with a downstream.
 		defDownstream atomic.Value
+
+		defTCPProxyAddr atomic.Value
+
+		nftTbl *nftables.Table
 	}
 
 	// ConntrackTransport indicates the transport protocol of the
@@ -90,9 +109,13 @@ type (
 	// ConntrackInfo contains information related to a poisoned connection
 	// that's being proxied through Eavesarp.
 	ConntrackInfo struct {
-		IP        string             `json:"ip,omitempty"`
-		Port      string             `json:"port,omitempty"`
+		Addr
 		Transport ConntrackTransport `json:"transport,omitempty"`
+	}
+
+	Addr struct {
+		IP   string `json:"ip,omitempty"`
+		Port string `json:"port,omitempty"`
 	}
 
 	// DefaultProxyServerAddrOpt sets the default TCP proxy for poisoned
@@ -113,6 +136,304 @@ func (cfg *Cfg) Err() <-chan error {
 	return cfg.errC
 }
 
+func (cfg *Cfg) NFTTableName() string {
+	return fmt.Sprintf(NFTTableTemplate, cfg.id)
+}
+
+func (cfg *Cfg) newRandID() (err error) {
+	cfg.id, err = randString(int64(5))
+	if err != nil {
+		err = fmt.Errorf("failed to generate cfg id: %w", err)
+	}
+	return
+}
+
+func (cfg *Cfg) initNFTTable(proxyAddr *Addr) (err error) {
+
+	//===================================
+	// PREPARE THE PROXY ADDRESS AND PORT
+	//===================================
+
+	var proxyPort []byte
+	proxyIP := net.ParseIP(proxyAddr.IP).To4()
+	if i, err := strconv.ParseUint(proxyAddr.Port, 10, 16); err != nil {
+		err = fmt.Errorf("failed to parse proxy server port: %w", err)
+		return err
+	} else {
+		proxyPort = binaryutil.BigEndian.PutUint16(uint16(i))
+	}
+
+	//=================
+	// CREATE THE TABLE
+	//=================
+
+	// get a list of all nftable names
+	var nTBLNames []string
+	if tables, err := cfg.nftConn.ListTables(); err != nil {
+		return fmt.Errorf("could not list nft tables: %w", err)
+	} else {
+		for _, t := range tables {
+			if strings.HasPrefix(t.Name, NFTTablePrefix) {
+				cfg.log.Warn("potentially stale pre-existing eavesarp nft table",
+					zap.String("table_name", t.Name))
+			}
+			nTBLNames = append(nTBLNames, t.Name)
+		}
+	}
+
+	// ensure the id of our config is unique
+	tblName := cfg.NFTTableName()
+	for ; slices.Contains(nTBLNames, cfg.NFTTableName()); {
+		cfg.log.Debug("nft table collision; generating a new one", zap.String("table_name", tblName))
+		err = cfg.newRandID()
+		if err != nil {
+			err = fmt.Errorf("failed to generate cfg id: %w", err)
+			break
+		}
+	}
+
+	// create the table
+	eaTbl := &nftables.Table{
+		Name:   tblName,
+		Use:    0,
+		Flags:  0,
+		Family: nftables.TableFamilyIPv4,
+	}
+	cfg.nftConn.CreateTable(eaTbl)
+	if err = cfg.nftConn.Flush(); err != nil {
+		err = fmt.Errorf("failed to initialize nft: %w", err)
+		return
+	} else if eaTbl, err = cfg.nftConn.ListTable(eaTbl.Name); err != nil {
+		err = fmt.Errorf("failed to load newly created nft: %w", err)
+		return
+	}
+
+	//=======================
+	// ADD poisoned_addrs set
+	//=======================
+
+	// create poisoned_addrs set
+	addrsSet := &nftables.Set{
+		Table:   eaTbl,
+		Name:    SpoofedAddrs,
+		Timeout: 0,
+		KeyType: nftables.TypeIPAddr,
+	}
+	if err = cfg.nftConn.AddSet(addrsSet, nil); err != nil {
+		err = fmt.Errorf("failed to add addrs set to nft table: %w", err)
+		return
+	}
+	if err = cfg.nftConn.Flush(); err != nil {
+		err = fmt.Errorf("failed to initialize nft: %w", err)
+		return
+	}
+
+	//==================
+	// ADD all_ports SET
+	//==================
+
+	// create all_ports set
+	portSet := &nftables.Set{
+		Table:    eaTbl,
+		Name:     AllPorts,
+		Interval: true,
+		KeyType:  nftables.TypeInetService,
+	}
+	if err = cfg.nftConn.AddSet(portSet, []nftables.SetElement{{Key: []uint8{0, 0}}}); err != nil {
+		err = fmt.Errorf("failed to add port set to nft table: %w", err)
+		return
+	}
+	if err = cfg.nftConn.Flush(); err != nil {
+		err = fmt.Errorf("failed to initialize nft: %w", err)
+		return
+	}
+
+	//=============================
+	// ADD AND CONFIGURE PREROUTING
+	//=============================
+
+	pri := nftables.ChainPriority(-int32(100))
+	pol := nftables.ChainPolicyAccept
+
+	// create prerouting chain
+	chain := cfg.nftConn.AddChain(&nftables.Chain{
+		Name:     "prerouting",
+		Table:    eaTbl,
+		Hooknum:  nftables.ChainHookPrerouting,
+		Priority: &pri,
+		Type:     nftables.ChainTypeNAT,
+		Policy:   &pol,
+		Device:   "",
+	})
+
+	// create prerouting rule
+	cfg.nftConn.AddRule(&nftables.Rule{
+		Table:    eaTbl,
+		Chain:    chain,
+		Position: 0,
+		Handle:   0,
+		Flags:    0,
+		Exprs: []expr.Any{
+			&expr.Payload{
+				OperationType:  0,
+				DestRegister:   1,
+				SourceRegister: 0,
+				Base:           expr.PayloadBaseNetworkHeader,
+				Offset:         16,
+				Len:            4,
+				CsumType:       expr.CsumTypeNone,
+				CsumOffset:     0,
+				CsumFlags:      0,
+			},
+			&expr.Lookup{
+				SourceRegister: 1,
+				DestRegister:   0,
+				IsDestRegSet:   false,
+				SetID:          addrsSet.ID,
+				SetName:        addrsSet.Name,
+				Invert:         false,
+			},
+			&expr.Meta{
+				Key:            expr.MetaKeyL4PROTO,
+				SourceRegister: false,
+				Register:       1,
+			},
+			&expr.Cmp{
+				Op:       expr.CmpOpEq,
+				Register: 1,
+				Data:     []uint8{6},
+			},
+			&expr.Payload{
+				OperationType:  expr.PayloadLoad,
+				DestRegister:   1,
+				SourceRegister: 0,
+				Base:           expr.PayloadBaseTransportHeader,
+				Offset:         2,
+				Len:            2,
+				CsumType:       expr.CsumTypeNone,
+				CsumOffset:     0,
+				CsumFlags:      0,
+			},
+			&expr.Lookup{
+				SourceRegister: 1,
+				DestRegister:   0,
+				IsDestRegSet:   false,
+				SetID:          portSet.ID,
+				SetName:        portSet.Name,
+				Invert:         false,
+			},
+			&expr.Counter{
+				Bytes:   0,
+				Packets: 0,
+			},
+			&expr.Immediate{
+				Register: 1,
+				Data:     proxyIP,
+			},
+			&expr.Immediate{
+				Register: 2,
+				Data:     proxyPort,
+			},
+			&expr.NAT{
+				Type:        expr.NATTypeDestNAT,
+				Family:      unix.NFPROTO_IPV4,
+				RegAddrMin:  1,
+				RegAddrMax:  1,
+				RegProtoMin: 2,
+				RegProtoMax: 2,
+				Random:      false,
+				FullyRandom: false,
+				Persistent:  false,
+				Prefix:      false,
+				Specified:   true,
+			},
+		},
+		UserData: nil,
+	})
+
+	if err = cfg.nftConn.Flush(); err != nil {
+		err = fmt.Errorf("failed to initialize nft: %w", err)
+		return
+	}
+	cfg.aitm.nftTbl = eaTbl
+	return
+}
+
+func (cfg *Cfg) getPoisonedAddrsSet() (*nftables.Set, error) {
+	if sets, err := cfg.nftConn.GetSets(cfg.aitm.nftTbl); err != nil {
+		err = fmt.Errorf("failed to load poisoned addrs set: %w", err)
+		return nil, err
+	} else {
+		for _, s := range sets {
+			if s.Name == SpoofedAddrs {
+				return s, nil
+			}
+		}
+	}
+	return nil, nil
+}
+
+func (cfg *Cfg) getPoisonedAddrSetIP(set *nftables.Set, addr net.IP) (*nftables.SetElement, error) {
+	if eles, err := cfg.nftConn.GetSetElements(set); err != nil {
+		err = fmt.Errorf("failed to load poisoned addr set elements: %w", err)
+		return nil, err
+	} else {
+		for _, e := range eles {
+			if bytes.Compare(e.Key, addr) == 0 {
+				return &e, nil
+			}
+		}
+	}
+	return nil, nil
+}
+
+func (cfg *Cfg) AddPoisonedIP(addr net.IP) error {
+
+	// find the set
+	if set, err := cfg.getPoisonedAddrsSet(); err != nil {
+		return err
+	} else if e, err := cfg.getPoisonedAddrSetIP(set, addr); err != nil {
+		return err
+	} else if e == nil {
+		// add the element to the set
+		if err = cfg.nftConn.SetAddElements(set, []nftables.SetElement{{Key: addr.To4()}}); err != nil {
+			return err
+		} else if err = cfg.nftConn.Flush(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (cfg *Cfg) DelPoisonedIP(addr net.IP) error {
+	if set, err := cfg.getPoisonedAddrsSet(); err != nil {
+		return err
+	} else if set == nil {
+		return errors.New("poisoned addrs set is missing")
+	} else if e, err := cfg.getPoisonedAddrSetIP(set, addr); err != nil {
+		return err
+	} else if e == nil {
+		return cfg.nftConn.SetDeleteElements(set, []nftables.SetElement{{Key: addr.To4()}})
+	}
+	return nil
+}
+
+func (cfg *Cfg) deleteCurNFTTable() error {
+	if tbls, err := cfg.nftConn.ListTables(); err == nil {
+		tName := cfg.NFTTableName()
+		for _, t := range tbls {
+			if t.Name == tName {
+				cfg.nftConn.DelTable(t)
+				return cfg.nftConn.Flush()
+			}
+		}
+	} else {
+		err = fmt.Errorf("failed to list nft tables: %w", err)
+		return err
+	}
+	return nil
+}
+
 // NewCfg creates a Cfg for various eavesarp_ng functions.
 //
 // dsn is the Data Source Name describing where to find the SQLite database. The
@@ -131,26 +452,12 @@ func (cfg *Cfg) Err() <-chan error {
 // - DefaultDownstreamOpt
 func NewCfg(dsn string, ifaceName, ifaceAddr string, log *zap.Logger, opts ...any) (cfg Cfg, err error) {
 
+	// configure logging
 	if log == nil {
 		err = errors.New("nil logger")
 		return
 	}
 	cfg.log = log
-
-	//==========================
-	// VALIDATE AND SORT OPTIONS
-	//==========================
-
-	for _, opt := range opts {
-		if _, err = optInt(opt); err != nil {
-			return
-		}
-	}
-	slices.SortFunc(opts, func(a, b any) int {
-		aI, _ := optInt(a)
-		bI, _ := optInt(b)
-		return aI - bI
-	})
 
 	//=============================
 	// INITIALIZE CHANNELS AND MAPS
@@ -172,9 +479,9 @@ func NewCfg(dsn string, ifaceName, ifaceAddr string, log *zap.Logger, opts ...an
 
 	cfg.aitm.connAddrs = new(sync.Map)
 
-	//==========================
-	// START SUPPORTING ROUTINES
-	//==========================
+	//============================================
+	// APPLY OPTIONS AND START SUPPORTING ROUTINES
+	//============================================
 
 	var ctx context.Context
 	ctx, cfg.cancel = context.WithCancel(context.Background())
@@ -188,6 +495,19 @@ func NewCfg(dsn string, ifaceName, ifaceAddr string, log *zap.Logger, opts ...an
 		return
 	}
 
+	// validate and sort options
+	for _, opt := range opts {
+		if _, err = optInt(opt); err != nil {
+			return
+		}
+	}
+	slices.SortFunc(opts, func(a, b any) int {
+		aI, _ := optInt(a)
+		bI, _ := optInt(b)
+		return aI - bI
+	})
+
+	// apply options
 	for _, opt := range opts {
 		switch v := opt.(type) {
 		// TODO add a case to handle a default UDP server to log data
@@ -208,7 +528,9 @@ func NewCfg(dsn string, ifaceName, ifaceAddr string, log *zap.Logger, opts ...an
 
 			// TCP server to complete connections when no downstream
 			// is configured for a poisoning attack
-			err = cfg.StartDefaultTCPServer(ctx, &v)
+			if err = cfg.StartDefaultTCPServer(ctx, &v); err != nil {
+				return
+			}
 
 			if cfg.aitm.getDefaultDS() != nil {
 				continue
@@ -219,13 +541,51 @@ func NewCfg(dsn string, ifaceName, ifaceAddr string, log *zap.Logger, opts ...an
 				err = e
 				return
 			} else {
-				cfg.aitm.setDefaultDS(ConntrackInfo{IP: defA, Port: defP, Transport: TCPConntrackTransport})
+				cfg.aitm.setDefaultDS(ConntrackInfo{Addr: Addr{IP: defA, Port: defP}, Transport: TCPConntrackTransport})
 			}
 
 		case DefaultProxyServerAddrOpt:
 			// Proxy server that will be used to proxy connections to
 			// downstreams
-			err = cfg.StartDefaultProxy(ctx, string(v))
+			if err = cfg.StartDefaultTCPProxy(ctx, string(v)); err != nil {
+				return
+			}
+
+			//===========================
+			// INITIALIZE NETFILTER TABLE
+			//===========================
+
+			// initialize with a random id
+			// - this is primarily used to ensure a unique nft table name
+			// - initNFTTable will generate a new ID should a collision occur
+			err = cfg.newRandID()
+			if err != nil {
+				err = fmt.Errorf("failed to generate cfg id: %w", err)
+				return
+			}
+
+			// initialize netfilter connection and dedicated table for the cfg
+			if cfg.nftConn, err = nftables.New(nftables.AsLasting()); err != nil {
+				err = fmt.Errorf("failed to establish nft connection: %w", err)
+				return
+			}
+			if err = cfg.initNFTTable(cfg.aitm.getDefaultTCPServerAddr()); err != nil {
+				err = fmt.Errorf("failed to init nft table: %w", err)
+				return
+			}
+
+			// delete the current nft table upon ctx cancel
+			context.AfterFunc(ctx, func() {
+				tName := cfg.NFTTableName()
+				cfg.log.Debug("deleting current nft table", zap.String("table_name", tName))
+				if err := cfg.deleteCurNFTTable(); err != nil {
+					cfg.log.Error("failed to delete nft table during shutdown",
+						zap.Error(err),
+						zap.String("table_name", tName))
+				} else {
+					cfg.log.Debug("deleted nft table", zap.String("table_name", tName))
+				}
+			})
 
 		case DefaultDownstreamOpt:
 			// Default downstream IP address that will receive all
@@ -234,6 +594,7 @@ func NewCfg(dsn string, ifaceName, ifaceAddr string, log *zap.Logger, opts ...an
 			x.IP, x.Port, err = net.SplitHostPort(string(v))
 			if err != nil {
 				err = fmt.Errorf("failed to parse default downstream value: %w", err)
+				return
 			} else {
 				cfg.aitm.setDefaultDS(x)
 			}
@@ -257,14 +618,19 @@ func (cfg *Cfg) startRandListener(addr string) (l net.Listener, err error) {
 	return
 }
 
-// StartDefaultProxy runs a proxy server in a distinct routine that will receive
+// StartDefaultTCPProxy runs a proxy server in a distinct routine that will receive
 // all proxied connections via DNAT.
-func (cfg *Cfg) StartDefaultProxy(ctx context.Context, addr string) (err error) {
+func (cfg *Cfg) StartDefaultTCPProxy(ctx context.Context, addr string) (err error) {
 	var l net.Listener
 	if l, err = cfg.startRandListener(addr); err != nil {
 		return
 	}
-	cfg.log.Info("default tcp proxy server listener started", zap.String("address", addr))
+	var a Addr
+	if a.IP, a.Port, err = net.SplitHostPort(l.Addr().String()); err != nil {
+		return
+	}
+	cfg.aitm.setDefaultTCPServerAddr(a)
+	cfg.log.Info("default tcp proxy server listener started", zap.String("address", l.Addr().String()))
 	go func() {
 		cfg.log.Debug("default tcp proxy server accepting connections", zap.String("address", l.Addr().String()))
 		if e := gs.NewProxyServer(cfg, l).Serve(ctx); e != nil {
@@ -421,6 +787,15 @@ func (cfg *Cfg) GetProxyCertificateFunc(downstreamIP string) func(h *tls.ClientH
 
 }
 
+func (f *aitmCfgFields) getDefaultTCPServerAddr() (a *Addr) {
+	a, _ = f.defTCPProxyAddr.Load().(*Addr)
+	return
+}
+
+func (f *aitmCfgFields) setDefaultTCPServerAddr(a Addr) {
+	f.defTCPProxyAddr.Store(&a)
+}
+
 // getDefaultDS gets the default downstream.
 func (f *aitmCfgFields) getDefaultDS() (a *ConntrackInfo) {
 	a, _ = f.defDownstream.Load().(*ConntrackInfo)
@@ -476,7 +851,7 @@ func (cfg *Cfg) GetProxyTLSConfig(_ gs.ProxyAddr, _ gs.VictimAddr, dsA gs.Downst
 func (cfg *Cfg) GetDownstreamAddr(_ gs.ProxyAddr, vicA gs.VictimAddr) (ip string, port string, err error) {
 	// try to retrieve downstream connection a few times
 	for i := 0; i < 10; i++ {
-		if ds, ok := cfg.aitm.connAddrs.Load(ConntrackInfo{IP: vicA.IP, Port: vicA.Port, Transport: TCPConntrackTransport}); ok {
+		if ds, ok := cfg.aitm.connAddrs.Load(ConntrackInfo{Addr: Addr{IP: vicA.IP, Port: vicA.Port}, Transport: TCPConntrackTransport}); ok {
 			ip, port = ds.(ConntrackInfo).IP, ds.(ConntrackInfo).Port
 			return
 		}

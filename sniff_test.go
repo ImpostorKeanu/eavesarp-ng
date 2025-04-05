@@ -8,9 +8,9 @@ import (
 )
 
 func newCfg() (cfg Cfg, err error) {
-	logger, _ := zap.NewDevelopment()
+	logger := zap.NewExample()
 	return NewCfg("/tmp/eatest.db", "enp13s0", "", logger,
-		DefaultProxyServerAddrOpt(""), DefaultDownstreamOpt(""), DefaultTCPServerOpts{
+		DefaultProxyServerAddrOpt(""), DefaultTCPServerOpts{
 			GetRespBytes: func() ([]byte, error) {
 				return []byte("stuff"), nil
 			},
@@ -26,6 +26,9 @@ func TestAttackSnac(t *testing.T) {
 
 	sIP := net.ParseIP("192.168.86.3")
 	tIP := net.ParseIP("192.168.86.99")
+	if err = cfg.AddPoisonedIP(tIP); err != nil {
+		t.Fatal(err)
+	}
 
 	type args struct {
 		ctx        context.Context

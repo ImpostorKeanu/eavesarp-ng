@@ -303,10 +303,10 @@ func optInt(v any) (i int, err error) {
 	switch v.(type) {
 	case DefaultDownstreamOpt:
 		i = DefaultDownstreamOptWeight
-	case DefaultProxyServerAddrOpt:
-		i = DefaultProxyServerOptWeight
 	case DefaultTCPServerOpts:
 		i = DefaultTCPServerOptWeight
+	case DefaultProxyServerAddrOpt:
+		i = DefaultProxyServerOptWeight
 	default:
 		err = errors.New("unknown opt type")
 	}

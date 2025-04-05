@@ -360,9 +360,9 @@ func AttackSnac(ctx context.Context, cfg Cfg, senIp net.IP, tarIp net.IP, downst
 		if con.ProtoInfo == nil || con.ProtoInfo.TCP == nil {
 			return 0
 		}
-		k := ConntrackInfo{
-			IP:        con.Origin.Src.To4().String(),
-			Port:      fmt.Sprintf("%d", *con.Origin.Proto.SrcPort),
+		k := ConntrackInfo{Addr: Addr{
+			IP:   con.Origin.Src.To4().String(),
+			Port: fmt.Sprintf("%d", *con.Origin.Proto.SrcPort)},
 			Transport: TCPConntrackTransport,
 		}
 		if _, ok := cfg.aitm.connAddrs.Load(k); !ok {
@@ -374,9 +374,9 @@ func AttackSnac(ctx context.Context, cfg Cfg, senIp net.IP, tarIp net.IP, downst
 				v = *downstream
 			} else {
 				// downstream should target a real host on the target port
-				v = ConntrackInfo{
-					IP:        downstream.IP,
-					Port:      fmt.Sprintf("%d", *con.Origin.Proto.DstPort),
+				v = ConntrackInfo{Addr: Addr{
+					IP:   downstream.IP,
+					Port: fmt.Sprintf("%d", *con.Origin.Proto.DstPort)},
 					Transport: TCPConntrackTransport,
 				}
 			}
