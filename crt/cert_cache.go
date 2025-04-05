@@ -1,4 +1,4 @@
-package eavesarp_ng
+package crt
 
 import (
 	"crypto/md5"
@@ -18,18 +18,18 @@ import (
 
 type (
 
-	// TLSCertCache is a map that serves as a grow-only cache, i.e.,
+	// Cache is a map that serves as a grow-only cache, i.e.,
 	// once a certificate is cached, it exists forever.
 	//
-	// Keys are of type CertCacheKey.
-	TLSCertCache struct {
+	// Keys are of type CacheKey.
+	Cache struct {
 		sync.Map
-		cfg Cfg
+		Keygen *gs.RSAPrivKeyGenerator
 	}
 
-	// CertCacheKey contains md5 characteristics about dynamically
+	// CacheKey contains md5 characteristics about dynamically
 	// generated certificates.
-	CertCacheKey struct {
+	CacheKey struct {
 		commonName string
 		ips        []string
 		dnsNames   []string
@@ -38,7 +38,11 @@ type (
 	}
 )
 
-func NewCertCacheKey(commonName string, ips []string, dnsNames []string) (*CertCacheKey, error) {
+func NewTLSCertCache(keygen *gs.RSAPrivKeyGenerator) *Cache {
+	return &Cache{Keygen: keygen}
+}
+
+func NewCertCacheKey(commonName string, ips []string, dnsNames []string) (*CacheKey, error) {
 
 	// string builder to capture all string details
 	sB := strings.Builder{}
@@ -68,7 +72,7 @@ func NewCertCacheKey(commonName string, ips []string, dnsNames []string) (*CertC
 	m := md5.New()
 	m.Write([]byte(sB.String()))
 
-	return &CertCacheKey{
+	return &CacheKey{
 		commonName: commonName,
 		ips:        ips,
 		dnsNames:   dBuff,
@@ -77,11 +81,11 @@ func NewCertCacheKey(commonName string, ips []string, dnsNames []string) (*CertC
 	}, nil
 }
 
-func (ck *CertCacheKey) MD5() string {
+func (ck *CacheKey) MD5() string {
 	return ck.md5
 }
 
-func (c *TLSCertCache) Get(key *CertCacheKey) (crt *tls.Certificate, err error) {
+func (c *Cache) Get(key *CacheKey) (crt *tls.Certificate, err error) {
 
 	//==================================
 	// FIND AND RETURN KNOWN CERTIFICATE
@@ -98,7 +102,7 @@ func (c *TLSCertCache) Get(key *CertCacheKey) (crt *tls.Certificate, err error) 
 	//=================================
 
 	// generate and return a new certificate
-	pK := c.cfg.tls.keygen.Generate()
+	pK := c.Keygen.Generate()
 	if pK.Err() != nil {
 		return nil, pK.Err()
 	}

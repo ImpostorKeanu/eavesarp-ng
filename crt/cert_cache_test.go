@@ -1,4 +1,4 @@
-package eavesarp_ng
+package crt
 
 import (
 	"github.com/impostorkeanu/eavesarp-ng/misc/rand"
@@ -19,10 +19,10 @@ func TestNewCertCacheKey(t *testing.T) {
 	tests := []struct {
 		name    string
 		args    args
-		want    *CertCacheKey
+		want    *CacheKey
 		wantErr bool
 	}{
-		{name: "valid", args: baseArgs, want: &CertCacheKey{commonName: baseArgs.commonName, dnsNames: baseArgs.dnsNames, ips: ips}, wantErr: false},
+		{name: "valid", args: baseArgs, want: &CacheKey{commonName: baseArgs.commonName, dnsNames: baseArgs.dnsNames, ips: ips}, wantErr: false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/google/nftables"
+	"github.com/impostorkeanu/eavesarp-ng/crt"
 	"github.com/impostorkeanu/eavesarp-ng/misc"
 	"github.com/impostorkeanu/eavesarp-ng/misc/rand"
 	"github.com/impostorkeanu/eavesarp-ng/nft"
@@ -59,8 +60,7 @@ type (
 
 	// tlsCfgFields defines configuration fields related to TLS.
 	tlsCfgFields struct {
-		cache  *TLSCertCache
-		keygen *gs.RSAPrivKeyGenerator // private key generator
+		cache *crt.Cache
 	}
 
 	// aitmCfgFields defines configuration fields related to AITM.
@@ -181,10 +181,9 @@ func NewCfg(dsn string, ifaceName, ifaceAddr string, log *zap.Logger, opts ...an
 
 	// TLS private key generation and certificate caching
 	cfg.tls = tlsCfgFields{
-		cache:  &TLSCertCache{cfg: cfg},
-		keygen: &gs.RSAPrivKeyGenerator{},
+		cache: crt.NewTLSCertCache(&gs.RSAPrivKeyGenerator{}),
 	}
-	if err = cfg.tls.keygen.Start(2048); err != nil {
+	if err = cfg.tls.cache.Keygen.Start(2048); err != nil {
 		return
 	}
 
@@ -208,7 +207,7 @@ func NewCfg(dsn string, ifaceName, ifaceAddr string, log *zap.Logger, opts ...an
 			// Generate a random certificate for TLS connections
 			if v.TLSCfg == nil {
 				var crt *tls.Certificate
-				crt, err = gs.GenSelfSignedCert(pkix.Name{}, nil, nil, cfg.tls.keygen.Generate())
+				crt, err = gs.GenSelfSignedCert(pkix.Name{}, nil, nil, cfg.tls.cache.Keygen.Generate())
 				if err != nil {
 					cfg.log.Error("error generating self signed certificate for default tcp server", zap.Error(err))
 					return
@@ -366,8 +365,8 @@ func (cfg *Cfg) Shutdown() {
 			cfg.log.Error("failed to close database connection", zap.Error(err))
 		}
 	}
-	if cfg.tls.keygen != nil {
-		cfg.tls.keygen.Stop()
+	if cfg.tls.cache.Keygen != nil {
+		cfg.tls.cache.Keygen.Stop()
 	}
 	if cfg.nftConn != nil {
 		if err := cfg.nftConn.CloseLasting(); err != nil {
@@ -464,7 +463,7 @@ func (cfg *Cfg) GetProxyCertificateFunc(downstreamIP string) func(h *tls.ClientH
 		// TODO query dns names for target from database and add to dnsNames
 
 		// create cache key
-		k, err := NewCertCacheKey(cn, ips, dnsNames)
+		k, err := crt.NewCertCacheKey(cn, ips, dnsNames)
 		if err != nil {
 			cfg.log.Error("error getting cert cache key", zap.Error(err))
 			return
