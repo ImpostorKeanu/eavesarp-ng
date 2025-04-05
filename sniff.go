@@ -8,6 +8,7 @@ import (
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
+	"github.com/impostorkeanu/eavesarp-ng/misc"
 	"go.uber.org/zap"
 	"net"
 	"sync"
@@ -360,7 +361,7 @@ func AttackSnac(ctx context.Context, cfg Cfg, senIp net.IP, tarIp net.IP, downst
 		if con.ProtoInfo == nil || con.ProtoInfo.TCP == nil {
 			return 0
 		}
-		k := ConntrackInfo{Addr: Addr{
+		k := ConntrackInfo{Addr: misc.Addr{
 			IP:   con.Origin.Src.To4().String(),
 			Port: fmt.Sprintf("%d", *con.Origin.Proto.SrcPort)},
 			Transport: TCPConntrackTransport,
@@ -374,7 +375,7 @@ func AttackSnac(ctx context.Context, cfg Cfg, senIp net.IP, tarIp net.IP, downst
 				v = *downstream
 			} else {
 				// downstream should target a real host on the target port
-				v = ConntrackInfo{Addr: Addr{
+				v = ConntrackInfo{Addr: misc.Addr{
 					IP:   downstream.IP,
 					Port: fmt.Sprintf("%d", *con.Origin.Proto.DstPort)},
 					Transport: TCPConntrackTransport,

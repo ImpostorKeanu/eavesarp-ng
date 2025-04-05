@@ -2,6 +2,7 @@ package eavesarp_ng
 
 import (
 	"context"
+	"github.com/impostorkeanu/eavesarp-ng/nft"
 	"go.uber.org/zap"
 	"net"
 	"testing"
@@ -26,7 +27,7 @@ func TestAttackSnac(t *testing.T) {
 
 	sIP := net.ParseIP("192.168.86.3")
 	tIP := net.ParseIP("192.168.86.99")
-	if err = cfg.AddPoisonedIP(tIP); err != nil {
+	if err = nft.AddSpoofedIP(cfg.nftConn, cfg.aitm.nftTbl, tIP); err != nil {
 		t.Fatal(err)
 	}
 
