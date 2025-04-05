@@ -26,9 +26,9 @@ func TestNewCertCacheKey(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := NewCertCacheKey(tt.args.commonName, tt.args.ips, tt.args.dnsNames)
+			_, err := NewCacheKey(tt.args.commonName, tt.args.ips, tt.args.dnsNames)
 			if (err != nil) != tt.wantErr {
-				t.Errorf("NewCertCacheKey() error = %v, wantErr %v", err, tt.wantErr)
+				t.Errorf("NewCacheKey() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
 		})

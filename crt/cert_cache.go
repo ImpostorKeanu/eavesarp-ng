@@ -38,11 +38,11 @@ type (
 	}
 )
 
-func NewTLSCertCache(keygen *gs.RSAPrivKeyGenerator) *Cache {
+func NewCache(keygen *gs.RSAPrivKeyGenerator) *Cache {
 	return &Cache{Keygen: keygen}
 }
 
-func NewCertCacheKey(commonName string, ips []string, dnsNames []string) (*CacheKey, error) {
+func NewCacheKey(commonName string, ips []string, dnsNames []string) (*CacheKey, error) {
 
 	// string builder to capture all string details
 	sB := strings.Builder{}

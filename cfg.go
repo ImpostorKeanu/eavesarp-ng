@@ -181,7 +181,7 @@ func NewCfg(dsn string, ifaceName, ifaceAddr string, log *zap.Logger, opts ...an
 
 	// TLS private key generation and certificate caching
 	cfg.tls = tlsCfgFields{
-		cache: crt.NewTLSCertCache(&gs.RSAPrivKeyGenerator{}),
+		cache: crt.NewCache(&gs.RSAPrivKeyGenerator{}),
 	}
 	if err = cfg.tls.cache.Keygen.Start(2048); err != nil {
 		return
@@ -463,7 +463,7 @@ func (cfg *Cfg) GetProxyCertificateFunc(downstreamIP string) func(h *tls.ClientH
 		// TODO query dns names for target from database and add to dnsNames
 
 		// create cache key
-		k, err := crt.NewCertCacheKey(cn, ips, dnsNames)
+		k, err := crt.NewCacheKey(cn, ips, dnsNames)
 		if err != nil {
 			cfg.log.Error("error getting cert cache key", zap.Error(err))
 			return
