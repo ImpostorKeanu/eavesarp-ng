@@ -10,6 +10,7 @@ import (
 	"github.com/google/nftables"
 	"github.com/impostorkeanu/eavesarp-ng/misc"
 	"github.com/impostorkeanu/eavesarp-ng/nft"
+	"github.com/impostorkeanu/eavesarp-ng/tcpserver"
 	gs "github.com/impostorkeanu/gosplit"
 	"go.uber.org/zap"
 	_ "modernc.org/sqlite"
@@ -112,7 +113,7 @@ type (
 
 	// DefaultDownstreamOpt sets the default downstream for AITM attacks.
 	//
-	// When not supplied or empty, the server specified by DefaultTCPServerOpts
+	// When not supplied or empty, the server specified by Opts
 	// will become the default.
 	DefaultDownstreamOpt string
 )
@@ -158,7 +159,7 @@ func (cfg *Cfg) newRandID(l int) (err error) {
 //
 // # Options
 //
-// - DefaultTCPServerOpts
+// - Opts
 // - DefaultProxyServerAddrOpt
 // - DefaultDownstreamOpt
 func NewCfg(dsn string, ifaceName, ifaceAddr string, log *zap.Logger, opts ...any) (cfg Cfg, err error) {
@@ -222,7 +223,7 @@ func NewCfg(dsn string, ifaceName, ifaceAddr string, log *zap.Logger, opts ...an
 	for _, opt := range opts {
 		switch v := opt.(type) {
 		// TODO add a case to handle a default UDP server to log data
-		case DefaultTCPServerOpts:
+		case tcpserver.Opts:
 			// Generate a random certificate for TLS connections
 			if v.TLSCfg == nil {
 				var crt *tls.Certificate
@@ -351,7 +352,7 @@ func (cfg *Cfg) StartDefaultTCPProxy(ctx context.Context, addr string) (err erro
 // StartDefaultTCPServer starts a TLS aware TCP server that will proxy incoming connections
 // from victims of spoofing attacks that do not have a downstream configured. This ensures
 //  that all TCP connections can complete and send packets.
-func (cfg *Cfg) StartDefaultTCPServer(ctx context.Context, opts *DefaultTCPServerOpts) (err error) {
+func (cfg *Cfg) StartDefaultTCPServer(ctx context.Context, opts *tcpserver.Opts) (err error) {
 	var l net.Listener
 	if l, err = cfg.startRandListener(opts.Addr); err != nil {
 		return
@@ -362,7 +363,7 @@ func (cfg *Cfg) StartDefaultTCPServer(ctx context.Context, opts *DefaultTCPServe
 
 	go func() {
 		cfg.log.Debug("default tcp server accepting connections", zap.String("address", opts.Addr))
-		if e := ServeTCP(ctx, cfg, l, *opts); e != nil {
+		if e := tcpserver.Serve(ctx, l, *opts, cfg.log); e != nil {
 			cfg.log.Error("default tcp server error", zap.Error(e))
 			cfg.errC <- e
 		}
@@ -379,7 +380,9 @@ func (cfg *Cfg) DB() *sql.DB {
 func (cfg *Cfg) Shutdown() {
 	cfg.cancel()
 	if cfg.db != nil {
-		cfg.db.Close()
+		if err := cfg.db.Close(); err != nil {
+			cfg.log.Error("failed to close database connection", zap.Error(err))
+		}
 	}
 	if cfg.tls.keygen != nil {
 		cfg.tls.keygen.Stop()

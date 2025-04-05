@@ -92,11 +92,11 @@ func CreateTable(conn *nftables.Conn, proxyAddr *misc.Addr, tblName string, log 
 		return
 	}
 
-	//=======================
-	// ADD poisoned_addrs set
-	//=======================
+	//======================
+	// ADD spoofed_addrs set
+	//======================
 
-	// create poisoned_addrs set
+	// create spoofed set
 	addrsSet := &nftables.Set{
 		Table:   eaTbl,
 		Name:    SpoofedIPs,

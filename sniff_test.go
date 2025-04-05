@@ -3,6 +3,7 @@ package eavesarp_ng
 import (
 	"context"
 	"github.com/impostorkeanu/eavesarp-ng/nft"
+	"github.com/impostorkeanu/eavesarp-ng/tcpserver"
 	"go.uber.org/zap"
 	"net"
 	"testing"
@@ -11,7 +12,7 @@ import (
 func newCfg() (cfg Cfg, err error) {
 	logger := zap.NewExample()
 	return NewCfg("/tmp/eatest.db", "enp13s0", "", logger,
-		DefaultProxyServerAddrOpt(""), DefaultTCPServerOpts{
+		DefaultProxyServerAddrOpt(""), tcpserver.Opts{
 			GetRespBytes: func() ([]byte, error) {
 				return []byte("stuff"), nil
 			},
