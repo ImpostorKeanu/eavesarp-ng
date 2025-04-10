@@ -57,10 +57,9 @@ func (cfg *Cfg) RecvConnStart(i gs.ConnInfo) {
 // This removes the cfg.connAddrs entry for the current connection.
 func (cfg *Cfg) RecvConnEnd(i gs.ConnInfo) {
 	cfg.log.Debug("connection ended", zap.Any("conn", i))
-	cfg.connAddrs.Delete(gs.Addr{
-		IP:   i.VictimAddr.IP,
-		Port: i.VictimAddr.Port,
-	})
+	cfg.connAddrs.Delete(misc.ConntrackInfo{
+		Addr:      misc.Addr{IP: i.VictimAddr.IP, Port: i.VictimAddr.Port},
+		Transport: misc.TCPConntrackTransport})
 }
 
 func (cfg *Cfg) RecvLog(r gs.LogRecord) {
@@ -77,7 +76,9 @@ func (cfg *Cfg) GetProxyTLSConfig(_ gs.ProxyAddr, _ gs.VictimAddr, dsA gs.Downst
 func (cfg *Cfg) GetDownstreamAddr(_ gs.ProxyAddr, vicA gs.VictimAddr) (ip string, port string, err error) {
 	// try to retrieve downstream connection a few times
 	for i := 0; i < 10; i++ {
-		if ds, ok := cfg.connAddrs.Load(misc.ConntrackInfo{Addr: misc.Addr{IP: vicA.IP, Port: vicA.Port}, Transport: misc.TCPConntrackTransport}); ok {
+		if ds, ok := cfg.connAddrs.Load(misc.ConntrackInfo{
+			Addr:      misc.Addr{IP: vicA.IP, Port: vicA.Port},
+			Transport: misc.TCPConntrackTransport}); ok {
 			ip, port = ds.(misc.ConntrackInfo).IP, ds.(misc.ConntrackInfo).Port
 			return
 		}

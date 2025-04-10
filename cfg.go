@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/florianl/go-nfqueue/v2"
 	"github.com/google/nftables"
 	"github.com/impostorkeanu/eavesarp-ng/crt"
 	"github.com/impostorkeanu/eavesarp-ng/misc"
@@ -33,6 +34,7 @@ type (
 	Cfg struct {
 		id      string
 		nftConn *nftables.Conn
+		nfqConn *nfqueue.Nfqueue
 		db      *sql.DB
 		ipNet   *net.IPNet
 		iface   *net.Interface
@@ -67,21 +69,30 @@ type (
 	aitmCfgFields struct {
 		// connAddrs maps the sender address to a target address for a connection
 		// that has been detected by netfilter.
+		//
+		// The type for both the key and value is misc.ConntrackInfo.
 		connAddrs *sync.Map
 
-		// downstreams maps the sender IP of an AITM attack to a downstream
-		// that will receive proxied connections, allowing us to use a single
-		// ProxyServer listening on a local port for multiple downstreams.
-		//downstreams *LockMap[proxyDownstream]
+		downstreams *sync.Map
 
 		// defDownstream describes a TCP listener that will receive connections
-		// during an AITM attack that _without_ an AITM target. This allows us to complete
-		// the TCP connection and receive TCP segments even when an attack is not
-		// configured with a downstream.
+		// during an AITM attack _without_ an AITM downstream. This allows us to
+		// always complete TCP connections and receive data.
+		//
+		// Type: *misc.Addr
+		//
+		// See: getDefaultDS, setDefaultDS
 		defDownstream atomic.Value
 
+		// defTCPProxyAddr is the address to the default TCP proxy used by
+		// all connections.
+		//
+		// Type: *misc.Addr
+		//
+		// See: getDefTCPProxyAddr, setDefTCPProxyAddr
 		defTCPProxyAddr atomic.Value
 
+		// nftTbl is the netfilter table created for the current Cfg.
 		nftTbl *nftables.Table
 	}
 
@@ -171,6 +182,7 @@ func NewCfg(dsn string, ifaceName, ifaceAddr string, log *zap.Logger, opts ...an
 	cfg.dns.failCount = NewFailCounter(DnsMaxFailures)
 
 	cfg.aitm.connAddrs = new(sync.Map)
+	cfg.aitm.downstreams = new(sync.Map)
 
 	//============================================
 	// APPLY OPTIONS AND START SUPPORTING ROUTINES
@@ -206,15 +218,15 @@ func NewCfg(dsn string, ifaceName, ifaceAddr string, log *zap.Logger, opts ...an
 		case tcpserver.Opts:
 			// Generate a random certificate for TLS connections
 			if v.TLSCfg == nil {
-				var crt *tls.Certificate
-				crt, err = gs.GenSelfSignedCert(pkix.Name{}, nil, nil, cfg.tls.cache.Keygen.Generate())
+				var cert *tls.Certificate
+				cert, err = gs.GenSelfSignedCert(pkix.Name{}, nil, nil, cfg.tls.cache.Keygen.Generate())
 				if err != nil {
 					cfg.log.Error("error generating self signed certificate for default tcp server", zap.Error(err))
 					return
 				}
 				v.TLSCfg = &tls.Config{
 					InsecureSkipVerify: true,
-					Certificates:       []tls.Certificate{*crt},
+					Certificates:       []tls.Certificate{*cert},
 				}
 			}
 
@@ -243,6 +255,99 @@ func NewCfg(dsn string, ifaceName, ifaceAddr string, log *zap.Logger, opts ...an
 				return
 			}
 
+			//============================
+			// INITIALIZE NFQUEUE FUNCTION
+			//============================
+
+			//nCfg := nfqueue.Config{
+			//	NfQueue:      86,
+			//	MaxPacketLen: 0xFFFF,
+			//	MaxQueueLen:  0xFF,
+			//	Copymode:     nfqueue.NfQnlCopyPacket,
+			//	WriteTimeout: 15 * time.Millisecond,
+			//	//Flags:        nfqueue.NfQaCfgFlagFailOpen, // TODO flags
+			//	//AfFamily:     unix.AF_INET,
+			//}
+			//
+			//var nf *nfqueue.Nfqueue
+			//nf, err = nfqueue.Open(&nCfg)
+			//cfg.nfqConn = nf
+			//
+			//if err != nil {
+			//	cfg.log.Error("error opening nfqueue connection", zap.Error(err))
+			//	return
+			//}
+			//
+			//if err = cfg.nfqConn.SetOption(netlink.NoENOBUFS, true); err != nil {
+			//	fmt.Printf("failed to set netlink option %v: %v\n",
+			//		netlink.NoENOBUFS, err)
+			//	return
+			//}
+			//
+			//hF := func(attr nfqueue.Attribute) int {
+			//
+			//	if attr.Payload == nil {
+			//		cfg.log.Debug("nfqueue connection had nil payload")
+			//		return 0
+			//	}
+			//
+			//	// parse the packet
+			//	packet := gopacket.NewPacket(*attr.Payload, layers.LayerTypeIPv4, gopacket.Default)
+			//
+			//	// key used to track the connection
+			//	k := misc.ConntrackInfo{Addr: misc.Addr{
+			//		IP: packet.Layer(layers.LayerTypeIPv4).(*layers.IPv4).SrcIP.To4().String()}}
+			//
+			//	// get the source port and transport
+			//	if layer, ok := packet.Layer(layers.LayerTypeTCP).(*layers.TCP); ok {
+			//		if !layer.SYN {
+			//			if e := nf.SetVerdict(*attr.PacketID, nfqueue.NfAccept); e != nil {
+			//				cfg.log.Error("error setting nfqueue verdict", zap.Error(e))
+			//			}
+			//			return 0
+			//		}
+			//		k.Port = layer.SrcPort.String()
+			//		k.Transport = misc.TCPConntrackTransport
+			//	} else if layer := packet.Layer(layers.LayerTypeUDP); layer != nil {
+			//		k.Port = layer.(*layers.UDP).SrcPort.String()
+			//		k.Transport = misc.UDPConntrackTransport
+			//	} else {
+			//		cfg.log.Debug("unsupported nfqueue transport layer received")
+			//		return 0
+			//	}
+			//
+			//	// retrieve and store the downstream for the connection
+			//	if ds, ok := cfg.aitm.downstreams.Load(k.IP); ok {
+			//		if _, found := cfg.aitm.connAddrs.Load(k); !found {
+			//			cfg.aitm.connAddrs.Store(k, ds)
+			//			cfg.log.Debug("new downstream", zap.Any("source", k), zap.Any("downstream", ds))
+			//		} else {
+			//			cfg.log.Debug("duplicate downstream skipped", zap.Any("source", k), zap.Any("downstream", ds))
+			//		}
+			//	} else {
+			//		// failed to find downstream
+			//		cfg.log.Error("no active downstream found", zap.Any("connInfo", k))
+			//	}
+			//
+			//	fmt.Printf("[%d]\t%v\n", *attr.PacketID, *attr.Payload)
+			//	if e := nf.SetVerdict(*attr.PacketID, nfqueue.NfAccept); e != nil {
+			//		cfg.log.Error("error setting nfqueue verdict", zap.Error(e))
+			//	}
+			//	cfg.log.Debug("setting nfqueue verdict", zap.Any("connInfo", k))
+			//
+			//	return 0
+			//}
+			//
+			//eF := func(e error) int {
+			//	cfg.log.Error("error handling nfqueue packet", zap.Error(e))
+			//	return -1
+			//}
+			//
+			//if err = cfg.nfqConn.RegisterWithErrorFunc(ctx, hF, eF); err != nil {
+			//	err = fmt.Errorf("error registering nfqueue connection: %w", err)
+			//	return
+			//}
+
 			//===========================
 			// INITIALIZE NETFILTER TABLE
 			//===========================
@@ -256,7 +361,7 @@ func NewCfg(dsn string, ifaceName, ifaceAddr string, log *zap.Logger, opts ...an
 				return
 			} else if err = nft.StaleTables(cfg.nftConn, cfg.log); err != nil { // warn about stale tables
 				return
-			} else if cfg.aitm.nftTbl, err = nft.CreateTable(cfg.nftConn, cfg.aitm.getDefaultTCPServerAddr(),
+			} else if cfg.aitm.nftTbl, err = nft.CreateTable(cfg.nftConn, cfg.aitm.getDefTCPProxyAddr(),
 				nft.TableName(cfg.id), cfg.log); err != nil { // create a table for the config
 				err = fmt.Errorf("failed to init nft table: %w", err)
 				return
@@ -292,9 +397,11 @@ func NewCfg(dsn string, ifaceName, ifaceAddr string, log *zap.Logger, opts ...an
 	return
 }
 
-// startRandListener starts a tcp4 listener on addr. l is bound to a random localhost
-// port if addr is empty.
-func (cfg *Cfg) startRandListener(addr string) (l net.Listener, err error) {
+// newTCPListener returns a listener bound to addr.
+//
+// If addr is empty, the listener will be bound to
+// a random port on the interface specified in cfg.ipNet.
+func (cfg *Cfg) newTCPListener(addr string) (l net.Listener, err error) {
 	if cfg.ipNet == nil {
 		err = errors.New("nil ipNet")
 		return
@@ -310,14 +417,14 @@ func (cfg *Cfg) startRandListener(addr string) (l net.Listener, err error) {
 // all proxied connections via DNAT.
 func (cfg *Cfg) StartDefaultTCPProxy(ctx context.Context, addr string) (err error) {
 	var l net.Listener
-	if l, err = cfg.startRandListener(addr); err != nil {
+	if l, err = cfg.newTCPListener(addr); err != nil {
 		return
 	}
 	var a misc.Addr
 	if a.IP, a.Port, err = net.SplitHostPort(l.Addr().String()); err != nil {
 		return
 	}
-	cfg.aitm.setDefaultTCPServerAddr(a)
+	cfg.aitm.setDefTCPProxyAddr(a)
 	cfg.log.Info("default tcp proxy server listener started", zap.String("address", l.Addr().String()))
 	go func() {
 		cfg.log.Debug("default tcp proxy server accepting connections", zap.String("address", l.Addr().String()))
@@ -335,7 +442,7 @@ func (cfg *Cfg) StartDefaultTCPProxy(ctx context.Context, addr string) (err erro
 //  that all TCP connections can complete and send packets.
 func (cfg *Cfg) StartDefaultTCPServer(ctx context.Context, opts *tcpserver.Opts) (err error) {
 	var l net.Listener
-	if l, err = cfg.startRandListener(opts.Addr); err != nil {
+	if l, err = cfg.newTCPListener(opts.Addr); err != nil {
 		return
 	}
 
@@ -371,6 +478,11 @@ func (cfg *Cfg) Shutdown() {
 	if cfg.nftConn != nil {
 		if err := cfg.nftConn.CloseLasting(); err != nil {
 			cfg.log.Error("failed to close nftable connection", zap.Error(err))
+		}
+	}
+	if cfg.nfqConn != nil {
+		if err := cfg.nfqConn.Close(); err != nil {
+			cfg.log.Error("failed to close nfqueue connection", zap.Error(err))
 		}
 	}
 	close(cfg.arp.ch)
@@ -482,12 +594,14 @@ func (cfg *Cfg) GetProxyCertificateFunc(downstreamIP string) func(h *tls.ClientH
 
 }
 
-func (f *aitmCfgFields) getDefaultTCPServerAddr() (a *misc.Addr) {
+// getDefTCPProxyAddr gets the address of the default TCP proxy.
+func (f *aitmCfgFields) getDefTCPProxyAddr() (a *misc.Addr) {
 	a, _ = f.defTCPProxyAddr.Load().(*misc.Addr)
 	return
 }
 
-func (f *aitmCfgFields) setDefaultTCPServerAddr(a misc.Addr) {
+// setDefTCPProxyAddr sets the address of the default TCP proxy.
+func (f *aitmCfgFields) setDefTCPProxyAddr(a misc.Addr) {
 	f.defTCPProxyAddr.Store(&a)
 }
 

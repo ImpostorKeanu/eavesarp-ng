@@ -18,6 +18,7 @@ import (
 const (
 	TablePrefix   = "eavesarp_"   // prefix for all nft tables created by eavesarp
 	TableTemplate = "eavesarp_%s" // template used to render the nft table name
+	AllProtos     = "all_protos"
 	SpoofedIPs    = "spoofed_ips" // name of the set that maintains ip addresses we've spoofed
 	AllPorts      = "all_ports"   // name of the set that represents all possible ports for the NAT rule
 )
@@ -92,6 +93,21 @@ func CreateTable(conn *nftables.Conn, proxyAddr *misc.Addr, tblName string, log 
 		return
 	}
 
+	protoSet := &nftables.Set{
+		Table:   eaTbl,
+		Name:    AllProtos,
+		Timeout: 0,
+		KeyType: nftables.TypeInetProto,
+	}
+	if err = conn.AddSet(protoSet, []nftables.SetElement{{Key: []uint8{6}}, {Key: []uint8{17}}}); err != nil {
+		err = fmt.Errorf("failed to add protos set to nft table: %w", err)
+		return
+	}
+	if err = conn.Flush(); err != nil {
+		err = fmt.Errorf("failed to initialize nft: %w", err)
+		return
+	}
+
 	//======================
 	// ADD spoofed_addrs set
 	//======================
@@ -150,7 +166,132 @@ func CreateTable(conn *nftables.Conn, proxyAddr *misc.Addr, tblName string, log 
 		Device:   "",
 	})
 
-	// create prerouting rule
+	//// TODO: create a queue rule to send tcp @spoofed_addrs to the queue
+	//conn.AddRule(&nftables.Rule{
+	//	Table:    eaTbl,
+	//	Chain:    chain,
+	//	Position: 0,
+	//	Handle:   0,
+	//	Flags:    0,
+	//	Exprs: []expr.Any{
+	//		&expr.Payload{
+	//			OperationType:  0,
+	//			DestRegister:   1,
+	//			SourceRegister: 0,
+	//			Base:           expr.PayloadBaseNetworkHeader,
+	//			Offset:         16,
+	//			Len:            4,
+	//			CsumType:       expr.CsumTypeNone,
+	//			CsumOffset:     0,
+	//			CsumFlags:      0,
+	//		},
+	//		&expr.Lookup{
+	//			SourceRegister: 1,
+	//			DestRegister:   0,
+	//			IsDestRegSet:   false,
+	//			SetID:          addrsSet.ID,
+	//			SetName:        addrsSet.Name,
+	//			Invert:         false,
+	//		},
+	//		&expr.Meta{
+	//			Key:            expr.MetaKeyL4PROTO,
+	//			SourceRegister: false,
+	//			Register:       1,
+	//		},
+	//		// Only TCP
+	//		&expr.Cmp{
+	//			Op:       expr.CmpOpEq,
+	//			Register: 1,
+	//			Data:     []uint8{6},
+	//		},
+	//		&expr.Payload{
+	//			OperationType:  expr.PayloadLoad,
+	//			DestRegister:   1,
+	//			SourceRegister: 0,
+	//			Base:           expr.PayloadBaseTransportHeader,
+	//			// SYN offset
+	//			Offset:     13,
+	//			Len:        1,
+	//			CsumType:   expr.CsumTypeNone,
+	//			CsumOffset: 0,
+	//			CsumFlags:  0,
+	//		},
+	//		&expr.Bitwise{
+	//			SourceRegister: 1,
+	//			DestRegister:   1,
+	//			Len:            1,
+	//			Mask:           []byte{0x02},
+	//			Xor:            []byte{0x00},
+	//		},
+	//		&expr.Cmp{
+	//			Op:       expr.CmpOpNeq,
+	//			Register: 1,
+	//			Data:     []byte{0x00},
+	//		},
+	//		&expr.Counter{
+	//			Bytes:   0,
+	//			Packets: 0,
+	//		},
+	//		&expr.Queue{
+	//			Num:   86,
+	//			Total: 1,
+	//			Flag:  0,
+	//		},
+	//	},
+	//	UserData: nil,
+	//})
+	//// TODO: create a queue rule to send udp @spoofed_addrs to the queue
+	//conn.AddRule(&nftables.Rule{
+	//	Table:    eaTbl,
+	//	Chain:    chain,
+	//	Position: 0,
+	//	Handle:   0,
+	//	Flags:    0,
+	//	Exprs: []expr.Any{
+	//		&expr.Payload{
+	//			OperationType:  0,
+	//			DestRegister:   1,
+	//			SourceRegister: 0,
+	//			Base:           expr.PayloadBaseNetworkHeader,
+	//			Offset:         16,
+	//			Len:            4,
+	//			CsumType:       expr.CsumTypeNone,
+	//			CsumOffset:     0,
+	//			CsumFlags:      0,
+	//		},
+	//		&expr.Lookup{
+	//			SourceRegister: 1,
+	//			DestRegister:   0,
+	//			IsDestRegSet:   false,
+	//			SetID:          addrsSet.ID,
+	//			SetName:        addrsSet.Name,
+	//			Invert:         false,
+	//		},
+	//		&expr.Meta{
+	//			Key:            expr.MetaKeyL4PROTO,
+	//			SourceRegister: false,
+	//			Register:       1,
+	//		},
+	//		// Only UDP
+	//		&expr.Cmp{
+	//			Op:       expr.CmpOpEq,
+	//			Register: 1,
+	//			Data:     []uint8{17},
+	//		},
+	//		&expr.Counter{
+	//			Bytes:   0,
+	//			Packets: 0,
+	//		},
+	//		&expr.Queue{
+	//			Num:   86,
+	//			Total: 1,
+	//			Flag:  0,
+	//		},
+	//	},
+	//	UserData: nil,
+	//})
+
+	// create prerouting dnat rule
 	conn.AddRule(&nftables.Rule{
 		Table:    eaTbl,
 		Chain:    chain,
@@ -177,15 +318,24 @@ func CreateTable(conn *nftables.Conn, proxyAddr *misc.Addr, tblName string, log 
 				SetName:        addrsSet.Name,
 				Invert:         false,
 			},
-			&expr.Meta{
-				Key:            expr.MetaKeyL4PROTO,
-				SourceRegister: false,
-				Register:       1,
+			&expr.Payload{
+				OperationType:  expr.PayloadLoad,
+				DestRegister:   1,
+				SourceRegister: 0,
+				Base:           expr.PayloadBaseNetworkHeader,
+				Offset:         9,
+				Len:            1,
+				CsumType:       expr.CsumTypeNone,
+				CsumOffset:     0,
+				CsumFlags:      0,
 			},
-			&expr.Cmp{
-				Op:       expr.CmpOpEq,
-				Register: 1,
-				Data:     []uint8{6},
+			&expr.Lookup{
+				SourceRegister: 1,
+				DestRegister:   0,
+				IsDestRegSet:   false,
+				SetID:          protoSet.ID,
+				SetName:        protoSet.Name,
+				Invert:         false,
 			},
 			&expr.Payload{
 				OperationType:  expr.PayloadLoad,
@@ -239,6 +389,13 @@ func CreateTable(conn *nftables.Conn, proxyAddr *misc.Addr, tblName string, log 
 		err = fmt.Errorf("failed to initialize nft: %w", err)
 		return
 	}
+
+	//t, _ := conn.ListTable("eavesarp_bzl4L")
+	//c, _ := conn.ListChain(t, "prerouting")
+	//oR, _ := conn.GetRules(t, c)
+	//nR, _ := conn.GetRules(eaTbl, chain)
+	//println(oR, nR)
+
 	return
 }
 
