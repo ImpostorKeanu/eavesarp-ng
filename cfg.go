@@ -250,132 +250,13 @@ func NewCfg(dsn string, ifaceName, ifaceAddr string, log *zap.Logger, opts ...an
 			// downstreams
 			if err = cfg.StartDefaultTCPProxy(ctx, string(v)); err != nil {
 				return
+			} else if err = cfg.initNetfilterTable(ctx); err != nil {
+				return
 			}
-
-			//============================
-			// INITIALIZE NFQUEUE FUNCTION
-			//============================
-
-			//nCfg := nfqueue.Config{
-			//	NfQueue:      86,
-			//	MaxPacketLen: 0xFFFF,
-			//	MaxQueueLen:  0xFF,
-			//	Copymode:     nfqueue.NfQnlCopyPacket,
-			//	WriteTimeout: 15 * time.Millisecond,
-			//	//Flags:        nfqueue.NfQaCfgFlagFailOpen, // TODO flags
-			//	//AfFamily:     unix.AF_INET,
-			//}
-			//
-			//var nf *nfqueue.Nfqueue
-			//nf, err = nfqueue.Open(&nCfg)
-			//cfg.nfqConn = nf
-			//
-			//if err != nil {
-			//	cfg.log.Error("error opening nfqueue connection", zap.Error(err))
-			//	return
-			//}
-			//
-			//if err = cfg.nfqConn.SetOption(netlink.NoENOBUFS, true); err != nil {
-			//	fmt.Printf("failed to set netlink option %v: %v\n",
-			//		netlink.NoENOBUFS, err)
-			//	return
-			//}
-			//
-			//hF := func(attr nfqueue.Attribute) int {
-			//
-			//	if attr.Payload == nil {
-			//		cfg.log.Debug("nfqueue connection had nil payload")
-			//		return 0
-			//	}
-			//
-			//	// parse the packet
-			//	packet := gopacket.NewPacket(*attr.Payload, layers.LayerTypeIPv4, gopacket.Default)
-			//
-			//	// key used to track the connection
-			//	k := misc.ConntrackInfo{Addr: misc.Addr{
-			//		IP: packet.Layer(layers.LayerTypeIPv4).(*layers.IPv4).SrcIP.To4().String()}}
-			//
-			//	// get the source port and transport
-			//	if layer, ok := packet.Layer(layers.LayerTypeTCP).(*layers.TCP); ok {
-			//		if !layer.SYN {
-			//			if e := nf.SetVerdict(*attr.PacketID, nfqueue.NfAccept); e != nil {
-			//				cfg.log.Error("error setting nfqueue verdict", zap.Error(e))
-			//			}
-			//			return 0
-			//		}
-			//		k.Port = layer.SrcPort.String()
-			//		k.Transport = misc.TCPConntrackTransport
-			//	} else if layer := packet.Layer(layers.LayerTypeUDP); layer != nil {
-			//		k.Port = layer.(*layers.UDP).SrcPort.String()
-			//		k.Transport = misc.UDPConntrackTransport
-			//	} else {
-			//		cfg.log.Debug("unsupported nfqueue transport layer received")
-			//		return 0
-			//	}
-			//
-			//	// retrieve and store the downstream for the connection
-			//	if ds, ok := cfg.aitm.downstreams.Load(k.IP); ok {
-			//		if _, found := cfg.aitm.connAddrs.Load(k); !found {
-			//			cfg.aitm.connAddrs.Store(k, ds)
-			//			cfg.log.Debug("new downstream", zap.Any("source", k), zap.Any("downstream", ds))
-			//		} else {
-			//			cfg.log.Debug("duplicate downstream skipped", zap.Any("source", k), zap.Any("downstream", ds))
-			//		}
-			//	} else {
-			//		// failed to find downstream
-			//		cfg.log.Error("no active downstream found", zap.Any("connInfo", k))
-			//	}
-			//
-			//	fmt.Printf("[%d]\t%v\n", *attr.PacketID, *attr.Payload)
-			//	if e := nf.SetVerdict(*attr.PacketID, nfqueue.NfAccept); e != nil {
-			//		cfg.log.Error("error setting nfqueue verdict", zap.Error(e))
-			//	}
-			//	cfg.log.Debug("setting nfqueue verdict", zap.Any("connInfo", k))
-			//
-			//	return 0
-			//}
-			//
-			//eF := func(e error) int {
-			//	cfg.log.Error("error handling nfqueue packet", zap.Error(e))
-			//	return -1
-			//}
-			//
-			//if err = cfg.nfqConn.RegisterWithErrorFunc(ctx, hF, eF); err != nil {
-			//	err = fmt.Errorf("error registering nfqueue connection: %w", err)
-			//	return
-			//}
 
 			//===========================
 			// INITIALIZE NETFILTER TABLE
 			//===========================
-
-			// initialize netfilter connection
-			if cfg.nftConn, err = nftables.New(nftables.AsLasting()); err != nil { // init netfilter conn
-				err = fmt.Errorf("failed to establish nft connection: %w", err)
-				return
-			} else if err = cfg.newRandID(5); err != nil { // generate random id for the table
-				err = fmt.Errorf("failed to generate cfg id: %w", err)
-				return
-			} else if err = nft.StaleTables(cfg.nftConn, cfg.log); err != nil { // warn about stale tables
-				return
-			} else if cfg.aitm.nftTbl, err = nft.CreateTable(cfg.nftConn, cfg.aitm.getDefTCPProxyAddr(),
-				nft.TableName(cfg.id), cfg.log); err != nil { // create a table for the config
-				err = fmt.Errorf("failed to init nft table: %w", err)
-				return
-			}
-
-			// delete the current nft table upon ctx cancel
-			context.AfterFunc(ctx, func() {
-				tName := nft.TableName(cfg.id)
-				cfg.log.Debug("deleting current nft table", zap.String("table_name", tName))
-				if err := nft.DelTable(cfg.nftConn, cfg.aitm.nftTbl); err != nil {
-					cfg.log.Error("failed to delete nft table during shutdown",
-						zap.Error(err),
-						zap.String("table_name", tName))
-				} else {
-					cfg.log.Debug("deleted nft table", zap.String("table_name", tName))
-				}
-			})
 
 		case DefaultDownstreamOpt:
 			// Default downstream IP address that will receive all
@@ -555,6 +436,11 @@ func (cfg *Cfg) getInterface(name string, addr string) (err error) {
 	return
 }
 
+// GetProxyCertificateFunc returns a function that generates and/or serves
+// an X509 certificate for a downstream.
+//
+// If the handshake includes a server name value, the CN is that value. It's
+// otherwise the IP addressof the downstream.
 func (cfg *Cfg) GetProxyCertificateFunc(downstreamIP string) func(h *tls.ClientHelloInfo) (cert *tls.Certificate, error error) {
 
 	return func(h *tls.ClientHelloInfo) (cert *tls.Certificate, err error) {
@@ -611,4 +497,38 @@ func (f *aitmCfgFields) getDefaultDS() (a *misc.ConntrackInfo) {
 // setDefaultDS sets the default downstream.
 func (f *aitmCfgFields) setDefaultDS(a misc.ConntrackInfo) {
 	f.defDownstream.Store(&a)
+}
+
+// initNetfilterTable initializes the Netfilter table used to DNAT traffic
+// to the routines that proxy traffic to downstreams.
+func (cfg *Cfg) initNetfilterTable(ctx context.Context) (err error) {
+	// initialize netfilter connection
+	if cfg.nftConn, err = nftables.New(nftables.AsLasting()); err != nil { // init netfilter conn
+		err = fmt.Errorf("failed to establish nft connection: %w", err)
+		return
+	} else if err = cfg.newRandID(5); err != nil { // generate random id for the table
+		err = fmt.Errorf("failed to generate cfg id: %w", err)
+		return
+	} else if err = nft.StaleTables(cfg.nftConn, cfg.log); err != nil { // warn about stale tables
+		return
+	} else if cfg.aitm.nftTbl, err = nft.CreateTable(cfg.nftConn, cfg.aitm.getDefTCPProxyAddr(),
+		nft.TableName(cfg.id), cfg.log); err != nil { // create a table for the config
+		err = fmt.Errorf("failed to init nft table: %w", err)
+		return
+	}
+	cfg.log.Info("successfully initialized nft table", zap.String("nft_table_name", cfg.aitm.nftTbl.Name))
+
+	// delete the current nft table upon ctx cancel
+	context.AfterFunc(ctx, func() {
+		tName := nft.TableName(cfg.id)
+		cfg.log.Debug("deleting current nft table", zap.String("nft_table_name", tName))
+		if err := nft.DelTable(cfg.nftConn, cfg.aitm.nftTbl); err != nil {
+			cfg.log.Error("failed to delete nft table during shutdown",
+				zap.Error(err),
+				zap.String("table_name", tName))
+		} else {
+			cfg.log.Debug("deleted nft table", zap.String("nft_table_name", tName))
+		}
+	})
+	return
 }
