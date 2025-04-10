@@ -250,9 +250,9 @@ func CreateTable(conn *nftables.Conn, proxyAddr *misc.Addr, tblName string, log 
 	return
 }
 
-// getPoisonedAddrSetIP retrieves the IP identified by addr from the
+// getSpoofedAddrSetElement retrieves the IP identified by addr from the
 // @spoofed_ips nft set.
-func getPoisonedAddrSetIP(conn *nftables.Conn, set *nftables.Set, addr net.IP) (*nftables.SetElement, error) {
+func getSpoofedAddrSetElement(conn *nftables.Conn, set *nftables.Set, addr net.IP) (*nftables.SetElement, error) {
 	if eles, err := conn.GetSetElements(set); err != nil {
 		err = fmt.Errorf("failed to load poisoned addr set elements: %w", err)
 		return nil, err
@@ -270,7 +270,9 @@ func getPoisonedAddrSetIP(conn *nftables.Conn, set *nftables.Set, addr net.IP) (
 func AddSpoofedIP(conn *nftables.Conn, tbl *nftables.Table, addr net.IP) error {
 	if set, err := conn.GetSetByName(tbl, SpoofedIPs); err != nil {
 		return err
-	} else if e, err := getPoisonedAddrSetIP(conn, set, addr); err != nil {
+	} else if set == nil {
+		return errors.New("spoofed_ips set is missing")
+	} else if e, err := getSpoofedAddrSetElement(conn, set, addr); err != nil {
 		return err
 	} else if e == nil {
 		// add the element to the set
@@ -288,13 +290,13 @@ func DelSpoofedIP(conn *nftables.Conn, tbl *nftables.Table, addr net.IP) error {
 	if set, err := conn.GetSetByName(tbl, SpoofedIPs); err != nil {
 		return err
 	} else if set == nil {
-		return errors.New("poisoned addrs set is missing")
-	} else if e, err := getPoisonedAddrSetIP(conn, set, addr); err != nil {
+		return errors.New("spoofed_ips set is missing")
+	} else if e, err := getSpoofedAddrSetElement(conn, set, addr); err != nil {
 		return err
 	} else if e != nil {
 		err = conn.SetDeleteElements(set, []nftables.SetElement{{Key: addr.To4()}})
 		if err != nil {
-			return fmt.Errorf("failed to delete poisoned addr set elements: %w", err)
+			return fmt.Errorf("failed to delete spoofed_ip set elements: %w", err)
 		} else if err = conn.Flush(); err != nil {
 			return err
 		}

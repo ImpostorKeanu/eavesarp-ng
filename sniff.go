@@ -9,6 +9,7 @@ import (
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
 	"github.com/impostorkeanu/eavesarp-ng/misc"
+	"github.com/impostorkeanu/eavesarp-ng/nft"
 	"go.uber.org/zap"
 	"net"
 	"sync"
@@ -394,6 +395,11 @@ func AttackSnac(ctx context.Context, cfg *Cfg, senIp net.IP, tarIp net.IP, downs
 	for {
 		select {
 		case <-ctx.Done():
+			// remove the sender ip from the spoofed_ips nft set up context end
+			if err := nft.DelSpoofedIP(cfg.nftConn, cfg.aitm.nftTbl, senIp); err != nil {
+				cfg.log.Error("failed to remove spoofed ip from nft set",
+					zap.Error(err), zap.String("ip", senIp.String()))
+			}
 			return
 		case packet := <-in:
 
