@@ -297,15 +297,6 @@ func GetArpLayer(packet gopacket.Packet) *layers.ARP {
 	return nil
 }
 
-func attackSnacBpf(sIp, tIp string) string {
-	return fmt.Sprintf("src host %s || dst host %s", sIp, tIp)
-}
-
-const (
-	TCPProtoNumber uint8 = 0x06
-	UDPProtoNumber uint8 = 0x11
-)
-
 // AttackSnac poisons the sender's ARP table by sending our MAC address
 // when a request for the target's IP is observed. After poisoning
 // occurs and non-ARP traffic is detected, each packet is passed to
@@ -348,41 +339,22 @@ func AttackSnac(ctx context.Context, cfg *Cfg, senIp net.IP, tarIp net.IP, downs
 		}
 	}
 
-	// TODO we should probably throw an error if the downstream is already set
-	cfg.aitm.downstreams.Store(senIp.To4().String(), downstream)
-
-	// filter conntrack on ip and dst source
-	filter := []conntrack.ConnAttr{
-		// Source IP address (sender)
-		{
-			Type: conntrack.AttrOrigIPv4Src,
-			Data: senIp.To4(),
-			Mask: []byte{0xff, 0xff, 0xff, 0xff},
+	// trigger connection tracking cleanup when conntrack signals destruction
+	err = nfct.RegisterFiltered(ctx, conntrack.Conntrack, conntrack.NetlinkCtDestroy,
+		[]conntrack.ConnAttr{
+			// Source IP address (sender)
+			{
+				Type: conntrack.AttrOrigIPv4Src,
+				Data: senIp.To4(),
+				Mask: []byte{0xff, 0xff, 0xff, 0xff},
+			},
+			// Destination IP address (target -- poisoned cache record btw)
+			{
+				Type: conntrack.AttrOrigIPv4Dst,
+				Data: tarIp.To4(),
+				Mask: []byte{0xff, 0xff, 0xff, 0xff},
+			},
 		},
-		// Destination IP address (target -- poisoned cache record btw)
-		{
-			Type: conntrack.AttrOrigIPv4Dst,
-			Data: tarIp.To4(),
-			Mask: []byte{0xff, 0xff, 0xff, 0xff},
-		},
-	}
-
-	//// track new connections
-	//err = nfct.RegisterFiltered(ctx, conntrack.Conntrack, conntrack.NetlinkCtNew, filter,
-	//	newConnFilterFunc(cfg, downstream, downstreamDefault))
-	//
-	//if err != nil {
-	//	err = fmt.Errorf("failed to register nfct connection filter: %w", err)
-	//	return
-	//}
-
-	// delete destroyed connections
-	// NOTE: Netfilter was found to be unreliable in terms of calling multiple
-	// hook functions at the right time. It would often call the "destroy" hook
-	// before "new", so the connection information would be lost before it reached
-	// the connection map. Leaving this here for posterity.
-
-	err = nfct.RegisterFiltered(ctx, conntrack.Conntrack, conntrack.NetlinkCtDestroy, filter,
 		destroyConnFilterFunc(cfg))
 
 	if err != nil {
@@ -403,7 +375,7 @@ func AttackSnac(ctx context.Context, cfg *Cfg, senIp net.IP, tarIp net.IP, downs
 	defer rHandle.Close()
 
 	// filter to capture both sides of the conversation
-	if err = rHandle.SetBPFFilter(attackSnacBpf(senIp.String(), tarIp.String())); err != nil {
+	if err = rHandle.SetBPFFilter(fmt.Sprintf("src host %s || dst host %s", senIp.String(), tarIp.String())); err != nil {
 		logFields = append(logFields, zap.Error(err))
 		cfg.log.Error("failed to set bpf filter to attack snac", logFields...)
 		return
@@ -422,7 +394,6 @@ func AttackSnac(ctx context.Context, cfg *Cfg, senIp net.IP, tarIp net.IP, downs
 	for {
 		select {
 		case <-ctx.Done():
-			cfg.aitm.downstreams.Delete(senIp.To4().String())
 			return
 		case packet := <-in:
 
@@ -444,41 +415,9 @@ func AttackSnac(ctx context.Context, cfg *Cfg, senIp net.IP, tarIp net.IP, downs
 				}
 				continue
 
-			} else if ipL, ok := packet.Layer(layers.LayerTypeIPv4).(*layers.IPv4); ok {
-
-				//==============================================
-				// HANDLE INCOMING TCP CONNECTIONS & UDP PACKETS
-				//==============================================
-
-				k := misc.ConntrackInfo{Addr: misc.Addr{IP: ipL.SrcIP.To4().String()}}
-				v := *downstream
-
-				if tcp, ok := packet.Layer(layers.LayerTypeTCP).(*layers.TCP); ok && tcp.SYN {
-					k.Port = tcp.SrcPort.String()
-					k.Transport = misc.TCPConntrackTransport
-					if !downstreamDefault {
-						v.Port = tcp.DstPort.String()
-						v.Transport = misc.TCPConntrackTransport
-					}
-				} else if udp, ok := packet.Layer(layers.LayerTypeUDP).(*layers.UDP); ok {
-					// TODO we should probably look into refining this
-					//  one of the benefits of conntrack is that it could infer the state
-					//  of a UDP "connection"....
-					k.Port = udp.SrcPort.String()
-					k.Transport = misc.UDPConntrackTransport
-					if !downstreamDefault {
-						v.Port = udp.DstPort.String()
-						v.Transport = misc.UDPConntrackTransport
-					}
-				}
-
-				if k.Port == "" {
-					// Didn't find TCP or UDP layer.....NOP
-				} else if _, ok = cfg.aitm.connAddrs.Load(k); !ok {
-					// Store unique connection
-					cfg.aitm.connAddrs.Store(k, v)
-				}
 			}
+
+			createConnAddr(cfg, packet, downstreamDefault, downstream)
 
 			// Run handlers
 			go func() {
@@ -492,52 +431,52 @@ func AttackSnac(ctx context.Context, cfg *Cfg, senIp net.IP, tarIp net.IP, downs
 	}
 }
 
-// newConnFilterFunc returns a conntrack.HookFunc for handling incoming
-// UDP and TCP connections.
-func newConnFilterFunc(cfg *Cfg, downstream *misc.ConntrackInfo, downstreamDefault bool) conntrack.HookFunc {
-	return func(con conntrack.Con) int {
+// createConnAddr updates cfg.aitm.connAddrs with connection information
+// to enable post-DNAT connectivity.
+//
+// No update is made if the packet doesn't have an IPv4, TCP, or UDP layer.
+//
+//
+// updated indicates if an update was applied.
+func createConnAddr(cfg *Cfg, packet gopacket.Packet, downstreamDefault bool, downstream *misc.ConntrackInfo) (updated bool) {
+	if ipL, ok := packet.Layer(layers.LayerTypeIPv4).(*layers.IPv4); ok {
 
-		// dereferencing this pointer may seem reckless, but it's fine
-		// because the filter only accepts tcp/udp traffic
-		t := misc.ConntrackTransportFromProtoNum(*con.Origin.Proto.Number)
-		if t == "" {
-			cfg.log.Warn("transport proto num miss")
-			return 0
-		}
+		//==============================================
+		// HANDLE INCOMING TCP CONNECTIONS & UDP PACKETS
+		//==============================================
 
-		// build the key used to track the connection
-		k := misc.ConntrackInfo{Addr: misc.Addr{
-			IP:   con.Origin.Src.To4().String(),
-			Port: fmt.Sprintf("%d", *con.Origin.Proto.SrcPort)},
-			Transport: t,
-		}
+		k := misc.ConntrackInfo{Addr: misc.Addr{IP: ipL.SrcIP.To4().String()}}
+		v := *downstream
 
-		// store a new connection
-		if _, ok := cfg.aitm.connAddrs.Load(k); !ok {
-			var v misc.ConntrackInfo
-			if downstreamDefault {
-				// downstream should just hit the default tcp/udp server
-				// NOTE that the port is changed in this case, where it's
-				// preserved when a real downstream is supplied
-
-				// copy the default downstream
-				v = *downstream
-				// set to the proper transport protocol
-				v.Transport = t
-			} else {
-				// downstream should target a real host on the target port
-				v = misc.ConntrackInfo{Addr: misc.Addr{
-					IP:   downstream.IP,
-					Port: fmt.Sprintf("%d", *con.Origin.Proto.DstPort)},
-					Transport: t,
-				}
+		if tcp, ok := packet.Layer(layers.LayerTypeTCP).(*layers.TCP); ok && tcp.SYN {
+			k.Port = tcp.SrcPort.String()
+			k.Transport = misc.TCPConntrackTransport
+			if !downstreamDefault {
+				v.Port = tcp.DstPort.String()
+				v.Transport = misc.TCPConntrackTransport
 			}
-			// store the connection
+		} else if udp, ok := packet.Layer(layers.LayerTypeUDP).(*layers.UDP); ok {
+			// TODO should probably look into refining this
+			//  one of the benefits of conntrack is that it could infer the state
+			//  of a UDP "connection"....
+			k.Port = udp.SrcPort.String()
+			k.Transport = misc.UDPConntrackTransport
+			if !downstreamDefault {
+				v.Port = udp.DstPort.String()
+				v.Transport = misc.UDPConntrackTransport
+			}
+		}
+
+		if k.Port == "" {
+			// Didn't find TCP or UDP layer.....NOP
+		} else if _, ok = cfg.aitm.connAddrs.Load(k); !ok {
+			// Store unique connection
+			updated = true
 			cfg.aitm.connAddrs.Store(k, v)
 		}
-
-		return 0
 	}
+
+	return
 }
 
 // newConnFilterFunc returns a conntrack.HookFunc for cleaning up destroyed
@@ -554,8 +493,7 @@ func destroyConnFilterFunc(cfg *Cfg) conntrack.HookFunc {
 		k := misc.ConntrackInfo{Addr: misc.Addr{
 			IP:   con.Origin.Src.To4().String(),
 			Port: fmt.Sprintf("%d", *con.Origin.Proto.SrcPort)},
-			Transport: t,
-		}
+			Transport: t}
 		if _, ok := cfg.aitm.connAddrs.Load(k); ok {
 			cfg.aitm.connAddrs.Delete(k)
 		}

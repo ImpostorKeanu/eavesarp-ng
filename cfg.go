@@ -73,8 +73,6 @@ type (
 		// The type for both the key and value is misc.ConntrackInfo.
 		connAddrs *sync.Map
 
-		downstreams *sync.Map
-
 		// defDownstream describes a TCP listener that will receive connections
 		// during an AITM attack _without_ an AITM downstream. This allows us to
 		// always complete TCP connections and receive data.
@@ -182,7 +180,6 @@ func NewCfg(dsn string, ifaceName, ifaceAddr string, log *zap.Logger, opts ...an
 	cfg.dns.failCount = NewFailCounter(DnsMaxFailures)
 
 	cfg.aitm.connAddrs = new(sync.Map)
-	cfg.aitm.downstreams = new(sync.Map)
 
 	//============================================
 	// APPLY OPTIONS AND START SUPPORTING ROUTINES
