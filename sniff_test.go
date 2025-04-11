@@ -13,7 +13,7 @@ import (
 func newCfg() (cfg Cfg, err error) {
 	logger := zap.NewExample()
 	return NewCfg("/tmp/eatest.db", "enp13s0", "", logger,
-		DefaultProxyServerAddrOpt(""), tcpserver.Opts{
+		DefaultProxyServerAddrOpt(""), tcpserver.TCPOpts{
 			GetRespBytes: func() ([]byte, error) {
 				return []byte("stuff"), nil
 			},

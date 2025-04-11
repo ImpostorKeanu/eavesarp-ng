@@ -103,7 +103,7 @@ type (
 
 	// DefaultDownstreamOpt sets the default downstream for AITM attacks.
 	//
-	// When not supplied or empty, the server specified by Opts
+	// When not supplied or empty, the server specified by TCPOpts
 	// will become the default.
 	DefaultDownstreamOpt string
 )
@@ -149,7 +149,7 @@ func (cfg *Cfg) newRandID(l int) (err error) {
 //
 // # Options
 //
-// - Opts
+// - TCPOpts
 // - DefaultProxyServerAddrOpt
 // - DefaultDownstreamOpt
 func NewCfg(dsn string, ifaceName, ifaceAddr string, log *zap.Logger, opts ...any) (cfg Cfg, err error) {
@@ -212,7 +212,7 @@ func NewCfg(dsn string, ifaceName, ifaceAddr string, log *zap.Logger, opts ...an
 	for _, opt := range opts {
 		switch v := opt.(type) {
 		// TODO add a case to handle a default UDP server to log data
-		case tcpserver.Opts:
+		case tcpserver.TCPOpts:
 			// Generate a random certificate for TLS connections
 			if v.TLSCfg == nil {
 				var cert *tls.Certificate
@@ -291,6 +291,23 @@ func (cfg *Cfg) newTCPListener(addr string) (l net.Listener, err error) {
 	return
 }
 
+func (cfg *Cfg) newUDPConn(addr string) (conn *net.UDPConn, err error) {
+	if cfg.ipNet == nil {
+		err = errors.New("nil ipNet")
+		return
+	}
+	if addr == "" {
+		addr = net.JoinHostPort(cfg.ipNet.IP.String(), "0")
+	}
+	var a *net.UDPAddr
+	a, err = net.ResolveUDPAddr("udp4", addr)
+	if err != nil {
+		return
+	}
+	conn, err = net.ListenUDP("udp4", a)
+	return
+}
+
 // StartDefaultTCPProxy runs a proxy server in a distinct routine that will receive
 // all proxied connections via DNAT.
 func (cfg *Cfg) StartDefaultTCPProxy(ctx context.Context, addr string) (err error) {
@@ -306,7 +323,7 @@ func (cfg *Cfg) StartDefaultTCPProxy(ctx context.Context, addr string) (err erro
 	cfg.log.Info("default tcp proxy server listener started", zap.String("address", l.Addr().String()))
 	go func() {
 		cfg.log.Debug("default tcp proxy server accepting connections", zap.String("address", l.Addr().String()))
-		pCfg := proxy.NewCfg(cfg.aitm.connAddrs, cfg.GetProxyCertificateFunc, cfg.log)
+		pCfg := proxy.NewTCPCfg(cfg.aitm.connAddrs, cfg.GetProxyCertificateFunc, cfg.log)
 		if e := gs.NewProxyServer(pCfg, l).Serve(ctx); e != nil {
 			cfg.log.Error("default tcp proxy server failed", zap.Error(e))
 			cfg.errC <- err
@@ -318,7 +335,7 @@ func (cfg *Cfg) StartDefaultTCPProxy(ctx context.Context, addr string) (err erro
 // StartDefaultTCPServer starts a TLS aware TCP server that will proxy incoming connections
 // from victims of spoofing attacks that do not have a downstream configured. This ensures
 //  that all TCP connections can complete and send packets.
-func (cfg *Cfg) StartDefaultTCPServer(ctx context.Context, opts *tcpserver.Opts) (err error) {
+func (cfg *Cfg) StartDefaultTCPServer(ctx context.Context, opts *tcpserver.TCPOpts) (err error) {
 	var l net.Listener
 	if l, err = cfg.newTCPListener(opts.Addr); err != nil {
 		return

@@ -304,7 +304,7 @@ func optInt(v any) (i int, err error) {
 	switch v.(type) {
 	case DefaultDownstreamOpt:
 		i = DefaultDownstreamOptWeight
-	case tcpserver.Opts:
+	case tcpserver.TCPOpts:
 		i = DefaultTCPServerOptWeight
 	case DefaultProxyServerAddrOpt:
 		i = DefaultProxyServerOptWeight

@@ -1,5 +1,10 @@
 package misc
 
+import (
+	"errors"
+	"net"
+)
+
 // Connection filtering requires protocol numbers.
 // Source: https://en.wikipedia.org/wiki/List_of_IP_protocol_numbers
 const (
@@ -38,6 +43,49 @@ func ConntrackTransportFromProtoNum(i uint8) (t ConntrackTransport) {
 		t = TCPConntrackTransport
 	case UDPProtoNumber:
 		t = UDPConntrackTransport
+	}
+	return
+}
+
+func (c ConntrackInfo) String() string {
+	return net.JoinHostPort(c.Addr.IP, c.Addr.Port)
+}
+
+func (c ConntrackInfo) Network() string {
+	switch c.Transport {
+	case UDPConntrackTransport:
+		return "udp4"
+	default:
+		return "tcp4"
+	}
+}
+
+func NewConntrackInfo(addr any, transport any) (c ConntrackInfo, err error) {
+	var t ConntrackTransport
+	switch v := transport.(type) {
+	case ConntrackTransport:
+		t = v
+	case string:
+		t = ConntrackTransport(v)
+	default:
+		err = errors.New("invalid transport type")
+		return
+	}
+
+	switch t {
+	case TCPConntrackTransport, UDPConntrackTransport:
+	default:
+		err = errors.New("invalid transport value")
+		return
+	}
+
+	switch addr := addr.(type) {
+	case net.Addr:
+		c.IP, c.Port, err = net.SplitHostPort(addr.String())
+	case Addr:
+		c.Addr = addr
+	case string:
+		c.IP, c.Port, err = net.SplitHostPort(addr)
 	}
 	return
 }

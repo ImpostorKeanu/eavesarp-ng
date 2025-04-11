@@ -36,7 +36,7 @@ func TestCfg_StartDefaultTCPServer(t *testing.T) {
 	}
 
 	type args struct {
-		opts *tcpserver.Opts
+		opts *tcpserver.TCPOpts
 	}
 
 	tests := []struct {
@@ -46,7 +46,7 @@ func TestCfg_StartDefaultTCPServer(t *testing.T) {
 		wantErr bool
 	}{
 		// TODO: Add test cases.
-		{name: "default", fields: fields{log: logger, errC: errChan}, args: args{opts: &tcpserver.Opts{
+		{name: "default", fields: fields{log: logger, errC: errChan}, args: args{opts: &tcpserver.TCPOpts{
 			Addr: "",
 			TLSCfg: &tls.Config{
 				InsecureSkipVerify: true,

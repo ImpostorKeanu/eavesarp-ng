@@ -10,10 +10,10 @@ import (
 )
 
 type (
-	// Opts specifies options to start a TLS-aware TCP
+	// TCPOpts specifies options to start a TLS-aware TCP
 	// server that will receive TCP connections when no downstream is
 	// configured for a poisoning attack.
-	Opts struct {
+	TCPOpts struct {
 		// Addr is the address the TCP server will listen on. Notes:
 		//
 		// - Expected format: `127.0.0.1:8686`
@@ -50,7 +50,7 @@ func (c *peekConn) Read(b []byte) (n int, err error) {
 	return c.b.Read(b)
 }
 
-func Serve(ctx context.Context, l net.Listener, opts Opts, log *zap.Logger) (err error) {
+func Serve(ctx context.Context, l net.Listener, opts TCPOpts, log *zap.Logger) (err error) {
 	if opts.TLSCfg == nil {
 		return errors.New("tls config is required for default tcp server")
 	}
@@ -94,7 +94,7 @@ ctrl:
 	return
 }
 
-func handleConn(conn net.Conn, opts Opts, log *zap.Logger) (err error) {
+func handleConn(conn net.Conn, opts TCPOpts, log *zap.Logger) (err error) {
 
 	// always call close on the connection
 	defer func() {
