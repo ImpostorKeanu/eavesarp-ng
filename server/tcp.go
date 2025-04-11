@@ -1,4 +1,4 @@
-package tcpserver
+package server
 
 import (
 	"bufio"
@@ -34,10 +34,6 @@ type (
 		net.Conn
 		b *bufio.Reader
 	}
-
-	// RespFunc defines a function signature that returns
-	// bytes for TCP segments.
-	RespFunc func() ([]byte, error)
 )
 
 // Peek at the connection.
@@ -50,9 +46,12 @@ func (c *peekConn) Read(b []byte) (n int, err error) {
 	return c.b.Read(b)
 }
 
-func Serve(ctx context.Context, l net.Listener, opts TCPOpts, log *zap.Logger) (err error) {
+func ServeTCP(ctx context.Context, l net.Listener, opts TCPOpts, log *zap.Logger) (err error) {
+
 	if opts.TLSCfg == nil {
 		return errors.New("tls config is required for default tcp server")
+	} else if opts.GetRespBytes == nil {
+		err = errors.New("respF is nil")
 	}
 
 	context.AfterFunc(ctx, func() {

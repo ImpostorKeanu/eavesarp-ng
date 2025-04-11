@@ -43,13 +43,15 @@ func (s *UDPServer) Serve(ctx context.Context) (err error) {
 				continue
 			}
 
+			// TODO log data
+
 			// look up downstream address information
-			var key, ds misc.ConntrackInfo
-			if key, e = misc.NewConntrackInfo(addr, "udp"); err != nil {
+			var key, ds misc.Addr
+			if key, e = misc.NewAddr(addr, "udp"); err != nil {
 				s.cfg.log.Error("failed to parse udp address", zap.Error(e))
 				s.cfg.log.Debug("unhandled error while preparing conntrack info", zap.Error(e))
 			} else if v, ok := s.cfg.connAddrs.Load(key); ok {
-				ds = v.(misc.ConntrackInfo)
+				ds = v.(misc.Addr)
 			} else {
 				s.cfg.log.Error("missing connection info for udp datagram", zap.Any("source", key))
 				continue
@@ -94,6 +96,8 @@ func (s *UDPServer) Serve(ctx context.Context) (err error) {
 				if err != nil {
 					return
 				}
+
+				// TODO response log data
 
 				// send the downstream response back to the victim via the
 				// servers connection

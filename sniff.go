@@ -305,7 +305,7 @@ func GetArpLayer(packet gopacket.Packet) *layers.ARP {
 //
 // NOTE: Before poisoning the sender's ARP table, this function passively
 // waits for the sender to broadcast an ARP request.
-func AttackSnac(ctx context.Context, cfg *Cfg, senIp net.IP, tarIp net.IP, downstream *misc.ConntrackInfo,
+func AttackSnac(ctx context.Context, cfg *Cfg, senIp net.IP, tarIp net.IP, downstream *misc.Addr,
   handlers ...ArpSpoofHandler) (err error) {
 
 	logFields := []zap.Field{zap.String("senderIp", senIp.String()), zap.String("targetIp", tarIp.String())}
@@ -444,32 +444,32 @@ func AttackSnac(ctx context.Context, cfg *Cfg, senIp net.IP, tarIp net.IP, downs
 //
 //
 // updated indicates if an update was applied.
-func createConnAddr(cfg *Cfg, packet gopacket.Packet, downstreamDefault bool, downstream *misc.ConntrackInfo) (updated bool) {
+func createConnAddr(cfg *Cfg, packet gopacket.Packet, downstreamDefault bool, downstream *misc.Addr) (updated bool) {
 	if ipL, ok := packet.Layer(layers.LayerTypeIPv4).(*layers.IPv4); ok {
 
 		//==============================================
 		// HANDLE INCOMING TCP CONNECTIONS & UDP PACKETS
 		//==============================================
 
-		k := misc.ConntrackInfo{Addr: misc.Addr{IP: ipL.SrcIP.To4().String()}}
+		k := misc.Addr{IP: ipL.SrcIP.To4().String()}
 		v := *downstream
 
 		if tcp, ok := packet.Layer(layers.LayerTypeTCP).(*layers.TCP); ok && tcp.SYN {
 			k.Port = tcp.SrcPort.String()
-			k.Transport = misc.TCPConntrackTransport
+			k.Transport = misc.TCPAddrTransport
 			if !downstreamDefault {
 				v.Port = tcp.DstPort.String()
-				v.Transport = misc.TCPConntrackTransport
+				v.Transport = misc.TCPAddrTransport
 			}
 		} else if udp, ok := packet.Layer(layers.LayerTypeUDP).(*layers.UDP); ok {
 			// TODO should probably look into refining this
 			//  one of the benefits of conntrack is that it could infer the state
 			//  of a UDP "connection"....
 			k.Port = udp.SrcPort.String()
-			k.Transport = misc.UDPConntrackTransport
+			k.Transport = misc.UDPAddrTransport
 			if !downstreamDefault {
 				v.Port = udp.DstPort.String()
-				v.Transport = misc.UDPConntrackTransport
+				v.Transport = misc.UDPAddrTransport
 			}
 		}
 
@@ -496,9 +496,9 @@ func destroyConnFilterFunc(cfg *Cfg) conntrack.HookFunc {
 		if t == "" {
 			return 0
 		}
-		k := misc.ConntrackInfo{Addr: misc.Addr{
-			IP:   con.Origin.Src.To4().String(),
-			Port: fmt.Sprintf("%d", *con.Origin.Proto.SrcPort)},
+		k := misc.Addr{
+			IP:        con.Origin.Src.To4().String(),
+			Port:      fmt.Sprintf("%d", *con.Origin.Proto.SrcPort),
 			Transport: t}
 		if _, ok := cfg.aitm.connAddrs.Load(k); ok {
 			cfg.aitm.connAddrs.Delete(k)

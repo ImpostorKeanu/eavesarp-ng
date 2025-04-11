@@ -13,67 +13,63 @@ const (
 )
 
 const (
-	TCPConntrackTransport ConntrackTransport = "tcp"
-	UDPConntrackTransport ConntrackTransport = "udp"
+	TCPAddrTransport AddrTransport = "tcp"
+	UDPAddrTransport AddrTransport = "udp"
 )
 
 type (
-	Addr struct {
-		IP   string `json:"ip,omitempty"`
-		Port string `json:"port,omitempty"`
-	}
-
-	// ConntrackTransport indicates the transport protocol of the
-	// connection. See TCPConntrackTransport and UDPConntrackTransport.
-	ConntrackTransport string
-
-	// ConntrackInfo contains information related to a poisoned connection
+	// Addr contains information related to a poisoned connection
 	// that's being proxied through Eavesarp.
-	ConntrackInfo struct {
-		Addr      `json:",omitempty"`
-		Transport ConntrackTransport `json:"transport,omitempty"`
+	Addr struct {
+		IP        string        `json:"ip,omitempty"`
+		Port      string        `json:"port,omitempty"`
+		Transport AddrTransport `json:"transport,omitempty"`
 	}
+
+	// AddrTransport indicates the transport protocol of the
+	// connection. See TCPAddrTransport and UDPAddrTransport.
+	AddrTransport string
 )
 
-func ConntrackTransportFromProtoNum(i uint8) (t ConntrackTransport) {
+func ConntrackTransportFromProtoNum(i uint8) (t AddrTransport) {
 	// determine the protocol of the connection
 	// note: only tcp and udp are currently supported
 	switch i {
 	case TCPProtoNumber:
-		t = TCPConntrackTransport
+		t = TCPAddrTransport
 	case UDPProtoNumber:
-		t = UDPConntrackTransport
+		t = UDPAddrTransport
 	}
 	return
 }
 
-func (c ConntrackInfo) String() string {
-	return net.JoinHostPort(c.Addr.IP, c.Addr.Port)
+func (a Addr) String() string {
+	return net.JoinHostPort(a.IP, a.Port)
 }
 
-func (c ConntrackInfo) Network() string {
-	switch c.Transport {
-	case UDPConntrackTransport:
+func (a Addr) Network() string {
+	switch a.Transport {
+	case UDPAddrTransport:
 		return "udp4"
 	default:
 		return "tcp4"
 	}
 }
 
-func NewConntrackInfo(addr any, transport any) (c ConntrackInfo, err error) {
-	var t ConntrackTransport
+func NewAddr(addr any, transport any) (a Addr, err error) {
+	var t AddrTransport
 	switch v := transport.(type) {
-	case ConntrackTransport:
+	case AddrTransport:
 		t = v
 	case string:
-		t = ConntrackTransport(v)
+		t = AddrTransport(v)
 	default:
 		err = errors.New("invalid transport type")
 		return
 	}
 
 	switch t {
-	case TCPConntrackTransport, UDPConntrackTransport:
+	case TCPAddrTransport, UDPAddrTransport:
 	default:
 		err = errors.New("invalid transport value")
 		return
@@ -81,11 +77,11 @@ func NewConntrackInfo(addr any, transport any) (c ConntrackInfo, err error) {
 
 	switch addr := addr.(type) {
 	case net.Addr:
-		c.IP, c.Port, err = net.SplitHostPort(addr.String())
+		a.IP, a.Port, err = net.SplitHostPort(addr.String())
 	case Addr:
-		c.Addr = addr
+		a.IP, a.Port = addr.IP, addr.Port
 	case string:
-		c.IP, c.Port, err = net.SplitHostPort(addr)
+		a.IP, a.Port, err = net.SplitHostPort(addr)
 	}
 	return
 }

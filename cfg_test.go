@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509/pkix"
+	"github.com/impostorkeanu/eavesarp-ng/server"
 	"github.com/impostorkeanu/eavesarp-ng/tcpserver"
 	gs "github.com/impostorkeanu/gosplit"
 	"go.uber.org/zap"
@@ -36,7 +37,7 @@ func TestCfg_StartDefaultTCPServer(t *testing.T) {
 	}
 
 	type args struct {
-		opts *tcpserver.TCPOpts
+		opts *server.TCPOpts
 	}
 
 	tests := []struct {
@@ -46,7 +47,7 @@ func TestCfg_StartDefaultTCPServer(t *testing.T) {
 		wantErr bool
 	}{
 		// TODO: Add test cases.
-		{name: "default", fields: fields{log: logger, errC: errChan}, args: args{opts: &tcpserver.TCPOpts{
+		{name: "default", fields: fields{log: logger, errC: errChan}, args: args{opts: &server.TCPOpts{
 			Addr: "",
 			TLSCfg: &tls.Config{
 				InsecureSkipVerify: true,

@@ -4,6 +4,7 @@ import (
 	"context"
 	"github.com/impostorkeanu/eavesarp-ng/misc"
 	"github.com/impostorkeanu/eavesarp-ng/nft"
+	"github.com/impostorkeanu/eavesarp-ng/server"
 	"github.com/impostorkeanu/eavesarp-ng/tcpserver"
 	"go.uber.org/zap"
 	"net"
@@ -13,7 +14,7 @@ import (
 func newCfg() (cfg Cfg, err error) {
 	logger := zap.NewExample()
 	return NewCfg("/tmp/eatest.db", "enp13s0", "", logger,
-		DefaultProxyServerAddrOpt(""), tcpserver.TCPOpts{
+		DefaultProxyServerAddrOpt(""), server.TCPOpts{
 			GetRespBytes: func() ([]byte, error) {
 				return []byte("stuff"), nil
 			},
@@ -38,7 +39,7 @@ func TestAttackSnac(t *testing.T) {
 		cfg        Cfg
 		senIp      net.IP
 		tarIp      net.IP
-		downstream *misc.ConntrackInfo
+		downstream *misc.Addr
 		handlers   []ArpSpoofHandler
 	}
 	tests := []struct {

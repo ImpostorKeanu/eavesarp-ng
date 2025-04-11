@@ -14,7 +14,7 @@ import (
 	"github.com/impostorkeanu/eavesarp-ng/misc/rand"
 	"github.com/impostorkeanu/eavesarp-ng/nft"
 	"github.com/impostorkeanu/eavesarp-ng/proxy"
-	"github.com/impostorkeanu/eavesarp-ng/tcpserver"
+	"github.com/impostorkeanu/eavesarp-ng/server"
 	gs "github.com/impostorkeanu/gosplit"
 	"go.uber.org/zap"
 	_ "modernc.org/sqlite"
@@ -70,7 +70,7 @@ type (
 		// connAddrs maps the sender address to a target address for a connection
 		// that has been detected by netfilter.
 		//
-		// The type for both the key and value is misc.ConntrackInfo.
+		// The type for both the key and value is misc.Addr.
 		connAddrs *sync.Map
 
 		// defDownstream describes a TCP listener that will receive connections
@@ -212,7 +212,7 @@ func NewCfg(dsn string, ifaceName, ifaceAddr string, log *zap.Logger, opts ...an
 	for _, opt := range opts {
 		switch v := opt.(type) {
 		// TODO add a case to handle a default UDP server to log data
-		case tcpserver.TCPOpts:
+		case server.TCPOpts:
 			// Generate a random certificate for TLS connections
 			if v.TLSCfg == nil {
 				var cert *tls.Certificate
@@ -242,7 +242,7 @@ func NewCfg(dsn string, ifaceName, ifaceAddr string, log *zap.Logger, opts ...an
 				err = e
 				return
 			} else {
-				cfg.aitm.setDefaultDS(misc.ConntrackInfo{Addr: misc.Addr{IP: defA, Port: defP}, Transport: misc.TCPConntrackTransport})
+				cfg.aitm.setDefaultDS(misc.Addr{IP: defA, Port: defP, Transport: misc.TCPAddrTransport})
 			}
 
 		case DefaultProxyServerAddrOpt:
@@ -261,7 +261,7 @@ func NewCfg(dsn string, ifaceName, ifaceAddr string, log *zap.Logger, opts ...an
 		case DefaultDownstreamOpt:
 			// Default downstream IP address that will receive all
 			// TCP connections
-			x := misc.ConntrackInfo{Transport: misc.TCPConntrackTransport}
+			x := misc.Addr{Transport: misc.TCPAddrTransport}
 			x.IP, x.Port, err = net.SplitHostPort(string(v))
 			if err != nil {
 				err = fmt.Errorf("failed to parse default downstream value: %w", err)
@@ -335,7 +335,7 @@ func (cfg *Cfg) StartDefaultTCPProxy(ctx context.Context, addr string) (err erro
 // StartDefaultTCPServer starts a TLS aware TCP server that will proxy incoming connections
 // from victims of spoofing attacks that do not have a downstream configured. This ensures
 //  that all TCP connections can complete and send packets.
-func (cfg *Cfg) StartDefaultTCPServer(ctx context.Context, opts *tcpserver.TCPOpts) (err error) {
+func (cfg *Cfg) StartDefaultTCPServer(ctx context.Context, opts *server.TCPOpts) (err error) {
 	var l net.Listener
 	if l, err = cfg.newTCPListener(opts.Addr); err != nil {
 		return
@@ -346,7 +346,7 @@ func (cfg *Cfg) StartDefaultTCPServer(ctx context.Context, opts *tcpserver.TCPOp
 
 	go func() {
 		cfg.log.Debug("default tcp server accepting connections", zap.String("address", opts.Addr))
-		if e := tcpserver.Serve(ctx, l, *opts, cfg.log); e != nil {
+		if e := server.ServeTCP(ctx, l, *opts, cfg.log); e != nil {
 			cfg.log.Error("default tcp server error", zap.Error(e))
 			cfg.errC <- e
 		}
@@ -506,13 +506,13 @@ func (f *aitmCfgFields) setDefTCPProxyAddr(a misc.Addr) {
 }
 
 // getDefaultDS gets the default downstream.
-func (f *aitmCfgFields) getDefaultDS() (a *misc.ConntrackInfo) {
-	a, _ = f.defDownstream.Load().(*misc.ConntrackInfo)
+func (f *aitmCfgFields) getDefaultDS() (a *misc.Addr) {
+	a, _ = f.defDownstream.Load().(*misc.Addr)
 	return
 }
 
 // setDefaultDS sets the default downstream.
-func (f *aitmCfgFields) setDefaultDS(a misc.ConntrackInfo) {
+func (f *aitmCfgFields) setDefaultDS(a misc.Addr) {
 	f.defDownstream.Store(&a)
 }
 
