@@ -5,7 +5,6 @@ import (
 	"crypto/tls"
 	"crypto/x509/pkix"
 	"github.com/impostorkeanu/eavesarp-ng/server"
-	"github.com/impostorkeanu/eavesarp-ng/tcpserver"
 	gs "github.com/impostorkeanu/gosplit"
 	"go.uber.org/zap"
 	"testing"

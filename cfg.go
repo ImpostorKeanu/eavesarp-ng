@@ -17,6 +17,7 @@ import (
 	"github.com/impostorkeanu/eavesarp-ng/server"
 	gs "github.com/impostorkeanu/gosplit"
 	"go.uber.org/zap"
+	"io"
 	_ "modernc.org/sqlite"
 	"net"
 	"slices"
@@ -39,6 +40,7 @@ type (
 		ipNet   *net.IPNet
 		iface   *net.Interface
 		log     *zap.Logger
+		dataLog io.Writer
 		errC    chan error // Channel to communicate errors to other applications
 		arp     arpCfgFields
 		dns     dnsCfgFields
@@ -67,11 +69,11 @@ type (
 
 	// aitmCfgFields defines configuration fields related to AITM.
 	aitmCfgFields struct {
-		// connAddrs maps the sender address to a target address for a connection
+		// connMap maps the sender address to a target address for a connection
 		// that has been detected by netfilter.
 		//
 		// The type for both the key and value is misc.Addr.
-		connAddrs *sync.Map
+		connMap *sync.Map
 
 		// defDownstream describes a TCP listener that will receive connections
 		// during an AITM attack _without_ an AITM downstream. This allows us to
@@ -152,7 +154,7 @@ func (cfg *Cfg) newRandID(l int) (err error) {
 // - TCPOpts
 // - DefaultProxyServerAddrOpt
 // - DefaultDownstreamOpt
-func NewCfg(dsn string, ifaceName, ifaceAddr string, log *zap.Logger, opts ...any) (cfg Cfg, err error) {
+func NewCfg(dsn string, ifaceName, ifaceAddr string, log *zap.Logger, dataLog io.Writer, opts ...any) (cfg Cfg, err error) {
 
 	// configure logging
 	if log == nil {
@@ -160,6 +162,7 @@ func NewCfg(dsn string, ifaceName, ifaceAddr string, log *zap.Logger, opts ...an
 		return
 	}
 	cfg.log = log
+	cfg.dataLog = dataLog
 
 	//=============================
 	// INITIALIZE CHANNELS AND MAPS
@@ -179,7 +182,7 @@ func NewCfg(dsn string, ifaceName, ifaceAddr string, log *zap.Logger, opts ...an
 	cfg.db, err = cfg.initDb(dsn)
 	cfg.dns.failCount = NewFailCounter(DnsMaxFailures)
 
-	cfg.aitm.connAddrs = new(sync.Map)
+	cfg.aitm.connMap = new(sync.Map)
 
 	//============================================
 	// APPLY OPTIONS AND START SUPPORTING ROUTINES
@@ -242,7 +245,7 @@ func NewCfg(dsn string, ifaceName, ifaceAddr string, log *zap.Logger, opts ...an
 				err = e
 				return
 			} else {
-				cfg.aitm.setDefaultDS(misc.Addr{IP: defA, Port: defP, Transport: misc.TCPAddrTransport})
+				cfg.aitm.setDefaultDS(misc.Addr{IP: defA, Port: defP, Transport: misc.TCPTransport})
 			}
 
 		case DefaultProxyServerAddrOpt:
@@ -261,7 +264,7 @@ func NewCfg(dsn string, ifaceName, ifaceAddr string, log *zap.Logger, opts ...an
 		case DefaultDownstreamOpt:
 			// Default downstream IP address that will receive all
 			// TCP connections
-			x := misc.Addr{Transport: misc.TCPAddrTransport}
+			x := misc.Addr{Transport: misc.TCPTransport}
 			x.IP, x.Port, err = net.SplitHostPort(string(v))
 			if err != nil {
 				err = fmt.Errorf("failed to parse default downstream value: %w", err)
@@ -323,7 +326,7 @@ func (cfg *Cfg) StartDefaultTCPProxy(ctx context.Context, addr string) (err erro
 	cfg.log.Info("default tcp proxy server listener started", zap.String("address", l.Addr().String()))
 	go func() {
 		cfg.log.Debug("default tcp proxy server accepting connections", zap.String("address", l.Addr().String()))
-		pCfg := proxy.NewTCPCfg(cfg.aitm.connAddrs, cfg.GetProxyCertificateFunc, cfg.log)
+		pCfg := proxy.NewTCPCfg(cfg.aitm.connMap, cfg.GetProxyCertificateFunc, cfg.log, cfg.dataLog)
 		if e := gs.NewProxyServer(pCfg, l).Serve(ctx); e != nil {
 			cfg.log.Error("default tcp proxy server failed", zap.Error(e))
 			cfg.errC <- err

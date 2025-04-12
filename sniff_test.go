@@ -4,21 +4,23 @@ import (
 	"context"
 	"github.com/impostorkeanu/eavesarp-ng/misc"
 	"github.com/impostorkeanu/eavesarp-ng/nft"
-	"github.com/impostorkeanu/eavesarp-ng/server"
-	"github.com/impostorkeanu/eavesarp-ng/tcpserver"
 	"go.uber.org/zap"
 	"net"
+	"os"
 	"testing"
 )
 
 func newCfg() (cfg Cfg, err error) {
 	logger := zap.NewExample()
 	return NewCfg("/tmp/eatest.db", "enp13s0", "", logger,
-		DefaultProxyServerAddrOpt(""), server.TCPOpts{
-			GetRespBytes: func() ([]byte, error) {
-				return []byte("stuff"), nil
-			},
-		})
+		os.Stdout,
+		DefaultProxyServerAddrOpt(""),
+		//server.TCPOpts{
+		//	GetRespBytes: func() ([]byte, error) {
+		//		return []byte("stuff"), nil
+		//	},
+		//},
+	)
 }
 
 func TestAttackSnac(t *testing.T) {
@@ -47,7 +49,11 @@ func TestAttackSnac(t *testing.T) {
 		args    args
 		wantErr bool
 	}{
-		{name: "testo", args: args{context.TODO(), cfg, sIP, tIP, nil, nil}},
+		{name: "testo", args: args{context.TODO(), cfg, sIP, tIP, &misc.Addr{
+			IP:        "192.168.86.174",
+			Port:      "8686",
+			Transport: misc.TCPTransport,
+		}, nil}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

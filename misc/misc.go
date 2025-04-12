@@ -13,32 +13,32 @@ const (
 )
 
 const (
-	TCPAddrTransport AddrTransport = "tcp"
-	UDPAddrTransport AddrTransport = "udp"
+	TCPTransport Transport = "tcp"
+	UDPTransport Transport = "udp"
 )
 
 type (
 	// Addr contains information related to a poisoned connection
 	// that's being proxied through Eavesarp.
 	Addr struct {
-		IP        string        `json:"ip,omitempty"`
-		Port      string        `json:"port,omitempty"`
-		Transport AddrTransport `json:"transport,omitempty"`
+		IP        string    `json:"ip,omitempty"`
+		Port      string    `json:"port,omitempty"`
+		Transport Transport `json:"transport,omitempty"`
 	}
 
-	// AddrTransport indicates the transport protocol of the
-	// connection. See TCPAddrTransport and UDPAddrTransport.
-	AddrTransport string
+	// Transport indicates the transport protocol of the
+	// connection. See TCPTransport and UDPTransport.
+	Transport string
 )
 
-func ConntrackTransportFromProtoNum(i uint8) (t AddrTransport) {
+func ConntrackTransportFromProtoNum(i uint8) (t Transport) {
 	// determine the protocol of the connection
 	// note: only tcp and udp are currently supported
 	switch i {
 	case TCPProtoNumber:
-		t = TCPAddrTransport
+		t = TCPTransport
 	case UDPProtoNumber:
-		t = UDPAddrTransport
+		t = UDPTransport
 	}
 	return
 }
@@ -49,7 +49,7 @@ func (a Addr) String() string {
 
 func (a Addr) Network() string {
 	switch a.Transport {
-	case UDPAddrTransport:
+	case UDPTransport:
 		return "udp4"
 	default:
 		return "tcp4"
@@ -57,19 +57,19 @@ func (a Addr) Network() string {
 }
 
 func NewAddr(addr any, transport any) (a Addr, err error) {
-	var t AddrTransport
+	var t Transport
 	switch v := transport.(type) {
-	case AddrTransport:
+	case Transport:
 		t = v
 	case string:
-		t = AddrTransport(v)
+		t = Transport(v)
 	default:
 		err = errors.New("invalid transport type")
 		return
 	}
 
 	switch t {
-	case TCPAddrTransport, UDPAddrTransport:
+	case TCPTransport, UDPTransport:
 	default:
 		err = errors.New("invalid transport value")
 		return

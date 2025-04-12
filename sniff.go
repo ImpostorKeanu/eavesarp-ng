@@ -329,16 +329,16 @@ func AttackSnac(ctx context.Context, cfg *Cfg, senIp net.IP, tarIp net.IP, downs
 	defer nfct.Close()
 
 	// ensure a downstream is available for the connection
-	var downstreamDefault bool
-	if downstream == nil {
-		downstreamDefault = true
-		if ds := cfg.aitm.getDefaultDS(); ds == nil {
-			err = errors.New("downstream address not found or empty")
-			return
-		} else {
-			downstream = ds
-		}
-	}
+	//var downstreamDefault bool
+	//if downstream == nil {
+	//	downstreamDefault = true
+	//	if ds := cfg.aitm.getDefaultDS(); ds == nil {
+	//		err = errors.New("downstream address not found or empty")
+	//		return
+	//	} else {
+	//		downstream = ds
+	//	}
+	//}
 
 	// trigger connection tracking cleanup when conntrack signals destruction
 	err = nfct.RegisterFiltered(ctx, conntrack.Conntrack, conntrack.NetlinkCtDestroy,
@@ -423,7 +423,7 @@ func AttackSnac(ctx context.Context, cfg *Cfg, senIp net.IP, tarIp net.IP, downs
 
 			}
 
-			createConnAddr(cfg, packet, downstreamDefault, downstream)
+			createConnAddr(cfg, packet, downstream)
 
 			// Run handlers
 			go func() {
@@ -437,14 +437,19 @@ func AttackSnac(ctx context.Context, cfg *Cfg, senIp net.IP, tarIp net.IP, downs
 	}
 }
 
-// createConnAddr updates cfg.aitm.connAddrs with connection information
+// createConnAddr updates cfg.aitm.connMap with connection information
 // to enable post-DNAT connectivity.
 //
-// No update is made if the packet doesn't have an IPv4, TCP, or UDP layer.
+// No update is made if:
 //
-//
-// updated indicates if an update was applied.
-func createConnAddr(cfg *Cfg, packet gopacket.Packet, downstreamDefault bool, downstream *misc.Addr) (updated bool) {
+// - downstream is nil
+// - the packet doesn't have an IPv4, TCP, or UDP layer.
+func createConnAddr(cfg *Cfg, packet gopacket.Packet, downstream *misc.Addr) (updated bool) {
+
+	if downstream == nil {
+		return
+	}
+
 	if ipL, ok := packet.Layer(layers.LayerTypeIPv4).(*layers.IPv4); ok {
 
 		//==============================================
@@ -456,29 +461,21 @@ func createConnAddr(cfg *Cfg, packet gopacket.Packet, downstreamDefault bool, do
 
 		if tcp, ok := packet.Layer(layers.LayerTypeTCP).(*layers.TCP); ok && tcp.SYN {
 			k.Port = tcp.SrcPort.String()
-			k.Transport = misc.TCPAddrTransport
-			if !downstreamDefault {
-				v.Port = tcp.DstPort.String()
-				v.Transport = misc.TCPAddrTransport
-			}
+			k.Transport = misc.TCPTransport
 		} else if udp, ok := packet.Layer(layers.LayerTypeUDP).(*layers.UDP); ok {
 			// TODO should probably look into refining this
 			//  one of the benefits of conntrack is that it could infer the state
 			//  of a UDP "connection"....
 			k.Port = udp.SrcPort.String()
-			k.Transport = misc.UDPAddrTransport
-			if !downstreamDefault {
-				v.Port = udp.DstPort.String()
-				v.Transport = misc.UDPAddrTransport
-			}
+			k.Transport = misc.UDPTransport
 		}
 
 		if k.Port == "" {
 			// Didn't find TCP or UDP layer.....NOP
-		} else if _, ok = cfg.aitm.connAddrs.Load(k); !ok {
+		} else if _, ok = cfg.aitm.connMap.Load(k); !ok {
 			// Store unique connection
 			updated = true
-			cfg.aitm.connAddrs.Store(k, v)
+			cfg.aitm.connMap.Store(k, v)
 		}
 	}
 
@@ -500,9 +497,7 @@ func destroyConnFilterFunc(cfg *Cfg) conntrack.HookFunc {
 			IP:        con.Origin.Src.To4().String(),
 			Port:      fmt.Sprintf("%d", *con.Origin.Proto.SrcPort),
 			Transport: t}
-		if _, ok := cfg.aitm.connAddrs.Load(k); ok {
-			cfg.aitm.connAddrs.Delete(k)
-		}
+		cfg.aitm.connMap.Delete(k)
 		cfg.log.Debug("cleaning destroyed connection", zap.Any("source", k))
 		return 0
 	}
