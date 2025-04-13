@@ -2,7 +2,6 @@ package eavesarp_ng
 
 import (
 	"context"
-	"github.com/impostorkeanu/eavesarp-ng/misc"
 	"github.com/impostorkeanu/eavesarp-ng/nft"
 	"go.uber.org/zap"
 	"net"
@@ -14,12 +13,9 @@ func newCfg() (cfg Cfg, err error) {
 	logger := zap.NewExample()
 	return NewCfg("/tmp/eatest.db", "enp13s0", "", logger,
 		os.Stdout,
-		DefaultProxyServerAddrOpt(""),
-		//server.TCPOpts{
-		//	GetRespBytes: func() ([]byte, error) {
-		//		return []byte("stuff"), nil
-		//	},
-		//},
+		LocalTCPProxyServerAddrOpt(""),
+		LocalUDPProxyServerAddrOpt(""),
+		//DefaultDownstreamOpt(""),
 	)
 }
 
@@ -37,23 +33,19 @@ func TestAttackSnac(t *testing.T) {
 	}
 
 	type args struct {
-		ctx        context.Context
-		cfg        Cfg
-		senIp      net.IP
-		tarIp      net.IP
-		downstream *misc.Addr
-		handlers   []ArpSpoofHandler
+		ctx           context.Context
+		cfg           Cfg
+		senIp         net.IP
+		tarIp         net.IP
+		tcpDownstream net.IP
+		handlers      []ArpSpoofHandler
 	}
 	tests := []struct {
 		name    string
 		args    args
 		wantErr bool
 	}{
-		{name: "testo", args: args{context.TODO(), cfg, sIP, tIP, &misc.Addr{
-			IP:        "192.168.86.174",
-			Port:      "8686",
-			Transport: misc.TCPTransport,
-		}, nil}},
+		{name: "testo", args: args{context.TODO(), cfg, sIP, tIP, net.ParseIP("192.168.86.174"), nil}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -64,7 +56,7 @@ func TestAttackSnac(t *testing.T) {
 				}
 			}()
 
-			if err := AttackSnac(tt.args.ctx, &tt.args.cfg, tt.args.senIp, tt.args.tarIp, tt.args.downstream, tt.args.handlers...); (err != nil) != tt.wantErr {
+			if err := AttackSnac(tt.args.ctx, &tt.args.cfg, tt.args.senIp, tt.args.tarIp, tt.args.tcpDownstream, tt.args.handlers...); (err != nil) != tt.wantErr {
 				t.Errorf("AttackSnac() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})

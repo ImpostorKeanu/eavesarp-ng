@@ -70,6 +70,7 @@ func NewAddr(addr any, transport any) (a Addr, err error) {
 
 	switch t {
 	case TCPTransport, UDPTransport:
+		a.Transport = t
 	default:
 		err = errors.New("invalid transport value")
 		return

@@ -8,7 +8,6 @@ import (
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
-	"github.com/impostorkeanu/eavesarp-ng/misc"
 	"go.uber.org/zap"
 	"net"
 	"time"
@@ -90,7 +89,7 @@ type (
 		TargetIp net.IP
 		// Handlers are functions that each packet is passed to.
 		Handlers   []ArpSpoofHandler
-		downstream *misc.Addr
+		downstream net.IP
 	}
 )
 

@@ -3,7 +3,6 @@ package eavesarp_ng
 import (
 	"errors"
 	"fmt"
-	"github.com/impostorkeanu/eavesarp-ng/server"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"math"
@@ -304,10 +303,10 @@ func optInt(v any) (i int, err error) {
 	switch v.(type) {
 	case DefaultDownstreamOpt:
 		i = DefaultDownstreamOptWeight
-	case server.TCPOpts:
-		i = DefaultTCPServerOptWeight
-	case DefaultProxyServerAddrOpt:
-		i = DefaultProxyServerOptWeight
+	case LocalTCPProxyServerAddrOpt:
+		i = TCPProxyServerOptWeight
+	case LocalUDPProxyServerAddrOpt:
+		i = UDPProxyServerOptWeight
 	default:
 		err = errors.New("unknown opt type")
 	}

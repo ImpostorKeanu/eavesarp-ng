@@ -88,7 +88,7 @@ func MainSniff(ctx context.Context, cfg Cfg, attackCh chan AttackSnacCfg) (err e
 						go func() {
 							downstream := args.downstream
 							if downstream == nil {
-								downstream = cfg.aitm.getDefaultDS()
+								downstream = cfg.aitm.getDefDownstream()
 							}
 							err := AttackSnac(ctx, &cfg, args.SenderIp, args.TargetIp, downstream, args.Handlers...)
 							if err != nil { // error while performing attack
@@ -305,7 +305,7 @@ func GetArpLayer(packet gopacket.Packet) *layers.ARP {
 //
 // NOTE: Before poisoning the sender's ARP table, this function passively
 // waits for the sender to broadcast an ARP request.
-func AttackSnac(ctx context.Context, cfg *Cfg, senIp net.IP, tarIp net.IP, downstream *misc.Addr,
+func AttackSnac(ctx context.Context, cfg *Cfg, senIp net.IP, tarIp net.IP, downstream net.IP,
   handlers ...ArpSpoofHandler) (err error) {
 
 	logFields := []zap.Field{zap.String("senderIp", senIp.String()), zap.String("targetIp", tarIp.String())}
@@ -327,18 +327,6 @@ func AttackSnac(ctx context.Context, cfg *Cfg, senIp net.IP, tarIp net.IP, downs
 		return
 	}
 	defer nfct.Close()
-
-	// ensure a downstream is available for the connection
-	//var downstreamDefault bool
-	//if downstream == nil {
-	//	downstreamDefault = true
-	//	if ds := cfg.aitm.getDefaultDS(); ds == nil {
-	//		err = errors.New("downstream address not found or empty")
-	//		return
-	//	} else {
-	//		downstream = ds
-	//	}
-	//}
 
 	// trigger connection tracking cleanup when conntrack signals destruction
 	err = nfct.RegisterFiltered(ctx, conntrack.Conntrack, conntrack.NetlinkCtDestroy,
@@ -423,7 +411,7 @@ func AttackSnac(ctx context.Context, cfg *Cfg, senIp net.IP, tarIp net.IP, downs
 
 			}
 
-			createConnAddr(cfg, packet, downstream)
+			mapConn(cfg, packet, downstream)
 
 			// Run handlers
 			go func() {
@@ -437,14 +425,14 @@ func AttackSnac(ctx context.Context, cfg *Cfg, senIp net.IP, tarIp net.IP, downs
 	}
 }
 
-// createConnAddr updates cfg.aitm.connMap with connection information
+// mapConn updates cfg.aitm.connMap with connection information
 // to enable post-DNAT connectivity.
 //
 // No update is made if:
 //
 // - downstream is nil
 // - the packet doesn't have an IPv4, TCP, or UDP layer.
-func createConnAddr(cfg *Cfg, packet gopacket.Packet, downstream *misc.Addr) (updated bool) {
+func mapConn(cfg *Cfg, packet gopacket.Packet, downstream net.IP) (updated bool) {
 
 	if downstream == nil {
 		return
@@ -457,17 +445,21 @@ func createConnAddr(cfg *Cfg, packet gopacket.Packet, downstream *misc.Addr) (up
 		//==============================================
 
 		k := misc.Addr{IP: ipL.SrcIP.To4().String()}
-		v := *downstream
+		v := misc.Addr{IP: downstream.To4().String()}
 
 		if tcp, ok := packet.Layer(layers.LayerTypeTCP).(*layers.TCP); ok && tcp.SYN {
-			k.Port = tcp.SrcPort.String()
+			k.Port = fmt.Sprintf("%d", tcp.SrcPort)
 			k.Transport = misc.TCPTransport
+			v.Port = fmt.Sprintf("%d", tcp.DstPort)
+			v.Transport = misc.TCPTransport
 		} else if udp, ok := packet.Layer(layers.LayerTypeUDP).(*layers.UDP); ok {
 			// TODO should probably look into refining this
 			//  one of the benefits of conntrack is that it could infer the state
 			//  of a UDP "connection"....
-			k.Port = udp.SrcPort.String()
+			k.Port = fmt.Sprintf("%d", udp.SrcPort)
 			k.Transport = misc.UDPTransport
+			v.Port = fmt.Sprintf("%d", udp.DstPort)
+			v.Transport = misc.UDPTransport
 		}
 
 		if k.Port == "" {

@@ -13,7 +13,7 @@ import (
 
 type (
 	UDPCfg struct {
-		connAddrs sync.Map
+		connAddrs *sync.Map
 		log       *zap.Logger
 		dataLog   io.Writer
 	}
@@ -23,6 +23,21 @@ type (
 		conn *net.UDPConn
 	}
 )
+
+func NewUDPCfg(conAddrs *sync.Map, log *zap.Logger, dataLog io.Writer) UDPCfg {
+	return UDPCfg{
+		connAddrs: conAddrs,
+		log:       log,
+		dataLog:   dataLog,
+	}
+}
+
+func NewUDPServer(cfg UDPCfg, conn *net.UDPConn) *UDPServer {
+	return &UDPServer{
+		Cfg:  cfg,
+		conn: conn,
+	}
+}
 
 func (s *UDPServer) Serve(ctx context.Context) (err error) {
 	for {
@@ -41,10 +56,10 @@ func (s *UDPServer) Serve(ctx context.Context) (err error) {
 			// read value larger than the average mtu
 			buf := make([]byte, 2048)
 			n, addr, e = s.conn.ReadFromUDP(buf)
-			if err != nil && errors.Is(e, net.ErrClosed) {
+			if e != nil && errors.Is(e, net.ErrClosed) {
 				// listener should be closed only when the context is done
 				continue
-			} else if err != nil {
+			} else if e != nil {
 				s.Cfg.log.Error("unhandled error while handling udp packet", zap.Error(e))
 				continue
 			}
@@ -55,7 +70,7 @@ func (s *UDPServer) Serve(ctx context.Context) (err error) {
 
 			// get and proxy address info for the connection
 			var vAddrInf, pAddrInf misc.Addr
-			if pAddrInf, e = misc.NewAddr(s.conn.LocalAddr(), "udp4"); e != nil {
+			if pAddrInf, e = misc.NewAddr(s.conn.LocalAddr(), "udp"); e != nil {
 				// TODO
 				s.Cfg.log.Error("unhandled error while getting proxy address", zap.Error(e))
 				continue
@@ -63,13 +78,31 @@ func (s *UDPServer) Serve(ctx context.Context) (err error) {
 
 			// look up downstream address information
 			var dsAddrInf *misc.Addr
-			if vAddrInf, e = misc.NewAddr(addr, "udp"); err != nil {
+			if vAddrInf, e = misc.NewAddr(addr, "udp"); e != nil {
 				s.Cfg.log.Error("failed to parse udp address", zap.Error(e))
 				s.Cfg.log.Debug("unhandled error while preparing conntrack info", zap.Error(e))
 				continue
 			} else if v, ok := s.Cfg.connAddrs.Load(vAddrInf); ok {
 				x := v.(misc.Addr)
 				dsAddrInf = &x
+			}
+
+			// log data sent by victim
+			lData := misc.Data{
+				Sender:         misc.VictimDataSender,
+				VictimAddr:     vAddrInf,
+				ProxyAddr:      pAddrInf,
+				DownstreamAddr: dsAddrInf,
+				Transport:      misc.UDPTransport,
+				Raw:            buf[:n],
+			}
+			if n > 0 {
+				s.logData(lData)
+			}
+			if dsAddrInf == nil {
+				// TODO missing downstream address info
+				s.Cfg.log.Error("missing connection info for udp datagram", zap.Any("source", vAddrInf))
+				continue
 			}
 
 			// - dsUDPAddr is the downstream address that packets are being proxied to
@@ -80,37 +113,9 @@ func (s *UDPServer) Serve(ctx context.Context) (err error) {
 				// TODO
 				s.Cfg.log.Error("failed to resolve udp address for downstream", zap.Error(e))
 				continue
-			} else if vUDPAddr, e = net.ResolveUDPAddr("udp4", s.conn.RemoteAddr().String()); e != nil {
+			} else if vUDPAddr, e = net.ResolveUDPAddr("udp4", vAddrInf.String()); e != nil {
 				// TODO
 				s.Cfg.log.Error("failed to resolve udp address for victim", zap.Error(e))
-				continue
-			}
-
-			//===================
-			// LOG EXTRACTED DATA
-			//===================
-
-			var lData misc.Data
-			if s.Cfg.dataLog != nil {
-				// log data sent by victim
-				lData = misc.Data{
-					Sender:         misc.VictimDataSender,
-					VictimAddr:     vAddrInf,
-					ProxyAddr:      pAddrInf,
-					DownstreamAddr: dsAddrInf,
-					Transport:      misc.UDPTransport,
-					Raw:            buf[:n],
-				}
-				if e := lData.Log(s.Cfg.dataLog); err != nil {
-					// TODO
-					s.Cfg.log.Error("failed to log data", zap.Error(e))
-				}
-			} else {
-				s.Cfg.log.Error("missing connection info for udp datagram", zap.Any("source", vAddrInf))
-				continue
-			}
-
-			if dsAddrInf == nil {
 				continue
 			}
 
@@ -132,16 +137,18 @@ func (s *UDPServer) Serve(ctx context.Context) (err error) {
 				if _, err := dsUDPConn.Write(buf[:n]); err != nil {
 					// TODO
 					s.Cfg.log.Error("failed to send udp packet", zap.Error(err))
+					return
 				}
 
 				// wait for and receive any downstream response to the datagram
-				if err = dsUDPConn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+				if e = dsUDPConn.SetReadDeadline(time.Now().Add(5 * time.Second)); e != nil {
 					// TODO
-					s.Cfg.log.Error("failed to set read deadline", zap.Error(err))
+					s.Cfg.log.Error("failed to set read deadline", zap.Error(e))
+					return
 				}
 				buf := make([]byte, 2048)
-				n, err = dsUDPConn.Read(buf)
-				if err != nil {
+				n, e = dsUDPConn.Read(buf)
+				if e != nil {
 					return
 				}
 
@@ -149,21 +156,33 @@ func (s *UDPServer) Serve(ctx context.Context) (err error) {
 				lData.Data = ""
 				lData.Raw = buf[:n]
 				lData.Sender = misc.DownstreamDataSender
-				if e := lData.Log(s.Cfg.dataLog); err != nil {
+				if e := lData.Log(s.Cfg.dataLog); e != nil {
+					// TODO
 					s.Cfg.log.Error("failed to log data", zap.Error(e))
+					return
 				}
 
 				// send the downstream response back to the victim via the
 				// servers connection
-				_, err = s.conn.WriteToUDP(buf[:n], vUDPAddr)
-				if err != nil {
-					s.Cfg.log.Error("unhandled error while sending udp packet",
+				_, e = s.conn.WriteToUDP(buf[:n], vUDPAddr)
+				if e != nil {
+					s.Cfg.log.Error("unhandled eor while sending udp packet",
 						zap.Error(e),
 						zap.Any("source", vAddrInf),
 						zap.Any("destination", dsAddrInf))
 					return
 				}
 			}()
+		}
+	}
+}
+
+func (s *UDPServer) logData(lData misc.Data) {
+	if s.Cfg.dataLog != nil {
+		// log data sent by victim
+		if e := lData.Log(s.Cfg.dataLog); e != nil {
+			// TODO
+			s.Cfg.log.Error("failed to log data", zap.Error(e))
 		}
 	}
 }

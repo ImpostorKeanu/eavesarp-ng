@@ -3,7 +3,6 @@ package eavesarp_ng
 import (
 	"context"
 	"crypto/tls"
-	"crypto/x509/pkix"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -14,7 +13,6 @@ import (
 	"github.com/impostorkeanu/eavesarp-ng/misc/rand"
 	"github.com/impostorkeanu/eavesarp-ng/nft"
 	"github.com/impostorkeanu/eavesarp-ng/proxy"
-	"github.com/impostorkeanu/eavesarp-ng/server"
 	gs "github.com/impostorkeanu/gosplit"
 	"go.uber.org/zap"
 	"io"
@@ -27,8 +25,8 @@ import (
 
 const (
 	DefaultDownstreamOptWeight int = iota
-	DefaultTCPServerOptWeight
-	DefaultProxyServerOptWeight
+	TCPProxyServerOptWeight
+	UDPProxyServerOptWeight
 )
 
 type (
@@ -75,33 +73,37 @@ type (
 		// The type for both the key and value is misc.Addr.
 		connMap *sync.Map
 
-		// defDownstream describes a TCP listener that will receive connections
+		// defDownstreamIP describes a TCP listener that will receive connections
 		// during an AITM attack _without_ an AITM downstream. This allows us to
 		// always complete TCP connections and receive data.
 		//
 		// Type: *misc.Addr
 		//
-		// See: getDefaultDS, setDefaultDS
-		defDownstream atomic.Value
+		// See: getDefDownstream, setDefDownstream
+		defDownstreamIP atomic.Value
 
-		// defTCPProxyAddr is the address to the default TCP proxy used by
+		// tcpProxyAddr is the address to the default TCP proxy used by
 		// all connections.
 		//
 		// Type: *misc.Addr
 		//
-		// See: getDefTCPProxyAddr, setDefTCPProxyAddr
-		defTCPProxyAddr atomic.Value
+		// See: getTCPProxyAddr, setTCPProxyAddr
+		tcpProxyAddr atomic.Value
+
+		udpProxyAddr atomic.Value
 
 		// nftTbl is the netfilter table created for the current Cfg.
 		nftTbl *nftables.Table
 	}
 
-	// DefaultProxyServerAddrOpt sets the default TCP proxy for poisoned
+	// LocalTCPProxyServerAddrOpt sets the default TCP proxy for poisoned
 	// connections.
 	//
 	// When supplied to NewCfg and empty, a TCP listener will be started
 	// on a randomly available port on cfg.iface.
-	DefaultProxyServerAddrOpt string
+	LocalTCPProxyServerAddrOpt string
+
+	LocalUDPProxyServerAddrOpt string
 
 	// DefaultDownstreamOpt sets the default downstream for AITM attacks.
 	//
@@ -152,7 +154,7 @@ func (cfg *Cfg) newRandID(l int) (err error) {
 // # Options
 //
 // - TCPOpts
-// - DefaultProxyServerAddrOpt
+// - LocalTCPProxyServerAddrOpt
 // - DefaultDownstreamOpt
 func NewCfg(dsn string, ifaceName, ifaceAddr string, log *zap.Logger, dataLog io.Writer, opts ...any) (cfg Cfg, err error) {
 
@@ -214,67 +216,38 @@ func NewCfg(dsn string, ifaceName, ifaceAddr string, log *zap.Logger, dataLog io
 	// apply options
 	for _, opt := range opts {
 		switch v := opt.(type) {
-		// TODO add a case to handle a default UDP server to log data
-		case server.TCPOpts:
-			// Generate a random certificate for TLS connections
-			if v.TLSCfg == nil {
-				var cert *tls.Certificate
-				cert, err = gs.GenSelfSignedCert(pkix.Name{}, nil, nil, cfg.tls.cache.Keygen.Generate())
-				if err != nil {
-					cfg.log.Error("error generating self signed certificate for default tcp server", zap.Error(err))
-					return
-				}
-				v.TLSCfg = &tls.Config{
-					InsecureSkipVerify: true,
-					Certificates:       []tls.Certificate{*cert},
-				}
-			}
-
-			// TCP server to complete connections when no downstream
-			// is configured for a poisoning attack
-			if err = cfg.StartDefaultTCPServer(ctx, &v); err != nil {
+		case LocalTCPProxyServerAddrOpt:
+			if err = cfg.StartTCPProxy(ctx, string(v)); err != nil {
 				return
 			}
-
-			if cfg.aitm.getDefaultDS() != nil {
-				continue
-			}
-
-			if defA, defP, e := net.SplitHostPort(v.Addr); err != nil {
-				cfg.log.Error("error parsing default tcp server", zap.Error(err))
-				err = e
-				return
-			} else {
-				cfg.aitm.setDefaultDS(misc.Addr{IP: defA, Port: defP, Transport: misc.TCPTransport})
-			}
-
-		case DefaultProxyServerAddrOpt:
-			// Proxy server that will be used to proxy connections to
-			// downstreams
-			if err = cfg.StartDefaultTCPProxy(ctx, string(v)); err != nil {
-				return
-			} else if err = cfg.initNetfilterTable(ctx); err != nil {
+		case LocalUDPProxyServerAddrOpt:
+			if err = cfg.StartUDPProxy(ctx, string(v)); err != nil {
 				return
 			}
-
-			//===========================
-			// INITIALIZE NETFILTER TABLE
-			//===========================
-
 		case DefaultDownstreamOpt:
-			// Default downstream IP address that will receive all
-			// TCP connections
-			x := misc.Addr{Transport: misc.TCPTransport}
-			x.IP, x.Port, err = net.SplitHostPort(string(v))
-			if err != nil {
-				err = fmt.Errorf("failed to parse default downstream value: %w", err)
+			if err = cfg.SetDefaultDS(string(v)); err != nil {
 				return
-			} else {
-				cfg.aitm.setDefaultDS(x)
 			}
 		}
 	}
 
+	if err = cfg.initNetfilterTable(ctx, cfg.aitm.getTCPProxyAddr(), cfg.aitm.getUDPProxyAddr()); err != nil {
+		cfg.log.Error("failed to init netfilter table", zap.Error(err))
+	}
+
+	return
+}
+
+func (cfg *Cfg) SetDefaultDS(addr string) (err error) {
+	var x net.IP
+	if x = net.ParseIP(addr); x == nil {
+		err = errors.New("failed to parse ip for default downstream")
+	}
+	if err != nil {
+		err = fmt.Errorf("failed to parse default downstream value: %w", err)
+	} else {
+		cfg.aitm.setDefDownstream(x)
+	}
 	return
 }
 
@@ -311,9 +284,33 @@ func (cfg *Cfg) newUDPConn(addr string) (conn *net.UDPConn, err error) {
 	return
 }
 
-// StartDefaultTCPProxy runs a proxy server in a distinct routine that will receive
+func (cfg *Cfg) StartUDPProxy(ctx context.Context, addr string) (err error) {
+	var conn *net.UDPConn
+	if conn, err = cfg.newUDPConn(addr); err != nil {
+		cfg.log.Error("failed to start udp proxy listener", zap.Error(err))
+		return
+	}
+	var a misc.Addr
+	if a.IP, a.Port, err = net.SplitHostPort(conn.LocalAddr().String()); err != nil {
+		cfg.log.Error("failed to get udp listener address", zap.Error(err))
+		return
+	}
+	a.Transport = misc.UDPTransport
+	cfg.aitm.setUDPProxyAddr(a)
+	cfg.log.Info("local udp proxy server listener started", zap.String("address", conn.LocalAddr().String()))
+	go func() {
+		pCfg := proxy.NewUDPCfg(cfg.aitm.connMap, cfg.log, cfg.dataLog)
+		if e := proxy.NewUDPServer(pCfg, conn).Serve(ctx); e != nil {
+			cfg.log.Error("udp proxy server failed", zap.Error(e))
+			cfg.errC <- err
+		}
+	}()
+	return
+}
+
+// StartTCPProxy runs a proxy server in a distinct routine that will receive
 // all proxied connections via DNAT.
-func (cfg *Cfg) StartDefaultTCPProxy(ctx context.Context, addr string) (err error) {
+func (cfg *Cfg) StartTCPProxy(ctx context.Context, addr string) (err error) {
 	var l net.Listener
 	if l, err = cfg.newTCPListener(addr); err != nil {
 		return
@@ -322,39 +319,16 @@ func (cfg *Cfg) StartDefaultTCPProxy(ctx context.Context, addr string) (err erro
 	if a.IP, a.Port, err = net.SplitHostPort(l.Addr().String()); err != nil {
 		return
 	}
-	cfg.aitm.setDefTCPProxyAddr(a)
-	cfg.log.Info("default tcp proxy server listener started", zap.String("address", l.Addr().String()))
+	a.Transport = misc.TCPTransport
+	cfg.aitm.setTCPProxyAddr(a)
+	cfg.log.Info("local tcp proxy server listener started", zap.String("address", l.Addr().String()))
 	go func() {
-		cfg.log.Debug("default tcp proxy server accepting connections", zap.String("address", l.Addr().String()))
 		pCfg := proxy.NewTCPCfg(cfg.aitm.connMap, cfg.GetProxyCertificateFunc, cfg.log, cfg.dataLog)
 		if e := gs.NewProxyServer(pCfg, l).Serve(ctx); e != nil {
 			cfg.log.Error("default tcp proxy server failed", zap.Error(e))
 			cfg.errC <- err
 		}
 	}()
-	return
-}
-
-// StartDefaultTCPServer starts a TLS aware TCP server that will proxy incoming connections
-// from victims of spoofing attacks that do not have a downstream configured. This ensures
-//  that all TCP connections can complete and send packets.
-func (cfg *Cfg) StartDefaultTCPServer(ctx context.Context, opts *server.TCPOpts) (err error) {
-	var l net.Listener
-	if l, err = cfg.newTCPListener(opts.Addr); err != nil {
-		return
-	}
-
-	opts.Addr = l.Addr().String()
-	cfg.log.Info("default tcp server listener started", zap.String("address", opts.Addr))
-
-	go func() {
-		cfg.log.Debug("default tcp server accepting connections", zap.String("address", opts.Addr))
-		if e := server.ServeTCP(ctx, l, *opts, cfg.log); e != nil {
-			cfg.log.Error("default tcp server error", zap.Error(e))
-			cfg.errC <- e
-		}
-	}()
-
 	return
 }
 
@@ -497,31 +471,46 @@ func (cfg *Cfg) GetProxyCertificateFunc(downstreamIP string) func(h *tls.ClientH
 
 }
 
-// getDefTCPProxyAddr gets the address of the default TCP proxy.
-func (f *aitmCfgFields) getDefTCPProxyAddr() (a *misc.Addr) {
-	a, _ = f.defTCPProxyAddr.Load().(*misc.Addr)
+func (f *aitmCfgFields) setUDPProxyAddr(a misc.Addr) {
+	f.udpProxyAddr.Store(&a)
+}
+
+func (f *aitmCfgFields) getUDPProxyAddr() (a *misc.Addr) {
+	a, _ = f.udpProxyAddr.Load().(*misc.Addr)
 	return
 }
 
-// setDefTCPProxyAddr sets the address of the default TCP proxy.
-func (f *aitmCfgFields) setDefTCPProxyAddr(a misc.Addr) {
-	f.defTCPProxyAddr.Store(&a)
-}
-
-// getDefaultDS gets the default downstream.
-func (f *aitmCfgFields) getDefaultDS() (a *misc.Addr) {
-	a, _ = f.defDownstream.Load().(*misc.Addr)
+// getTCPProxyAddr gets the address of the default TCP proxy.
+func (f *aitmCfgFields) getTCPProxyAddr() (a *misc.Addr) {
+	a, _ = f.tcpProxyAddr.Load().(*misc.Addr)
 	return
 }
 
-// setDefaultDS sets the default downstream.
-func (f *aitmCfgFields) setDefaultDS(a misc.Addr) {
-	f.defDownstream.Store(&a)
+// setTCPProxyAddr sets the address of the default TCP proxy.
+func (f *aitmCfgFields) setTCPProxyAddr(a misc.Addr) {
+	f.tcpProxyAddr.Store(&a)
+}
+
+// getDefDownstream gets the default downstream.
+func (f *aitmCfgFields) getDefDownstream() (a net.IP) {
+	a, _ = f.defDownstreamIP.Load().(net.IP)
+	return
+}
+
+// setDefDownstream sets the default downstream.
+func (f *aitmCfgFields) setDefDownstream(a net.IP) {
+	f.defDownstreamIP.Store(a)
 }
 
 // initNetfilterTable initializes the Netfilter table used to DNAT traffic
 // to the routines that proxy traffic to downstreams.
-func (cfg *Cfg) initNetfilterTable(ctx context.Context) (err error) {
+func (cfg *Cfg) initNetfilterTable(ctx context.Context, tcpProxyAddr, udpProxyAddr *misc.Addr) (err error) {
+
+	if tcpProxyAddr == nil && udpProxyAddr == nil {
+		err = errors.New("no tcp proxy or udp proxy configured; skipping nft table initialization")
+		return
+	}
+
 	// initialize netfilter connection
 	if cfg.nftConn, err = nftables.New(nftables.AsLasting()); err != nil { // init netfilter conn
 		err = fmt.Errorf("failed to establish nft connection: %w", err)
@@ -531,7 +520,7 @@ func (cfg *Cfg) initNetfilterTable(ctx context.Context) (err error) {
 		return
 	} else if err = nft.StaleTables(cfg.nftConn, cfg.log); err != nil { // warn about stale tables
 		return
-	} else if cfg.aitm.nftTbl, err = nft.CreateTable(cfg.nftConn, cfg.aitm.getDefTCPProxyAddr(),
+	} else if cfg.aitm.nftTbl, err = nft.CreateTable(cfg.nftConn, tcpProxyAddr, udpProxyAddr,
 		nft.TableName(cfg.id), cfg.log); err != nil { // create a table for the config
 		err = fmt.Errorf("failed to init nft table: %w", err)
 		return
