@@ -16,15 +16,16 @@ import (
 )
 
 const (
-	TablePrefix   = "eavesarp_"   // prefix for all nft tables created by eavesarp
-	TableTemplate = "eavesarp_%s" // template used to render the nft table name
-	SpoofedIPs    = "spoofed_ips" // name of the set that maintains ip addresses we've spoofed
-	AllPorts      = "all_ports"   // name of the set that represents all possible ports for the NAT rule
+	TablePrefix       = "eavesarp_"   // prefix for all nft tables created by eavesarp
+	TableNameTemplate = "eavesarp_%s" // template used to render the nft table name
+	SpoofedIPsSetName = "spoofed_ips" // name of the set that maintains ip addresses we've spoofed
+	AllPortsSetName   = "all_ports"   // name of the set that represents all possible ports for the NAT rule
+	ChainName         = "prerouting"  // name of the nft chain of the table
 )
 
 // TableName formats and returns the nft table name.
 func TableName(id string) string {
-	return fmt.Sprintf(TableTemplate, id)
+	return fmt.Sprintf(TableNameTemplate, id)
 }
 
 // StaleTables lists potentially stale Eavesarp tables that persist from old runs.
@@ -42,38 +43,149 @@ func StaleTables(conn *nftables.Conn, log *zap.Logger) error {
 	return nil
 }
 
+// CreateDNATRule creates a DNAT rule specified by proxyAddr, which
+// indicates the local address and protocol that the proxy is listening.
+//
+// Call CreateTable before this function.
+func CreateDNATRule(conn *nftables.Conn, tbl *nftables.Table, proxyAddr *misc.Addr) (*nftables.Rule, error) {
+	var err error
+	var proxyPort []byte
+	proxyIP := net.ParseIP(proxyAddr.IP).To4()
+	if i, err := strconv.ParseUint(proxyAddr.Port, 10, 16); err != nil {
+		return nil, fmt.Errorf("failed to parse proxy server port: %w", err)
+	} else {
+		proxyPort = binaryutil.BigEndian.PutUint16(uint16(i))
+	}
+
+	var chain *nftables.Chain
+	if chain, err = conn.ListChain(tbl, ChainName); err != nil {
+		return nil, fmt.Errorf("failed to get nft table chain: %w", err)
+	}
+
+	var spoofedAddrsSet *nftables.Set
+	if spoofedAddrsSet, err = conn.GetSetByName(tbl, SpoofedIPsSetName); err != nil {
+		return nil, fmt.Errorf("failed to get nft spoofed ip sets: %w", err)
+	}
+
+	var portsSet *nftables.Set
+	if portsSet, err = conn.GetSetByName(tbl, AllPortsSetName); err != nil {
+		return nil, fmt.Errorf("failed to get nft all ports set: %w", err)
+	}
+
+	var protoExprData []uint8
+	switch proxyAddr.Transport {
+	case misc.TCPTransport:
+		protoExprData = []uint8{misc.TCPProtoNumber}
+	case misc.UDPTransport:
+		protoExprData = []uint8{misc.UDPProtoNumber}
+	default:
+		return nil, fmt.Errorf("unknown proxy transport type: %s", proxyAddr.Transport)
+	}
+
+	rule := conn.AddRule(&nftables.Rule{
+		Table:    tbl,
+		Chain:    chain,
+		Position: 0,
+		Handle:   0,
+		Flags:    0,
+		Exprs: []expr.Any{
+			&expr.Payload{
+				OperationType:  0,
+				DestRegister:   1,
+				SourceRegister: 0,
+				Base:           expr.PayloadBaseNetworkHeader,
+				Offset:         16,
+				Len:            4,
+				CsumType:       expr.CsumTypeNone,
+				CsumOffset:     0,
+				CsumFlags:      0,
+			},
+			&expr.Lookup{
+				SourceRegister: 1,
+				DestRegister:   0,
+				IsDestRegSet:   false,
+				SetID:          spoofedAddrsSet.ID,
+				SetName:        spoofedAddrsSet.Name,
+				Invert:         false,
+			},
+			&expr.Meta{
+				Key:            expr.MetaKeyL4PROTO,
+				SourceRegister: false,
+				Register:       1,
+			},
+			&expr.Cmp{
+				Op:       expr.CmpOpEq,
+				Register: 1,
+				Data:     protoExprData,
+			},
+			&expr.Payload{
+				OperationType:  expr.PayloadLoad,
+				DestRegister:   1,
+				SourceRegister: 0,
+				Base:           expr.PayloadBaseNetworkHeader,
+				Offset:         9,
+				Len:            1,
+				CsumType:       expr.CsumTypeNone,
+				CsumOffset:     0,
+				CsumFlags:      0,
+			},
+			&expr.Payload{
+				OperationType:  expr.PayloadLoad,
+				DestRegister:   1,
+				SourceRegister: 0,
+				Base:           expr.PayloadBaseTransportHeader,
+				Offset:         2,
+				Len:            2,
+				CsumType:       expr.CsumTypeNone,
+				CsumOffset:     0,
+				CsumFlags:      0,
+			},
+			&expr.Lookup{
+				SourceRegister: 1,
+				DestRegister:   0,
+				IsDestRegSet:   false,
+				SetID:          portsSet.ID,
+				SetName:        portsSet.Name,
+				Invert:         false,
+			},
+			&expr.Counter{
+				Bytes:   0,
+				Packets: 0,
+			},
+			&expr.Immediate{
+				Register: 1,
+				Data:     proxyIP,
+			},
+			&expr.Immediate{
+				Register: 2,
+				Data:     proxyPort,
+			},
+			&expr.NAT{
+				Type:        expr.NATTypeDestNAT,
+				Family:      unix.NFPROTO_IPV4,
+				RegAddrMin:  1,
+				RegAddrMax:  1,
+				RegProtoMin: 2,
+				RegProtoMax: 2,
+				Random:      false,
+				FullyRandom: false,
+				Persistent:  false,
+				Prefix:      false,
+				Specified:   true,
+			},
+		},
+		UserData: nil,
+	})
+
+	if err = conn.Flush(); err != nil {
+		return nil, fmt.Errorf("failed to flush nft connection after creating dnat rule: %w", err)
+	}
+
+	return rule, nil
+}
+
 // CreateTable creates a new nft table that NATs traffic to proxyAddr.
-func CreateTable(conn *nftables.Conn, tcpProxyAddr *misc.Addr, udpProxyAddr *misc.Addr, tblName string, log *zap.Logger) (eaTbl *nftables.Table, err error) {
-
-	//===================================
-	// PREPARE THE PROXY ADDRESS AND PORT
-	//===================================
-
-	var tcpProxyPort, udpProxyPort []byte
-	var tcpProxyIP, udpProxyIP net.IP
-	if tcpProxyAddr != nil {
-		tcpProxyIP = net.ParseIP(tcpProxyAddr.IP).To4()
-		if i, err := strconv.ParseUint(tcpProxyAddr.Port, 10, 16); err != nil {
-			err = fmt.Errorf("failed to parse tcp proxy server port: %w", err)
-			return nil, err
-		} else {
-			tcpProxyPort = binaryutil.BigEndian.PutUint16(uint16(i))
-		}
-	}
-
-	if udpProxyAddr != nil {
-		udpProxyIP = net.ParseIP(udpProxyAddr.IP).To4()
-		if i, err := strconv.ParseUint(udpProxyAddr.Port, 10, 16); err != nil {
-			err = fmt.Errorf("failed to parse udp proxy server port: %w", err)
-			return nil, err
-		} else {
-			udpProxyPort = binaryutil.BigEndian.PutUint16(uint16(i))
-		}
-	}
-
-	//=================
-	// CREATE THE TABLE
-	//=================
+func CreateTable(conn *nftables.Conn, tblName string, log *zap.Logger) (eaTbl *nftables.Table, err error) {
 
 	// get a list of all nftable names
 	var nTBLNames []string
@@ -112,7 +224,7 @@ func CreateTable(conn *nftables.Conn, tcpProxyAddr *misc.Addr, udpProxyAddr *mis
 	// create spoofed set
 	addrsSet := &nftables.Set{
 		Table:   eaTbl,
-		Name:    SpoofedIPs,
+		Name:    SpoofedIPsSetName,
 		Timeout: 0,
 		KeyType: nftables.TypeIPAddr,
 	}
@@ -132,7 +244,7 @@ func CreateTable(conn *nftables.Conn, tcpProxyAddr *misc.Addr, udpProxyAddr *mis
 	// create all_ports set
 	portSet := &nftables.Set{
 		Table:    eaTbl,
-		Name:     AllPorts,
+		Name:     AllPortsSetName,
 		Interval: true,
 		KeyType:  nftables.TypeInetService,
 	}
@@ -146,15 +258,15 @@ func CreateTable(conn *nftables.Conn, tcpProxyAddr *misc.Addr, udpProxyAddr *mis
 	}
 
 	//===================================
-	// ADD AND CONFIGURE prerouting TABLE
+	// ADD AND CONFIGURE prerouting CHAIN
 	//===================================
 
 	pri := nftables.ChainPriority(-int32(100))
 	pol := nftables.ChainPolicyAccept
 
 	// create prerouting chain
-	chain := conn.AddChain(&nftables.Chain{
-		Name:     "prerouting",
+	conn.AddChain(&nftables.Chain{
+		Name:     ChainName,
 		Table:    eaTbl,
 		Hooknum:  nftables.ChainHookPrerouting,
 		Priority: &pri,
@@ -163,213 +275,10 @@ func CreateTable(conn *nftables.Conn, tcpProxyAddr *misc.Addr, udpProxyAddr *mis
 		Device:   "",
 	})
 
-	if tcpProxyAddr != nil {
-		// create tcp prerouting dnat rule
-		conn.AddRule(&nftables.Rule{
-			Table:    eaTbl,
-			Chain:    chain,
-			Position: 0,
-			Handle:   0,
-			Flags:    0,
-			Exprs: []expr.Any{
-				&expr.Payload{
-					OperationType:  0,
-					DestRegister:   1,
-					SourceRegister: 0,
-					Base:           expr.PayloadBaseNetworkHeader,
-					Offset:         16,
-					Len:            4,
-					CsumType:       expr.CsumTypeNone,
-					CsumOffset:     0,
-					CsumFlags:      0,
-				},
-				&expr.Lookup{
-					SourceRegister: 1,
-					DestRegister:   0,
-					IsDestRegSet:   false,
-					SetID:          addrsSet.ID,
-					SetName:        addrsSet.Name,
-					Invert:         false,
-				},
-				&expr.Meta{
-					Key:            expr.MetaKeyL4PROTO,
-					SourceRegister: false,
-					Register:       1,
-				},
-				// Only TCP
-				&expr.Cmp{
-					Op:       expr.CmpOpEq,
-					Register: 1,
-					Data:     []uint8{6},
-				},
-				&expr.Payload{
-					OperationType:  expr.PayloadLoad,
-					DestRegister:   1,
-					SourceRegister: 0,
-					Base:           expr.PayloadBaseNetworkHeader,
-					Offset:         9,
-					Len:            1,
-					CsumType:       expr.CsumTypeNone,
-					CsumOffset:     0,
-					CsumFlags:      0,
-				},
-				&expr.Payload{
-					OperationType:  expr.PayloadLoad,
-					DestRegister:   1,
-					SourceRegister: 0,
-					Base:           expr.PayloadBaseTransportHeader,
-					Offset:         2,
-					Len:            2,
-					CsumType:       expr.CsumTypeNone,
-					CsumOffset:     0,
-					CsumFlags:      0,
-				},
-				&expr.Lookup{
-					SourceRegister: 1,
-					DestRegister:   0,
-					IsDestRegSet:   false,
-					SetID:          portSet.ID,
-					SetName:        portSet.Name,
-					Invert:         false,
-				},
-				&expr.Counter{
-					Bytes:   0,
-					Packets: 0,
-				},
-				&expr.Immediate{
-					Register: 1,
-					Data:     tcpProxyIP,
-				},
-				&expr.Immediate{
-					Register: 2,
-					Data:     tcpProxyPort,
-				},
-				&expr.NAT{
-					Type:        expr.NATTypeDestNAT,
-					Family:      unix.NFPROTO_IPV4,
-					RegAddrMin:  1,
-					RegAddrMax:  1,
-					RegProtoMin: 2,
-					RegProtoMax: 2,
-					Random:      false,
-					FullyRandom: false,
-					Persistent:  false,
-					Prefix:      false,
-					Specified:   true,
-				},
-			},
-			UserData: nil,
-		})
-	}
-
-	if udpProxyAddr != nil {
-		conn.AddRule(&nftables.Rule{
-			Table:    eaTbl,
-			Chain:    chain,
-			Position: 0,
-			Handle:   0,
-			Flags:    0,
-			Exprs: []expr.Any{
-				&expr.Payload{
-					OperationType:  0,
-					DestRegister:   1,
-					SourceRegister: 0,
-					Base:           expr.PayloadBaseNetworkHeader,
-					Offset:         16,
-					Len:            4,
-					CsumType:       expr.CsumTypeNone,
-					CsumOffset:     0,
-					CsumFlags:      0,
-				},
-				&expr.Lookup{
-					SourceRegister: 1,
-					DestRegister:   0,
-					IsDestRegSet:   false,
-					SetID:          addrsSet.ID,
-					SetName:        addrsSet.Name,
-					Invert:         false,
-				},
-				&expr.Meta{
-					Key:            expr.MetaKeyL4PROTO,
-					SourceRegister: false,
-					Register:       1,
-				},
-				// Only UDP
-				&expr.Cmp{
-					Op:       expr.CmpOpEq,
-					Register: 1,
-					Data:     []uint8{17},
-				},
-				&expr.Payload{
-					OperationType:  expr.PayloadLoad,
-					DestRegister:   1,
-					SourceRegister: 0,
-					Base:           expr.PayloadBaseNetworkHeader,
-					Offset:         9,
-					Len:            1,
-					CsumType:       expr.CsumTypeNone,
-					CsumOffset:     0,
-					CsumFlags:      0,
-				},
-				&expr.Payload{
-					OperationType:  expr.PayloadLoad,
-					DestRegister:   1,
-					SourceRegister: 0,
-					Base:           expr.PayloadBaseTransportHeader,
-					Offset:         2,
-					Len:            2,
-					CsumType:       expr.CsumTypeNone,
-					CsumOffset:     0,
-					CsumFlags:      0,
-				},
-				&expr.Lookup{
-					SourceRegister: 1,
-					DestRegister:   0,
-					IsDestRegSet:   false,
-					SetID:          portSet.ID,
-					SetName:        portSet.Name,
-					Invert:         false,
-				},
-				&expr.Counter{
-					Bytes:   0,
-					Packets: 0,
-				},
-				&expr.Immediate{
-					Register: 1,
-					Data:     udpProxyIP,
-				},
-				&expr.Immediate{
-					Register: 2,
-					Data:     udpProxyPort,
-				},
-				&expr.NAT{
-					Type:        expr.NATTypeDestNAT,
-					Family:      unix.NFPROTO_IPV4,
-					RegAddrMin:  1,
-					RegAddrMax:  1,
-					RegProtoMin: 2,
-					RegProtoMax: 2,
-					Random:      false,
-					FullyRandom: false,
-					Persistent:  false,
-					Prefix:      false,
-					Specified:   true,
-				},
-			},
-			UserData: nil,
-		})
-	}
-
 	if err = conn.Flush(); err != nil {
 		err = fmt.Errorf("failed to initialize nft: %w", err)
 		return
 	}
-
-	//t, _ := conn.ListTable("eavesarp_bzl4L")
-	//c, _ := conn.ListChain(t, "prerouting")
-	//oR, _ := conn.GetRules(t, c)
-	//nR, _ := conn.GetRules(eaTbl, chain)
-	//println(oR, nR)
 
 	return
 }
@@ -392,7 +301,7 @@ func getSpoofedAddrSetElement(conn *nftables.Conn, set *nftables.Set, addr net.I
 
 // AddSpoofedIP adds an IP to the @spoofed_ips nft set.
 func AddSpoofedIP(conn *nftables.Conn, tbl *nftables.Table, addr net.IP) error {
-	if set, err := conn.GetSetByName(tbl, SpoofedIPs); err != nil {
+	if set, err := conn.GetSetByName(tbl, SpoofedIPsSetName); err != nil {
 		return err
 	} else if set == nil {
 		return errors.New("spoofed_ips set is missing")
@@ -411,7 +320,7 @@ func AddSpoofedIP(conn *nftables.Conn, tbl *nftables.Table, addr net.IP) error {
 
 // DelSpoofedIP removes an IP from the @spoofed_ips nft set.
 func DelSpoofedIP(conn *nftables.Conn, tbl *nftables.Table, addr net.IP) error {
-	if set, err := conn.GetSetByName(tbl, SpoofedIPs); err != nil {
+	if set, err := conn.GetSetByName(tbl, SpoofedIPsSetName); err != nil {
 		return err
 	} else if set == nil {
 		return errors.New("spoofed_ips set is missing")

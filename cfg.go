@@ -100,9 +100,14 @@ type (
 	// connections.
 	//
 	// When supplied to NewCfg and empty, a TCP listener will be started
-	// on a randomly available port on cfg.iface.
+	// on a randomly available port of cfg.iface.
 	LocalTCPProxyServerAddrOpt string
 
+	// LocalUDPProxyServerAddrOpt sets the default UDP proxy for poisoned
+	// traffic.
+	//
+	// When supplied to NewCfg and empty, a UDP listener will be started
+	// on a randomly available port of cfg.iface.
 	LocalUDPProxyServerAddrOpt string
 
 	// DefaultDownstreamOpt sets the default downstream for AITM attacks.
@@ -153,8 +158,8 @@ func (cfg *Cfg) newRandID(l int) (err error) {
 //
 // # Options
 //
-// - TCPOpts
 // - LocalTCPProxyServerAddrOpt
+// - LocalUDPProxyServerAddrOpt
 // - DefaultDownstreamOpt
 func NewCfg(dsn string, ifaceName, ifaceAddr string, log *zap.Logger, dataLog io.Writer, opts ...any) (cfg Cfg, err error) {
 
@@ -231,7 +236,8 @@ func NewCfg(dsn string, ifaceName, ifaceAddr string, log *zap.Logger, dataLog io
 		}
 	}
 
-	if err = cfg.initNetfilterTable(ctx, cfg.aitm.getTCPProxyAddr(), cfg.aitm.getUDPProxyAddr()); err != nil {
+	// initialize the netfilter table and dnat rules
+	if err = cfg.InitNetfilter(ctx, cfg.aitm.getTCPProxyAddr(), cfg.aitm.getUDPProxyAddr()); err != nil {
 		cfg.log.Error("failed to init netfilter table", zap.Error(err))
 	}
 
@@ -251,50 +257,39 @@ func (cfg *Cfg) SetDefaultDS(addr string) (err error) {
 	return
 }
 
-// newTCPListener returns a listener bound to addr.
-//
-// If addr is empty, the listener will be bound to
-// a random port on the interface specified in cfg.ipNet.
-func (cfg *Cfg) newTCPListener(addr string) (l net.Listener, err error) {
+func (cfg *Cfg) emptyAddr(addr string) (string, error) {
 	if cfg.ipNet == nil {
-		err = errors.New("nil ipNet")
-		return
+		return "", errors.New("nil ipNet")
 	}
 	if addr == "" {
 		addr = net.JoinHostPort(cfg.ipNet.IP.String(), "0")
 	}
-	l, err = net.Listen("tcp4", addr)
-	return
+	return addr, nil
 }
 
-func (cfg *Cfg) newUDPConn(addr string) (conn *net.UDPConn, err error) {
-	if cfg.ipNet == nil {
-		err = errors.New("nil ipNet")
-		return
+func (cfg *Cfg) StartUDPProxy(ctx context.Context, addr string) error {
+
+	var err error
+	if addr, err = cfg.emptyAddr(addr); err != nil {
+		return fmt.Errorf("invalid address value: %w", err)
 	}
-	if addr == "" {
-		addr = net.JoinHostPort(cfg.ipNet.IP.String(), "0")
-	}
-	var a *net.UDPAddr
-	a, err = net.ResolveUDPAddr("udp4", addr)
+
+	var x *net.UDPAddr
+	x, err = net.ResolveUDPAddr("udp4", addr)
 	if err != nil {
-		return
+		return fmt.Errorf("failed to resolve address for udp: %w", err)
 	}
-	conn, err = net.ListenUDP("udp4", a)
-	return
-}
 
-func (cfg *Cfg) StartUDPProxy(ctx context.Context, addr string) (err error) {
 	var conn *net.UDPConn
-	if conn, err = cfg.newUDPConn(addr); err != nil {
-		cfg.log.Error("failed to start udp proxy listener", zap.Error(err))
-		return
+	if conn, err = net.ListenUDP("udp4", x); err != nil {
+		return fmt.Errorf("failed to listen udp: %w", err)
 	}
+
 	var a misc.Addr
 	if a.IP, a.Port, err = net.SplitHostPort(conn.LocalAddr().String()); err != nil {
-		cfg.log.Error("failed to get udp listener address", zap.Error(err))
-		return
+		return fmt.Errorf("failed to get udp listener address: %w", err)
 	}
+
 	a.Transport = misc.UDPTransport
 	cfg.aitm.setUDPProxyAddr(a)
 	cfg.log.Info("local udp proxy server listener started", zap.String("address", conn.LocalAddr().String()))
@@ -305,20 +300,29 @@ func (cfg *Cfg) StartUDPProxy(ctx context.Context, addr string) (err error) {
 			cfg.errC <- err
 		}
 	}()
-	return
+
+	return nil
+
 }
 
 // StartTCPProxy runs a proxy server in a distinct routine that will receive
 // all proxied connections via DNAT.
-func (cfg *Cfg) StartTCPProxy(ctx context.Context, addr string) (err error) {
-	var l net.Listener
-	if l, err = cfg.newTCPListener(addr); err != nil {
-		return
+func (cfg *Cfg) StartTCPProxy(ctx context.Context, addr string) error {
+	var err error
+	if addr, err = cfg.emptyAddr(addr); err != nil {
+		return fmt.Errorf("invalid address value: %w", err)
 	}
+
+	var l net.Listener
+	if l, err = net.Listen("tcp4", addr); err != nil {
+		return fmt.Errorf("failed to listen on tcp tcp: %w", err)
+	}
+
 	var a misc.Addr
 	if a.IP, a.Port, err = net.SplitHostPort(l.Addr().String()); err != nil {
-		return
+		return fmt.Errorf("failed to get tcp listener address: %w", err)
 	}
+
 	a.Transport = misc.TCPTransport
 	cfg.aitm.setTCPProxyAddr(a)
 	cfg.log.Info("local tcp proxy server listener started", zap.String("address", l.Addr().String()))
@@ -329,7 +333,8 @@ func (cfg *Cfg) StartTCPProxy(ctx context.Context, addr string) (err error) {
 			cfg.errC <- err
 		}
 	}()
-	return
+
+	return nil
 }
 
 // DB returns the database connection initialized by NewCfg.
@@ -502,32 +507,43 @@ func (f *aitmCfgFields) setDefDownstream(a net.IP) {
 	f.defDownstreamIP.Store(a)
 }
 
-// initNetfilterTable initializes the Netfilter table used to DNAT traffic
+// InitNetfilter initializes the Netfilter table used to DNAT traffic
 // to the routines that proxy traffic to downstreams.
-func (cfg *Cfg) initNetfilterTable(ctx context.Context, tcpProxyAddr, udpProxyAddr *misc.Addr) (err error) {
+func (cfg *Cfg) InitNetfilter(ctx context.Context, tcpProxyAddr, udpProxyAddr *misc.Addr) error {
 
 	if tcpProxyAddr == nil && udpProxyAddr == nil {
-		err = errors.New("no tcp proxy or udp proxy configured; skipping nft table initialization")
-		return
+		return errors.New("no tcp proxy or udp proxy configured; skipping nft table initialization")
 	}
 
 	// initialize netfilter connection
+	var err error
 	if cfg.nftConn, err = nftables.New(nftables.AsLasting()); err != nil { // init netfilter conn
-		err = fmt.Errorf("failed to establish nft connection: %w", err)
-		return
+		return fmt.Errorf("failed to establish nft connection: %w", err)
 	} else if err = cfg.newRandID(5); err != nil { // generate random id for the table
-		err = fmt.Errorf("failed to generate cfg id: %w", err)
-		return
+		return fmt.Errorf("failed to generate cfg id: %w", err)
 	} else if err = nft.StaleTables(cfg.nftConn, cfg.log); err != nil { // warn about stale tables
-		return
-	} else if cfg.aitm.nftTbl, err = nft.CreateTable(cfg.nftConn, tcpProxyAddr, udpProxyAddr,
-		nft.TableName(cfg.id), cfg.log); err != nil { // create a table for the config
-		err = fmt.Errorf("failed to init nft table: %w", err)
-		return
+		return fmt.Errorf("failed to list stale nft tables: %w", err)
+	} else if cfg.aitm.nftTbl, err = nft.CreateTable(cfg.nftConn, nft.TableName(cfg.id), cfg.log); err != nil { // create a table for the config
+		return fmt.Errorf("failed to init nft table: %w", err)
 	}
+
+	// create a dnat rule for tcp
+	if tcpProxyAddr != nil {
+		if _, err = nft.CreateDNATRule(cfg.nftConn, cfg.aitm.nftTbl, tcpProxyAddr); err != nil {
+			return fmt.Errorf("failed to create tcp nft dnat rule: %w", err)
+		}
+	}
+
+	// create a dnat rule for udp
+	if udpProxyAddr != nil {
+		if _, err = nft.CreateDNATRule(cfg.nftConn, cfg.aitm.nftTbl, udpProxyAddr); err != nil {
+			return fmt.Errorf("failed to create udp nft dnat rule: %w", err)
+		}
+	}
+
 	cfg.log.Info("successfully initialized nft table", zap.String("nft_table_name", cfg.aitm.nftTbl.Name))
 
-	// delete the current nft table upon ctx cancel
+	// delete the nft table upon ctx cancel
 	context.AfterFunc(ctx, func() {
 		tName := nft.TableName(cfg.id)
 		cfg.log.Debug("deleting current nft table", zap.String("nft_table_name", tName))
@@ -539,5 +555,6 @@ func (cfg *Cfg) initNetfilterTable(ctx context.Context, tcpProxyAddr, udpProxyAd
 			cfg.log.Debug("deleted nft table", zap.String("nft_table_name", tName))
 		}
 	})
-	return
+
+	return nil
 }
