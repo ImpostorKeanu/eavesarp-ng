@@ -76,8 +76,8 @@ func MainSniff(ctx context.Context, cfg Cfg, attackCh chan AttackSnacCfg) (err e
 					return
 				case args := <-attackCh: // receive spoof attack configurations
 
-					fields := []zap.Field{zap.String("senderIp", args.SenderIp.String()),
-						zap.String("targetIp", args.TargetIp.String())}
+					fields := []zap.Field{zap.String("sender_ip", args.SenderIp.String()),
+						zap.String("target_ip", args.TargetIp.String())}
 
 					cfg.log.Info("poisoning conversation", fields...)
 
@@ -88,7 +88,7 @@ func MainSniff(ctx context.Context, cfg Cfg, attackCh chan AttackSnacCfg) (err e
 						go func() {
 							downstream := args.downstream
 							if downstream == nil {
-								downstream = cfg.aitm.getDefDownstream()
+								downstream = cfg.aitm.GetDefDownstreamIP()
 							}
 							err := AttackSnac(ctx, &cfg, args.SenderIp, args.TargetIp, downstream, args.Handlers...)
 							if err != nil { // error while performing attack
@@ -222,7 +222,7 @@ func (u arpStringAddrs) getOrCreateSenderDbValues(cfg Cfg, arpMethod DiscMethod)
 			return
 		}
 		senderIpBuff.MacId = &senderMac.Id
-		cfg.log.Info("found new sender", zap.String("senderMac", u.SenHw), zap.String("senderIp", senderIpBuff.Value))
+		cfg.log.Info("found new sender", zap.String("sender_mac", u.SenHw), zap.String("sender_ip", senderIpBuff.Value))
 	}
 	senderIp = &senderIpBuff
 
@@ -237,8 +237,8 @@ func (u arpStringAddrs) getOrCreateSnifferDbValues(cfg Cfg, arpMethod DiscMethod
 	}
 	if senIp != nil && senIp.IsNew {
 		cfg.log.Info("passively discovered new arp sender",
-			zap.String("senderIp", u.SenIp),
-			zap.String("senderMac", u.SenHw))
+			zap.String("sender_ip", u.SenIp),
+			zap.String("sender_mac", u.SenHw))
 	}
 
 	if arpMethod == PassiveArpMeth {
@@ -250,7 +250,7 @@ func (u arpStringAddrs) getOrCreateSnifferDbValues(cfg Cfg, arpMethod DiscMethod
 		}
 		tarIp = &tarIpBuff
 		if tarIp != nil && tarIp.IsNew {
-			cfg.log.Info("passively discovered new arp target", zap.String("targetIp", u.TarIp))
+			cfg.log.Info("passively discovered new arp target", zap.String("target_ip", u.TarIp))
 		}
 	}
 
@@ -308,7 +308,7 @@ func GetArpLayer(packet gopacket.Packet) *layers.ARP {
 func AttackSnac(ctx context.Context, cfg *Cfg, senIp net.IP, tarIp net.IP, downstream net.IP,
   handlers ...ArpSpoofHandler) (err error) {
 
-	logFields := []zap.Field{zap.String("senderIp", senIp.String()), zap.String("targetIp", tarIp.String())}
+	logFields := []zap.Field{zap.String("sender_ip", senIp.String()), zap.String("target_ip", tarIp.String())}
 
 	//=========================================
 	// CONFIGURE CONNECTION TRACKING FOR ATTACK
@@ -385,7 +385,7 @@ func AttackSnac(ctx context.Context, cfg *Cfg, senIp net.IP, tarIp net.IP, downs
 		select {
 		case <-ctx.Done():
 			// remove the sender ip from the spoofed_ips nft set up context end
-			if err := nft.DelSpoofedIP(cfg.nftConn, cfg.aitm.nftTbl, senIp); err != nil {
+			if err := nft.DelSpoofedIP(cfg.aitm.nftConn, cfg.aitm.nftTbl, senIp); err != nil {
 				cfg.log.Error("failed to remove spoofed ip from nft set",
 					zap.Error(err), zap.String("ip", senIp.String()))
 			}

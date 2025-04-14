@@ -28,7 +28,7 @@ func TestAttackSnac(t *testing.T) {
 
 	sIP := net.ParseIP("192.168.86.3")
 	tIP := net.ParseIP("192.168.86.99")
-	if err = nft.AddSpoofedIP(cfg.nftConn, cfg.aitm.nftTbl, tIP); err != nil {
+	if err = nft.AddSpoofedIP(cfg.aitm.nftConn, cfg.aitm.nftTbl, tIP); err != nil {
 		t.Fatal(err)
 	}
 

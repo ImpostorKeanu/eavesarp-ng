@@ -195,7 +195,7 @@ func handlePtrName(cfg Cfg, depth int, args handlePtrNameArgs[DoDnsCfg, ActiveAr
 				if newIpS != args.ip.Value {
 					cfg.log.Info("found new potential aitm opportunity",
 						zap.String("name", args.name),
-						zap.String("targetIp", args.ip.Value),
+						zap.String("target_ip", args.ip.Value),
 						zap.String("newIp", newIpS),
 						zap.String("reason",
 							"recursive name resolution revealed a pointer to an a record "+

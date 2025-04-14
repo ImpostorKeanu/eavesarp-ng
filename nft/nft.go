@@ -210,11 +210,9 @@ func CreateTable(conn *nftables.Conn, tblName string, log *zap.Logger) (eaTbl *n
 	}
 	conn.CreateTable(eaTbl)
 	if err = conn.Flush(); err != nil {
-		err = fmt.Errorf("failed to initialize nft: %w", err)
-		return
+		return nil, fmt.Errorf("failed to initialize nft: %w", err)
 	} else if eaTbl, err = conn.ListTable(eaTbl.Name); err != nil {
-		err = fmt.Errorf("failed to load newly created nft: %w", err)
-		return
+		return eaTbl, fmt.Errorf("failed to load newly created nft table: %w", err)
 	}
 
 	//======================
@@ -229,12 +227,9 @@ func CreateTable(conn *nftables.Conn, tblName string, log *zap.Logger) (eaTbl *n
 		KeyType: nftables.TypeIPAddr,
 	}
 	if err = conn.AddSet(addrsSet, nil); err != nil {
-		err = fmt.Errorf("failed to add addrs set to nft table: %w", err)
-		return
-	}
-	if err = conn.Flush(); err != nil {
-		err = fmt.Errorf("failed to initialize nft: %w", err)
-		return
+		return nil, fmt.Errorf("failed to add addrs set to nft table: %w", err)
+	} else if err = conn.Flush(); err != nil {
+		return nil, fmt.Errorf("failed to initialize nft spoofed_addrs set: %w", err)
 	}
 
 	//==================
@@ -249,12 +244,9 @@ func CreateTable(conn *nftables.Conn, tblName string, log *zap.Logger) (eaTbl *n
 		KeyType:  nftables.TypeInetService,
 	}
 	if err = conn.AddSet(portSet, []nftables.SetElement{{Key: []uint8{0, 0}}}); err != nil {
-		err = fmt.Errorf("failed to add port set to nft table: %w", err)
-		return
-	}
-	if err = conn.Flush(); err != nil {
-		err = fmt.Errorf("failed to initialize nft: %w", err)
-		return
+		return eaTbl, fmt.Errorf("failed to add port set to nft table: %w", err)
+	} else if err = conn.Flush(); err != nil {
+		return eaTbl, fmt.Errorf("failed to initialize nft: %w", err)
 	}
 
 	//===================================
@@ -276,8 +268,7 @@ func CreateTable(conn *nftables.Conn, tblName string, log *zap.Logger) (eaTbl *n
 	})
 
 	if err = conn.Flush(); err != nil {
-		err = fmt.Errorf("failed to initialize nft: %w", err)
-		return
+		return eaTbl, fmt.Errorf("failed to initialize nft: %w", err)
 	}
 
 	return

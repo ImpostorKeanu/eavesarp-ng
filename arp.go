@@ -108,8 +108,8 @@ func SendArp(cfg Cfg, sA SendArpCfg) (err error) {
 	// SOURCE: https://github.com/google/gopacket/blob/master/examples/arpscan/arpscan.go
 
 	logFields := []zap.Field{
-		zap.String("senderIp", sA.SenderIp.String()), zap.String("senderMac", sA.SenderHw.String()),
-		zap.String("targetIp", sA.TargetIp.String()), zap.String("targetMac", sA.TargetHw.String())}
+		zap.String("sender_ip", sA.SenderIp.String()), zap.String("sender_mac", sA.SenderHw.String()),
+		zap.String("target_ip", sA.TargetIp.String()), zap.String("targetMac", sA.TargetHw.String())}
 
 	ethDstHw := sA.TargetHw
 	arpDstHw := sA.TargetHw
@@ -278,16 +278,16 @@ func handleWatchArpPacket(cfg Cfg, handle *pcap.Handle, packet gopacket.Packet) 
 		arpCount, err = IncArpCount(cfg.db, senIp.Id, tarIp.Id)
 		if err != nil {
 			cfg.log.Error("failed to increment arp count",
-				zap.String("senderIp", sAddrs.SenIp),
-				zap.String("senderMac", sAddrs.SenHw),
-				zap.String("targetIp", sAddrs.TarIp),
+				zap.String("sender_ip", sAddrs.SenIp),
+				zap.String("sender_mac", sAddrs.SenHw),
+				zap.String("target_ip", sAddrs.TarIp),
 				zap.Error(err))
 			return
 		} else if arpCount == 1 {
 			cfg.log.Info("new conversation discovered",
-				zap.String("senderIp", sAddrs.SenIp),
-				zap.String("senderMac", sAddrs.SenHw),
-				zap.String("targetIp", sAddrs.TarIp))
+				zap.String("sender_ip", sAddrs.SenIp),
+				zap.String("sender_mac", sAddrs.SenHw),
+				zap.String("target_ip", sAddrs.TarIp))
 		}
 
 		//==================
@@ -348,7 +348,8 @@ func handleWatchArpPacket(cfg Cfg, handle *pcap.Handle, packet gopacket.Packet) 
 					FailureF: func(e error) {
 						if err := SetPtrResolved(cfg.db, *ip); err != nil {
 							cfg.dns.active.Delete(FmtDnsKey(ip.Value, PtrDnsKind))
-							cfg.log.Error("failed to set ptr to resolved", zap.String("ip", ip.Value), zap.Error(err))
+							cfg.log.Error("failed to set ptr to resolved", zap.String("ip", ip.Value),
+								zap.Error(err))
 							return
 						}
 						cfg.dns.active.Delete(FmtDnsKey(ip.Value, PtrDnsKind))
@@ -356,11 +357,13 @@ func handleWatchArpPacket(cfg Cfg, handle *pcap.Handle, packet gopacket.Packet) 
 					AfterF: func(names []string) {
 						if err := SetPtrResolved(cfg.db, *ip); err != nil {
 							cfg.dns.active.Delete(FmtDnsKey(ip.Value, PtrDnsKind))
-							cfg.log.Error("failed to set ptr to resolved", zap.String("ip", ip.Value), zap.Error(err))
+							cfg.log.Error("failed to set ptr to resolved", zap.String("ip", ip.Value),
+								zap.Error(err))
 							return
 						}
 						for _, name := range names {
-							cfg.log.Info("reverse dns resolution found", zap.String("ip", ip.Value), zap.String("name", name))
+							cfg.log.Info("reverse dns resolution found", zap.String("ip", ip.Value),
+								zap.String("name", name))
 							handlePtrName(cfg, 10, handlePtrNameArgs[DoDnsCfg, ActiveArp]{
 								ip:         ip,
 								name:       name,
