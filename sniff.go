@@ -329,26 +329,27 @@ func AttackSnac(ctx context.Context, cfg *Cfg, senIp net.IP, tarIp net.IP, downs
 	defer nfct.Close()
 
 	// trigger connection tracking cleanup when conntrack signals destruction
-	err = nfct.RegisterFiltered(ctx, conntrack.Conntrack, conntrack.NetlinkCtDestroy,
-		[]conntrack.ConnAttr{
-			// Source IP address (sender)
-			{
-				Type: conntrack.AttrOrigIPv4Src,
-				Data: senIp.To4(),
-				Mask: []byte{0xff, 0xff, 0xff, 0xff},
+	if downstream != nil {
+		err = nfct.RegisterFiltered(ctx, conntrack.Conntrack, conntrack.NetlinkCtDestroy,
+			[]conntrack.ConnAttr{
+				// Source IP address (sender)
+				{
+					Type: conntrack.AttrOrigIPv4Src,
+					Data: senIp.To4(),
+					Mask: []byte{0xff, 0xff, 0xff, 0xff},
+				},
+				// Destination IP address (target -- poisoned cache record btw)
+				{
+					Type: conntrack.AttrOrigIPv4Dst,
+					Data: tarIp.To4(),
+					Mask: []byte{0xff, 0xff, 0xff, 0xff},
+				},
 			},
-			// Destination IP address (target -- poisoned cache record btw)
-			{
-				Type: conntrack.AttrOrigIPv4Dst,
-				Data: tarIp.To4(),
-				Mask: []byte{0xff, 0xff, 0xff, 0xff},
-			},
-		},
-		destroyConnFilterFunc(cfg))
-
-	if err != nil {
-		err = fmt.Errorf("failed to register nfct destroyed connection filter: %w", err)
-		return
+			destroyConnFilterFunc(cfg))
+		if err != nil {
+			err = fmt.Errorf("failed to register nfct destroyed connection filter: %w", err)
+			return
+		}
 	}
 
 	//========================
@@ -411,7 +412,9 @@ func AttackSnac(ctx context.Context, cfg *Cfg, senIp net.IP, tarIp net.IP, downs
 
 			}
 
-			mapConn(cfg, packet, downstream)
+			if downstream != nil {
+				mapConn(cfg, packet, downstream)
+			}
 
 			// Run handlers
 			go func() {
@@ -433,10 +436,6 @@ func AttackSnac(ctx context.Context, cfg *Cfg, senIp net.IP, tarIp net.IP, downs
 // - downstream is nil
 // - the packet doesn't have an IPv4, TCP, or UDP layer.
 func mapConn(cfg *Cfg, packet gopacket.Packet, downstream net.IP) (updated bool) {
-
-	if downstream == nil {
-		return
-	}
 
 	if ipL, ok := packet.Layer(layers.LayerTypeIPv4).(*layers.IPv4); ok {
 
@@ -490,7 +489,9 @@ func destroyConnFilterFunc(cfg *Cfg) conntrack.HookFunc {
 			Port:      fmt.Sprintf("%d", *con.Origin.Proto.SrcPort),
 			Transport: t}
 		cfg.aitm.connMap.Delete(k)
-		cfg.log.Debug("cleaning destroyed connection", zap.Any("source", k))
+		cfg.log.Debug("cleaning destroyed connection",
+			zap.Any("source", k),
+			zap.String("transport", string(t)))
 		return 0
 	}
 }

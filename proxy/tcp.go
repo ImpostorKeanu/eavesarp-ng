@@ -11,50 +11,65 @@ import (
 )
 
 type (
+	// TCPCfg implements various GoSplit interfaces, allowing
+	// it to be passed to the TLS intercepting proxy it offers.
 	TCPCfg struct {
-		log                  *zap.Logger
-		dLog                 io.Writer
-		connAddrs            *sync.Map
-		downstreamCertGetter DsCertGetter
+		// connMap is a mapping of source addresses to downstream
+		// net.IP instances, allowing the proxy to discover the
+		// downstream IP address that will receive proxied traffic.
+		//
+		// Note: mapping values are set by eavesarp_ng.AttackSnac
+		// during poisoning attacks.
+		connMap              *sync.Map
+		downstreamCertGetter DsCertGetter // function to get a TLS certificate for downstreams
+		log                  *zap.Logger  // logger for log events
+		dataW                io.Writer    // writer to receive JSON data
 	}
+
+	// DsCertGetter is a function used to get the certificate for
+	// TLS connections to downstreams.
 	DsCertGetter func(downstreamIP string) func(*tls.ClientHelloInfo) (*tls.Certificate, error)
 )
 
 var (
+	// dsTLSCfg is the downstream TLS configuration used for
+	// all downstream configurations.
 	dsTLSCfg = &tls.Config{
-		InsecureSkipVerify: true,
+		InsecureSkipVerify: true, // skip TLS verification for downstreams
 	}
 )
 
+// NewTCPCfg initializes and returns a pointer to a TCPCfg, which
+// implements all necessary GoSplit interfaces.
 func NewTCPCfg(connAddrs *sync.Map, downstreamCertGetter DsCertGetter, log *zap.Logger, dataLog io.Writer) *TCPCfg {
 	return &TCPCfg{
 		log:                  log,
-		connAddrs:            connAddrs,
+		connMap:              connAddrs,
 		downstreamCertGetter: downstreamCertGetter,
-		dLog:                 dataLog,
+		dataW:                dataLog,
 	}
 }
 
 //==========================
-// GoSplit INTERFACE METHODS
+// GOSPLIT INTERFACE METHODS
 //==========================
 
 func (cfg *TCPCfg) RecvVictimData(cI gs.ConnInfo, b []byte) {
-	if cfg.dLog == nil {
+	if cfg.dataW == nil {
 		return
 	}
 	data := connInfoToData(cI, b, misc.VictimDataSender)
-	if err := data.Log(cfg.dLog); err != nil {
+	if err := data.Log(cfg.dataW); err != nil {
 		cfg.log.Error("failed to write victim data to log", zap.Error(err))
 	}
 }
 
 func (cfg *TCPCfg) RecvDownstreamData(cI gs.ConnInfo, b []byte) {
-	if cfg.dLog == nil {
+	if cfg.dataW == nil {
 		return
 	}
 	data := connInfoToData(cI, b, misc.DownstreamDataSender)
-	if err := data.Log(cfg.dLog); err != nil {
+	if err := data.Log(cfg.dataW); err != nil {
 		cfg.log.Error("failed to write downstream data to log", zap.Error(err))
 	}
 }
@@ -66,10 +81,10 @@ func (cfg *TCPCfg) RecvConnStart(i gs.ConnInfo) {
 
 // RecvConnEnd to implement gosplit.ConnInfoReceiver
 //
-// This removes the cfg.connAddrs entry for the current connection.
+// This removes the cfg.connMap entry for the current connection.
 func (cfg *TCPCfg) RecvConnEnd(i gs.ConnInfo) {
 	cfg.log.Debug("connection ended", zap.Any("conn", i))
-	cfg.connAddrs.Delete(misc.Addr{
+	cfg.connMap.Delete(misc.Addr{
 		IP: i.Victim.IP, Port: i.Victim.Port,
 		Transport: misc.TCPTransport})
 }
@@ -88,7 +103,7 @@ func (cfg *TCPCfg) GetProxyTLSConfig(_ gs.Addr, _ gs.Addr, dsA *gs.Addr) (*tls.C
 func (cfg *TCPCfg) GetDownstreamAddr(_ gs.Addr, vicA gs.Addr) (ds *gs.Addr, err error) {
 	// try to retrieve downstream connection a few times
 	for i := 0; i < 3; i++ {
-		if d, ok := cfg.connAddrs.Load(misc.Addr{IP: vicA.IP, Port: vicA.Port, Transport: misc.TCPTransport}); ok {
+		if d, ok := cfg.connMap.Load(misc.Addr{IP: vicA.IP, Port: vicA.Port, Transport: misc.TCPTransport}); ok {
 			ds = new(gs.Addr)
 			ds.IP, ds.Port = d.(misc.Addr).IP, d.(misc.Addr).Port
 			return
