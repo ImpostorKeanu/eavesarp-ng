@@ -671,7 +671,9 @@ func (cfg *Cfg) destroyConnFilterFunc() conntrack.HookFunc {
 			Port:      fmt.Sprintf("%d", *con.Origin.Proto.SrcPort),
 			Transport: t}
 		cfg.aitm.connMap.Delete(k)
-		cfg.aitm.spoofedMap.Delete(k.String())
+		if k.Transport == misc.TCPTransport {
+			cfg.aitm.spoofedMap.Delete(k.String())
+		}
 		cfg.log.Debug("cleaning destroyed connection",
 			zap.Any("source", k),
 			zap.String("transport", string(t)))
