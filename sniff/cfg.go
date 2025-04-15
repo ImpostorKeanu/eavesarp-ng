@@ -26,6 +26,9 @@ import (
 	"sync/atomic"
 )
 
+// Option weights are used to sort options passed to NewCfg,
+// allowing us to manage dependencies as various routines
+// are started.
 const (
 	DefaultDownstreamOptWeight int = iota
 	TCPProxyServerOptWeight
@@ -33,6 +36,11 @@ const (
 )
 
 type (
+	// Cfg is the primary eavesarp configuration type that binds
+	// all connections and data sources together.
+	//
+	// NewCfg initializes this type while starting all supporting
+	// routines.
 	Cfg struct {
 		// id is a randomly generated value for the cfg.
 		//
