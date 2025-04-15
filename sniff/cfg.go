@@ -6,7 +6,10 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/florianl/go-conntrack"
 	"github.com/florianl/go-nfqueue/v2"
+	"github.com/google/gopacket"
+	"github.com/google/gopacket/layers"
 	"github.com/google/nftables"
 	"github.com/impostorkeanu/eavesarp-ng/crt"
 	db2 "github.com/impostorkeanu/eavesarp-ng/db"
@@ -608,6 +611,72 @@ func (cfg *Cfg) emptyAddr(addr string) (string, error) {
 		addr = net.JoinHostPort(cfg.ipNet.IP.String(), "0")
 	}
 	return addr, nil
+}
+
+// mapConn updates cfg.aitm.connMap and cfg.aitm.spoofedMap with connection
+// information to enable post-DNAT connectivity and TLS certificate generation.
+//
+// No update is made if:
+//
+// - downstream is nil
+// - the packet doesn't have an IPv4, TCP, or UDP layer.
+func (cfg *Cfg) mapConn(packet gopacket.Packet, downstream net.IP) {
+
+	if ipL, ok := packet.Layer(layers.LayerTypeIPv4).(*layers.IPv4); ok {
+
+		//==============================================
+		// HANDLE INCOMING TCP CONNECTIONS & UDP PACKETS
+		//==============================================
+
+		k := misc.Addr{IP: ipL.SrcIP.To4().String()}
+		v := misc.Addr{IP: downstream.To4().String()}
+
+		if tcp, ok := packet.Layer(layers.LayerTypeTCP).(*layers.TCP); ok && tcp.SYN {
+			k.Port = fmt.Sprintf("%d", tcp.SrcPort)
+			k.Transport = misc.TCPTransport
+			v.Port = fmt.Sprintf("%d", tcp.DstPort)
+			v.Transport = misc.TCPTransport
+			cfg.aitm.spoofedMap.Store(k.String(), ipL.DstIP.To4().String())
+		} else if udp, ok := packet.Layer(layers.LayerTypeUDP).(*layers.UDP); ok {
+			// TODO should probably look into refining this
+			//  one of the benefits of conntrack is that it could infer the state
+			//  of a UDP "connection"....
+			k.Port = fmt.Sprintf("%d", udp.SrcPort)
+			k.Transport = misc.UDPTransport
+			v.Port = fmt.Sprintf("%d", udp.DstPort)
+			v.Transport = misc.UDPTransport
+		}
+
+		if k.Port == "" {
+			return
+		}
+		cfg.aitm.connMap.Store(k, v)
+	}
+
+	return
+}
+
+// destroyConnFilterFunc returns a hook for cleaning up destroyed
+// UDP and TCP connections.
+func (cfg *Cfg) destroyConnFilterFunc() conntrack.HookFunc {
+	return func(con conntrack.Con) int {
+		// dereferencing this pointer may seem reckless, but it's fine
+		// because the filter only accepts tcp/udp traffic
+		t := misc.ConntrackTransportFromProtoNum(*con.Origin.Proto.Number)
+		if t == "" {
+			return 0
+		}
+		k := misc.Addr{
+			IP:        con.Origin.Src.To4().String(),
+			Port:      fmt.Sprintf("%d", *con.Origin.Proto.SrcPort),
+			Transport: t}
+		cfg.aitm.connMap.Delete(k)
+		cfg.aitm.spoofedMap.Delete(k.String())
+		cfg.log.Debug("cleaning destroyed connection",
+			zap.Any("source", k),
+			zap.String("transport", string(t)))
+		return 0
+	}
 }
 
 // optInt returns an integer weight assigned to known NewCfg options.

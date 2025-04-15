@@ -105,7 +105,7 @@ func (cfg *TCPCfg) RecvLog(r gs.LogRecord) {
 func (cfg *TCPCfg) GetProxyTLSConfig(vA gs.Addr, _ gs.Addr, dsA *gs.Addr) (*tls.Config, error) {
 
 	sA := dsA.IP // spoofed address
-	if a, ok := cfg.spoofedMap.Load(vA.IP); !ok {
+	if a, ok := cfg.spoofedMap.Load(vA.String()); !ok {
 		cfg.log.Warn("failed to find spoofed address while getting proxy tls config")
 	} else if sA, ok = a.(string); !ok {
 		cfg.log.Warn("non-string value returned from spoof map")

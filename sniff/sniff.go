@@ -255,7 +255,6 @@ func (u arpStringAddrs) getOrCreateSnifferDbValues(cfg Cfg, arpMethod db.DiscMet
 			cfg.log.Info("passively discovered new arp target", zap.String("target_ip", u.TarIp))
 		}
 	}
-
 	return
 }
 
@@ -311,18 +310,6 @@ func AttackSnac(ctx context.Context, cfg *Cfg, senIp net.IP, tarIp net.IP, downs
   handlers ...ArpSpoofHandler) (err error) {
 
 	logFields := []zap.Field{zap.String("sender_ip", senIp.String()), zap.String("target_ip", tarIp.String())}
-
-	//========================
-	// TRACK SPOOFED ADDRESSES
-	//========================
-
-	if v, ok := cfg.aitm.spoofedMap.Load(senIp.String()); ok && v.(string) == tarIp.String() {
-		cfg.log.Error("duplicate poisoning attack requested", logFields...)
-		return fmt.Errorf("duplicate poisoning attack requested: sender %v, target %v",
-			senIp.String(), tarIp.String())
-	}
-	cfg.aitm.spoofedMap.Store(senIp.String(), tarIp.String())
-	defer cfg.aitm.spoofedMap.Delete(senIp.String())
 
 	//=========================================
 	// CONFIGURE CONNECTION TRACKING FOR ATTACK
@@ -427,7 +414,7 @@ func AttackSnac(ctx context.Context, cfg *Cfg, senIp net.IP, tarIp net.IP, downs
 			}
 
 			if downstream != nil {
-				mapConn(cfg, packet, downstream)
+				cfg.mapConn(packet, downstream)
 			}
 
 			// Run handlers
@@ -439,73 +426,5 @@ func AttackSnac(ctx context.Context, cfg *Cfg, senIp net.IP, tarIp net.IP, downs
 				}
 			}()
 		}
-	}
-}
-
-// mapConn updates cfg.aitm.connMap with connection information
-// to enable post-DNAT connectivity.
-//
-// No update is made if:
-//
-// - downstream is nil
-// - the packet doesn't have an IPv4, TCP, or UDP layer.
-func mapConn(cfg *Cfg, packet gopacket.Packet, downstream net.IP) (updated bool) {
-
-	if ipL, ok := packet.Layer(layers.LayerTypeIPv4).(*layers.IPv4); ok {
-
-		//==============================================
-		// HANDLE INCOMING TCP CONNECTIONS & UDP PACKETS
-		//==============================================
-
-		k := misc.Addr{IP: ipL.SrcIP.To4().String()}
-		v := misc.Addr{IP: downstream.To4().String()}
-
-		if tcp, ok := packet.Layer(layers.LayerTypeTCP).(*layers.TCP); ok && tcp.SYN {
-			k.Port = fmt.Sprintf("%d", tcp.SrcPort)
-			k.Transport = misc.TCPTransport
-			v.Port = fmt.Sprintf("%d", tcp.DstPort)
-			v.Transport = misc.TCPTransport
-		} else if udp, ok := packet.Layer(layers.LayerTypeUDP).(*layers.UDP); ok {
-			// TODO should probably look into refining this
-			//  one of the benefits of conntrack is that it could infer the state
-			//  of a UDP "connection"....
-			k.Port = fmt.Sprintf("%d", udp.SrcPort)
-			k.Transport = misc.UDPTransport
-			v.Port = fmt.Sprintf("%d", udp.DstPort)
-			v.Transport = misc.UDPTransport
-		}
-
-		if k.Port == "" {
-			// Didn't find TCP or UDP layer.....NOP
-		} else if _, ok = cfg.aitm.connMap.Load(k); !ok {
-			// Store unique connection
-			updated = true
-			cfg.aitm.connMap.Store(k, v)
-		}
-	}
-
-	return
-}
-
-// newConnFilterFunc returns a conntrack.HookFunc for cleaning up destroyed
-// UDP and TCP connections.
-//
-func destroyConnFilterFunc(cfg *Cfg) conntrack.HookFunc {
-	return func(con conntrack.Con) int {
-		// dereferencing this pointer may seem reckless, but it's fine
-		// because the filter only accepts tcp/udp traffic
-		t := misc.ConntrackTransportFromProtoNum(*con.Origin.Proto.Number)
-		if t == "" {
-			return 0
-		}
-		k := misc.Addr{
-			IP:        con.Origin.Src.To4().String(),
-			Port:      fmt.Sprintf("%d", *con.Origin.Proto.SrcPort),
-			Transport: t}
-		cfg.aitm.connMap.Delete(k)
-		cfg.log.Debug("cleaning destroyed connection",
-			zap.Any("source", k),
-			zap.String("transport", string(t)))
-		return 0
 	}
 }
