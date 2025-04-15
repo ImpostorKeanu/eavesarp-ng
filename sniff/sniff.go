@@ -9,7 +9,6 @@ import (
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
 	"github.com/impostorkeanu/eavesarp-ng/db"
-	"github.com/impostorkeanu/eavesarp-ng/misc"
 	"github.com/impostorkeanu/eavesarp-ng/nft"
 	"go.uber.org/zap"
 	"net"
@@ -346,7 +345,7 @@ func AttackSnac(ctx context.Context, cfg *Cfg, senIp net.IP, tarIp net.IP, downs
 					Mask: []byte{0xff, 0xff, 0xff, 0xff},
 				},
 			},
-			destroyConnFilterFunc(cfg))
+			cfg.destroyConnFilterFunc())
 		if err != nil {
 			err = fmt.Errorf("failed to register nfct destroyed connection filter: %w", err)
 			return

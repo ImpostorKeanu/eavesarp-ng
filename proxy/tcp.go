@@ -100,14 +100,12 @@ func (cfg *TCPCfg) RecvLog(r gs.LogRecord) {
 }
 
 // GetProxyTLSConfig returns the TLS config for each connection.
-//
-// Certificate values are dynamically generated based on
 func (cfg *TCPCfg) GetProxyTLSConfig(vA gs.Addr, _ gs.Addr, dsA *gs.Addr) (*tls.Config, error) {
 
 	sA := dsA.IP // spoofed address
 	if a, ok := cfg.spoofedMap.Load(vA.String()); !ok {
 		cfg.log.Warn("failed to find spoofed address while getting proxy tls config")
-	} else if sA, ok = a.(string); !ok {
+	} else if sA, ok = a.(string); !ok { // use mapped value instead of downstream
 		cfg.log.Warn("non-string value returned from spoof map")
 	}
 
@@ -121,9 +119,8 @@ func (cfg *TCPCfg) GetDownstreamAddr(vicA gs.Addr, _ gs.Addr) (ds *gs.Addr, err 
 	// try to retrieve downstream connection a few times
 	for i := 0; i < 3; i++ {
 		if d, ok := cfg.connMap.Load(misc.Addr{IP: vicA.IP, Port: vicA.Port, Transport: misc.TCPTransport}); ok {
-			ds = new(gs.Addr)
-			ds.IP, ds.Port = d.(misc.Addr).IP, d.(misc.Addr).Port
-			return
+			ds = &gs.Addr{IP: d.(misc.Addr).IP, Port: d.(misc.Addr).Port}
+			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
