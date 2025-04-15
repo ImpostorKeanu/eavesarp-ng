@@ -7,12 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"github.com/florianl/go-conntrack"
-	"github.com/florianl/go-nfqueue/v2"
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/google/nftables"
 	"github.com/impostorkeanu/eavesarp-ng/crt"
-	db2 "github.com/impostorkeanu/eavesarp-ng/db"
+	"github.com/impostorkeanu/eavesarp-ng/db"
 	"github.com/impostorkeanu/eavesarp-ng/misc"
 	"github.com/impostorkeanu/eavesarp-ng/misc/rand"
 	"github.com/impostorkeanu/eavesarp-ng/nft"
@@ -35,18 +34,21 @@ const (
 
 type (
 	Cfg struct {
-		id      string
-		db      *sql.DB
-		ipNet   *net.IPNet
-		iface   *net.Interface
-		log     *zap.Logger
-		dataLog io.Writer
-		errC    chan error // Channel to communicate errors to other applications
-		arp     arpCfgFields
-		dns     dnsCfgFields
-		tls     tlsCfgFields
-		aitm    aitmCfgFields
-		cancel  context.CancelFunc
+		// id is a randomly generated value for the cfg.
+		//
+		// It's used to ensure uniqueness of NFT tables.
+		id     string
+		db     *sql.DB            // db connection to the SQLite database.
+		ipNet  *net.IPNet         // ipNet the config is managing.
+		iface  *net.Interface     // iface the config is managing.
+		log    *zap.Logger        // log to receive log records.
+		dataW  io.Writer          // dataW sends JSON data to the writer.
+		errC   chan error         // errC communicates errors to other applications.
+		arp    arpCfgFields       // arp resolution and configuration.
+		dns    dnsCfgFields       // dns resolution and configuration.
+		tls    tlsCfgFields       // tls cert generation and caching.
+		aitm   aitmCfgFields      // aitm tracks data and configurations associated with AITM attacks.
+		cancel context.CancelFunc // cancel function called upon exit.
 	}
 
 	// arpCfgFields defines configuration fields related to ARP.
@@ -69,16 +71,24 @@ type (
 
 	// aitmCfgFields defines configuration fields related to AITM.
 	aitmCfgFields struct {
-		nftConn *nftables.Conn
-		nfqConn *nfqueue.Nfqueue
-
-		// connMap maps the sender address to a target address for a connection
-		// that has been detected by netfilter.
+		// downstreams maps sender addresses to downstream addresses.
+		//
+		//
+		// This allows for traffic to be relayed by associating the pre-DNAT
+		// port with a downstream (destination) IP address.
 		//
 		// The type for both the key and value is misc.Addr.
-		connMap *sync.Map
+		downstreams *sync.Map
 
-		spoofedMap *sync.Map
+		// spoofed maps source addresses to ARP addresses that have been spoofed.
+		//
+		// This reveals the pre-DNAT destination address that
+		// spoofed via sniff.AttackSnac.
+		//
+		// The key type is a string formatted as SRC_IP:SRC_PORT
+		//
+		// map["SRC_IP:SRC_PORT"]=ORIG_DST_IP
+		spoofed *sync.Map
 
 		// defDownstreamIP describes a TCP listener that will receive connections
 		// during an AITM attack _without_ an AITM downstream. This allows us to
@@ -104,6 +114,10 @@ type (
 		//
 		// See: GetUDPProxyAddr, SetUDPProxyAddr
 		udpProxyAddr atomic.Value
+
+		// nftConn is used to manage the nft table that DNATs traffic to
+		// the TCP and UDP intercepting proxy.
+		nftConn *nftables.Conn
 
 		// nftTbl is the netfilter table created for the current Cfg.
 		nftTbl *nftables.Table
@@ -182,7 +196,7 @@ func NewCfg(dsn string, ifaceName, ifaceAddr string, log *zap.Logger, dataLog io
 		return
 	}
 	cfg.log = log
-	cfg.dataLog = dataLog
+	cfg.dataW = dataLog
 
 	//=============================
 	// INITIALIZE CHANNELS AND MAPS
@@ -202,8 +216,8 @@ func NewCfg(dsn string, ifaceName, ifaceAddr string, log *zap.Logger, dataLog io
 	cfg.db, err = cfg.initDb(dsn)
 	cfg.dns.failCount = NewFailCounter(DnsMaxFailures)
 
-	cfg.aitm.connMap = new(sync.Map)
-	cfg.aitm.spoofedMap = new(sync.Map)
+	cfg.aitm.downstreams = new(sync.Map)
+	cfg.aitm.spoofed = new(sync.Map)
 
 	//============================================
 	// APPLY OPTIONS AND START SUPPORTING ROUTINES
@@ -264,9 +278,13 @@ func NewCfg(dsn string, ifaceName, ifaceAddr string, log *zap.Logger, dataLog io
 		}
 	}
 
-	// initialize the netfilter table and dnat rules
-	if err = cfg.InitNetfilter(ctx, cfg.aitm.GetTCPProxyAddr(), cfg.aitm.GetUDPProxyAddr()); err != nil {
-		cfg.log.Error("failed to init netfilter table", zap.Error(err))
+	if cfg.aitm.GetTCPProxyAddr() != nil || cfg.aitm.GetUDPProxyAddr() != nil {
+		// initialize the netfilter table and dnat rules
+		if err = cfg.InitNetfilter(ctx, cfg.aitm.GetTCPProxyAddr(), cfg.aitm.GetUDPProxyAddr()); err != nil {
+			cfg.log.Error("failed to init netfilter table", zap.Error(err))
+		}
+	} else {
+		cfg.log.Warn("no tcp or udp proxies configured; skipping nft table creation")
 	}
 
 	return
@@ -299,7 +317,7 @@ func (cfg *Cfg) StartUDPProxy(ctx context.Context, addr string) (net.Addr, error
 	a.Transport = misc.UDPTransport
 	cfg.aitm.SetUDPProxyAddr(a)
 	go func() {
-		pCfg := proxy.NewUDPCfg(cfg.aitm.connMap, cfg.log, cfg.dataLog)
+		pCfg := proxy.NewUDPCfg(cfg.aitm.downstreams, cfg.log, cfg.dataW)
 		if e := proxy.NewUDPServer(pCfg, conn).Serve(ctx); e != nil {
 			cfg.log.Error("udp proxy server failed", zap.Error(e))
 			cfg.errC <- err
@@ -330,7 +348,7 @@ func (cfg *Cfg) StartTCPProxy(ctx context.Context, addr string) (net.Addr, error
 	a.Transport = misc.TCPTransport
 	cfg.aitm.SetTCPProxyAddr(a)
 	go func() {
-		pCfg := proxy.NewTCPCfg(cfg.aitm.connMap, cfg.aitm.spoofedMap, cfg.GetProxyCertificateFunc, cfg.log, cfg.dataLog)
+		pCfg := proxy.NewTCPCfg(cfg.aitm.downstreams, cfg.aitm.spoofed, cfg.GetProxyCertificateFunc, cfg.log, cfg.dataW)
 		if e := gs.NewProxyServer(pCfg, l).Serve(ctx); e != nil {
 			cfg.log.Error("default tcp proxy server failed", zap.Error(e))
 			cfg.errC <- err
@@ -360,26 +378,21 @@ func (cfg *Cfg) Shutdown() {
 			cfg.log.Error("failed to close nftable connection", zap.Error(err))
 		}
 	}
-	if cfg.aitm.nfqConn != nil {
-		if err := cfg.aitm.nfqConn.Close(); err != nil {
-			cfg.log.Error("failed to close nfqueue connection", zap.Error(err))
-		}
-	}
 	close(cfg.arp.ch)
 	close(cfg.dns.ch)
 	close(cfg.errC)
 }
 
 // initDb initializes a SQLite database for eavesarp-ng.
-func (cfg *Cfg) initDb(dsn string) (db *sql.DB, err error) {
-	db, err = sql.Open("sqlite", dsn)
+func (cfg *Cfg) initDb(dsn string) (conn *sql.DB, err error) {
+	conn, err = sql.Open("sqlite", dsn)
 	if err != nil {
 		cfg.log.Error("error opening db", zap.Error(err))
 		return
 	}
-	db.SetMaxOpenConns(1)
+	conn.SetMaxOpenConns(1)
 	// TODO test the connection by pinging the database
-	_, err = db.ExecContext(context.Background(), db2.SchemaSql)
+	_, err = conn.ExecContext(context.Background(), db.SchemaSql)
 	if err != nil {
 		cfg.log.Error("error while applying database schema", zap.Error(err))
 		return
@@ -447,8 +460,6 @@ func (cfg *Cfg) getInterface(name string, addr string) (err error) {
 func (cfg *Cfg) GetProxyCertificateFunc(victimIP, downstreamIP string) func(h *tls.ClientHelloInfo) (cert *tls.Certificate, error error) {
 
 	return func(h *tls.ClientHelloInfo) (cert *tls.Certificate, err error) {
-
-		// TODO look up spoofed IP from victim IP
 
 		// TODO h.ServerName could reveal an unknown hostname
 
@@ -613,13 +624,15 @@ func (cfg *Cfg) emptyAddr(addr string) (string, error) {
 	return addr, nil
 }
 
-// mapConn updates cfg.aitm.connMap and cfg.aitm.spoofedMap with connection
-// information to enable post-DNAT connectivity and TLS certificate generation.
+// mapConn updates the connection and spoofed IP maps with information
+// to enable post-DNAT connectivity and TLS certificate generation.
 //
 // No update is made if:
 //
 // - downstream is nil
 // - the packet doesn't have an IPv4, TCP, or UDP layer.
+//
+// Spoofed IPs are stored only for TCP connections.
 func (cfg *Cfg) mapConn(packet gopacket.Packet, downstream net.IP) {
 
 	if ipL, ok := packet.Layer(layers.LayerTypeIPv4).(*layers.IPv4); ok {
@@ -636,7 +649,7 @@ func (cfg *Cfg) mapConn(packet gopacket.Packet, downstream net.IP) {
 			k.Transport = misc.TCPTransport
 			v.Port = fmt.Sprintf("%d", tcp.DstPort)
 			v.Transport = misc.TCPTransport
-			cfg.aitm.spoofedMap.Store(k.String(), ipL.DstIP.To4().String())
+			cfg.aitm.spoofed.Store(k.String(), ipL.DstIP.To4().String())
 		} else if udp, ok := packet.Layer(layers.LayerTypeUDP).(*layers.UDP); ok {
 			// TODO should probably look into refining this
 			//  one of the benefits of conntrack is that it could infer the state
@@ -650,7 +663,7 @@ func (cfg *Cfg) mapConn(packet gopacket.Packet, downstream net.IP) {
 		if k.Port == "" {
 			return
 		}
-		cfg.aitm.connMap.Store(k, v)
+		cfg.aitm.downstreams.Store(k, v)
 	}
 
 	return
@@ -670,9 +683,9 @@ func (cfg *Cfg) destroyConnFilterFunc() conntrack.HookFunc {
 			IP:        con.Origin.Src.To4().String(),
 			Port:      fmt.Sprintf("%d", *con.Origin.Proto.SrcPort),
 			Transport: t}
-		cfg.aitm.connMap.Delete(k)
+		cfg.aitm.downstreams.Delete(k)
 		if k.Transport == misc.TCPTransport {
-			cfg.aitm.spoofedMap.Delete(k.String())
+			cfg.aitm.spoofed.Delete(k.String())
 		}
 		cfg.log.Debug("cleaning destroyed connection",
 			zap.Any("source", k),
