@@ -1,4 +1,4 @@
-package eavesarp_ng
+package sniff
 
 import (
 	"bytes"
@@ -8,6 +8,7 @@ import (
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
+	"github.com/impostorkeanu/eavesarp-ng/db"
 	"go.uber.org/zap"
 	"net"
 	"time"
@@ -28,7 +29,7 @@ type (
 	ActiveArp struct {
 		// TargetIpRec is the database record associated with the
 		// ARP target.
-		TargetIpRec Ip
+		TargetIpRec db.Ip
 		// Cancel is any cancel function that should be called
 		// later.
 		Cancel context.CancelFunc
@@ -109,7 +110,7 @@ func SendArp(cfg Cfg, sA SendArpCfg) (err error) {
 
 	logFields := []zap.Field{
 		zap.String("sender_ip", sA.SenderIp.String()), zap.String("sender_mac", sA.SenderHw.String()),
-		zap.String("target_ip", sA.TargetIp.String()), zap.String("targetMac", sA.TargetHw.String())}
+		zap.String("target_ip", sA.TargetIp.String()), zap.String("target_mac", sA.TargetHw.String())}
 
 	ethDstHw := sA.TargetHw
 	arpDstHw := sA.TargetHw
@@ -119,7 +120,7 @@ func SendArp(cfg Cfg, sA SendArpCfg) (err error) {
 		if sA.TargetHw == nil {
 			return errors.New("sending arp replies requires a target hardware address value")
 		}
-		logFields = append(logFields, zap.String("arpOperation", "reply"))
+		logFields = append(logFields, zap.String("arp_operation", "reply"))
 
 	} else {
 
@@ -159,7 +160,7 @@ func SendArp(cfg Cfg, sA SendArpCfg) (err error) {
 				if sA.ReqMaxRetries > 0 {
 					sA.ReqMaxRetries--
 					fields := logFields[:]
-					fields = append(fields, zap.Int("remainingRetries", sA.ReqMaxRetries))
+					fields = append(fields, zap.Int("remaining_retries", sA.ReqMaxRetries))
 					cfg.log.Info("retrying arp", fields...)
 					if err := SendArp(cfg, sA); err != nil {
 						logFields = append(logFields, zap.Error(err))
@@ -169,7 +170,7 @@ func SendArp(cfg Cfg, sA SendArpCfg) (err error) {
 				}
 				cfg.log.Info("never received arp response", logFields...)
 			}
-			if err := SetArpResolved(cfg.db, aa.TargetIpRec.Id); err != nil {
+			if err := db.SetArpResolved(cfg.db, aa.TargetIpRec.Id); err != nil {
 				cfg.log.Error("failed to set arp as resolved for ip", logFields...)
 			}
 			cfg.arp.active.Delete(aa.TargetIpRec.Value)
@@ -248,7 +249,7 @@ func handleWatchArpPacket(cfg Cfg, handle *pcap.Handle, packet gopacket.Packet) 
 			return
 		} else if cfg.ipNet.IP.Equal(arpL.DstProtAddress) {
 			// capture ARP requests for senders wanting our mac address
-			if _, srcIp, e := sAddrs.getOrCreateSenderDbValues(cfg, PassiveArpMeth); e != nil {
+			if _, srcIp, e := sAddrs.getOrCreateSenderDbValues(cfg, db.PassiveArpMeth); e != nil {
 				err = e
 				return
 			} else if srcIp.IsNew {
@@ -257,8 +258,8 @@ func handleWatchArpPacket(cfg Cfg, handle *pcap.Handle, packet gopacket.Packet) 
 			return
 		}
 
-		var senIp, tarIp *Ip
-		if _, senIp, tarIp, err = sAddrs.getOrCreateSnifferDbValues(cfg, PassiveArpMeth); err != nil {
+		var senIp, tarIp *db.Ip
+		if _, senIp, tarIp, err = sAddrs.getOrCreateSnifferDbValues(cfg, db.PassiveArpMeth); err != nil {
 			cfg.log.Error("failed to get sniffer db values", zap.Error(err))
 			return
 		}
@@ -275,7 +276,7 @@ func handleWatchArpPacket(cfg Cfg, handle *pcap.Handle, packet gopacket.Packet) 
 		//====================
 
 		var arpCount int
-		arpCount, err = IncArpCount(cfg.db, senIp.Id, tarIp.Id)
+		arpCount, err = db.IncArpCount(cfg.db, senIp.Id, tarIp.Id)
 		if err != nil {
 			cfg.log.Error("failed to increment arp count",
 				zap.String("sender_ip", sAddrs.SenIp),
@@ -327,8 +328,8 @@ func handleWatchArpPacket(cfg Cfg, handle *pcap.Handle, packet gopacket.Packet) 
 		}
 
 		// determine which ips to reverse resolve
-		var toResolve []*Ip
-		for _, ip := range []*Ip{senIp, tarIp} {
+		var toResolve []*db.Ip
+		for _, ip := range []*db.Ip{senIp, tarIp} {
 			if !ip.PtrResolved && cfg.dns.active.Get(FmtDnsKey(ip.Value, PtrDnsKind)) == nil {
 				cfg.log.Info("reverse dns resolving", zap.String("ip", ip.Value))
 				toResolve = append(toResolve, ip)
@@ -346,7 +347,7 @@ func handleWatchArpPacket(cfg Cfg, handle *pcap.Handle, packet gopacket.Packet) 
 					Kind:   PtrDnsKind,
 					Target: ip.Value,
 					FailureF: func(e error) {
-						if err := SetPtrResolved(cfg.db, *ip); err != nil {
+						if err := db.SetPtrResolved(cfg.db, *ip); err != nil {
 							cfg.dns.active.Delete(FmtDnsKey(ip.Value, PtrDnsKind))
 							cfg.log.Error("failed to set ptr to resolved", zap.String("ip", ip.Value),
 								zap.Error(err))
@@ -355,7 +356,7 @@ func handleWatchArpPacket(cfg Cfg, handle *pcap.Handle, packet gopacket.Packet) 
 						cfg.dns.active.Delete(FmtDnsKey(ip.Value, PtrDnsKind))
 					},
 					AfterF: func(names []string) {
-						if err := SetPtrResolved(cfg.db, *ip); err != nil {
+						if err := db.SetPtrResolved(cfg.db, *ip); err != nil {
 							cfg.dns.active.Delete(FmtDnsKey(ip.Value, PtrDnsKind))
 							cfg.log.Error("failed to set ptr to resolved", zap.String("ip", ip.Value),
 								zap.Error(err))
@@ -386,18 +387,18 @@ func handleWatchArpPacket(cfg Cfg, handle *pcap.Handle, packet gopacket.Packet) 
 		// HANDLE REPLIES TO OUR ARP REQUESTS
 		//===================================
 
-		var srcIp *Ip
-		var srcMac *Mac
+		var srcIp *db.Ip
+		var srcMac *db.Mac
 		if aa := cfg.arp.active.Get(sAddrs.SenIp); aa != nil {
 			if aa.Cancel != nil {
 				aa.Cancel()
 			}
-			if srcMac, srcIp, _, err = sAddrs.getOrCreateSnifferDbValues(cfg, ActiveArpMeth); err == nil {
+			if srcMac, srcIp, _, err = sAddrs.getOrCreateSnifferDbValues(cfg, db.ActiveArpMeth); err == nil {
 				cfg.log.Info("received active arp reply", zap.String("ip", srcIp.Value),
 					zap.String("mac", srcMac.Value), zap.String("replyType", "active"))
 			}
 		} else {
-			if srcMac, srcIp, _, err = sAddrs.getOrCreateSnifferDbValues(cfg, PassiveArpMeth); err == nil {
+			if srcMac, srcIp, _, err = sAddrs.getOrCreateSnifferDbValues(cfg, db.PassiveArpMeth); err == nil {
 				cfg.log.Info("received passive arp reply", zap.String("ip", srcIp.Value),
 					zap.String("mac", srcMac.Value), zap.String("replyType", "passive"))
 			}

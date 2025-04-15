@@ -12,11 +12,12 @@ import (
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	eavesarp_ng "github.com/impostorkeanu/eavesarp-ng"
 	"github.com/impostorkeanu/eavesarp-ng/cmd/misc"
 	"github.com/impostorkeanu/eavesarp-ng/cmd/panes"
 	"github.com/impostorkeanu/eavesarp-ng/cmd/panes/stopwatch"
 	"github.com/impostorkeanu/eavesarp-ng/cmd/panes/timer"
+	"github.com/impostorkeanu/eavesarp-ng/db"
+	"github.com/impostorkeanu/eavesarp-ng/sniff"
 	zone "github.com/lrstanley/bubblezone"
 	"strconv"
 	"strings"
@@ -53,8 +54,8 @@ const (
 	convosTblSNACHeader     = "SNAC"
 	convosTblPoisonedHeader = "Poisoned"
 
-	sniffCtxCancelKey eavesarp_ng.CtxKey = "sniffCtxCancel" // key used to access the cancel function for the ctx
-	CfgPoisonButtonId                    = "poisonBtn"
+	sniffCtxCancelKey sniff.CtxKey = "sniffCtxCancel" // key used to access the cancel function for the ctx
+	CfgPoisonButtonId              = "poisonBtn"
 )
 
 var (
@@ -133,7 +134,7 @@ func init() {
 
 type (
 	model struct {
-		eCfg eavesarp_ng.Cfg
+		eCfg sniff.Cfg
 		db   *sql.DB
 
 		maxPaneHeight, uiWidth int
@@ -174,7 +175,7 @@ type (
 		logsCh  chan string
 
 		lastSender, lastTarget string
-		arpSpoofCh             chan eavesarp_ng.AttackSnacCfg
+		arpSpoofCh             chan sniff.AttackSnacCfg
 
 		keys     keyMap
 		help     help.Model
@@ -208,7 +209,7 @@ func newConvoRow(r table.Row) (_ panes.CurConvoRowDetails, err error) {
 func (m *model) convoKey() (k string) {
 	if len(m.convosTable.SelectedRow()) > 0 {
 		r := m.convosTable.SelectedRow()
-		return eavesarp_ng.FmtConvoKey(r[convosTblSenderInd], r[convosTblTargetInd])
+		return sniff.FmtConvoKey(r[convosTblSenderInd], r[convosTblTargetInd])
 	}
 	return
 }
@@ -235,7 +236,7 @@ func (m model) Init() tea.Cmd {
 	cmds = append(cmds, func() tea.Msg {
 		m.eWriter.WriteStringf("starting sniffer")
 		// TODO update to support address specification for interface
-		if err := eavesarp_ng.MainSniff(sniffCtx, m.eCfg, m.arpSpoofCh); err != nil {
+		if err := sniff.Main(sniffCtx, m.eCfg, m.arpSpoofCh); err != nil {
 			return eavesarpError(err)
 		}
 		close(m.arpSpoofCh)
@@ -474,7 +475,7 @@ func (m model) View() string {
 	} else if !m.hasConvoRows() || m.convoKey() == "" {
 		s := m.convosSpinner.View() + " Analyzing ARP traffic"
 		var lW int
-		eavesarp_ng.GreaterLength(logo, &lW)
+		sniff.GreaterLength(logo, &lW)
 		b := strings.Builder{}
 		b.WriteString(lipgloss.NewStyle().MarginLeft((m.uiWidth / 2) - (lW / 2)).Width(m.uiWidth).Render(logo))
 		b.WriteString("\n\n" + lipgloss.NewStyle().Width(m.uiWidth).AlignHorizontal(lipgloss.Center).Render(s))
@@ -883,7 +884,7 @@ func getConvosTableContent(m *model) (content convosTableContent) {
 		//====================
 
 		// Variables to hold data retrieved from the db
-		var sender, target eavesarp_ng.Ip
+		var sender, target db.Ip
 		var arpCount int
 		var hasSnac bool
 
@@ -902,7 +903,7 @@ func getConvosTableContent(m *model) (content convosTableContent) {
 		}
 
 		var senderPoisoned string
-		if is := activeAttacks.Exists(eavesarp_ng.FmtConvoKey(sender.Value, target.Value)); is {
+		if is := activeAttacks.Exists(sniff.FmtConvoKey(sender.Value, target.Value)); is {
 			senderPoisoned = m.senderPoisonedChar
 		}
 
@@ -912,9 +913,9 @@ func getConvosTableContent(m *model) (content convosTableContent) {
 		// ADJUST WIDTH OFFSETS
 		//=====================
 
-		eavesarp_ng.GreaterLength(sender.Value, &senderIpWidth)
-		eavesarp_ng.GreaterLength(target.Value, &targetIpWidth)
-		eavesarp_ng.GreaterLength(arpCountValue, &arpCountWidth)
+		sniff.GreaterLength(sender.Value, &senderIpWidth)
+		sniff.GreaterLength(target.Value, &targetIpWidth)
+		sniff.GreaterLength(arpCountValue, &arpCountWidth)
 
 		//======================================
 		// CONSTRUCT AND CAPTURE THE CURRENT ROW

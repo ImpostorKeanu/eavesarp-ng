@@ -1,4 +1,4 @@
-package eavesarp_ng
+package sniff
 
 import (
 	"context"
@@ -9,6 +9,7 @@ import (
 	"github.com/florianl/go-nfqueue/v2"
 	"github.com/google/nftables"
 	"github.com/impostorkeanu/eavesarp-ng/crt"
+	db2 "github.com/impostorkeanu/eavesarp-ng/db"
 	"github.com/impostorkeanu/eavesarp-ng/misc"
 	"github.com/impostorkeanu/eavesarp-ng/misc/rand"
 	"github.com/impostorkeanu/eavesarp-ng/nft"
@@ -73,6 +74,8 @@ type (
 		//
 		// The type for both the key and value is misc.Addr.
 		connMap *sync.Map
+
+		spoofedMap *sync.Map
 
 		// defDownstreamIP describes a TCP listener that will receive connections
 		// during an AITM attack _without_ an AITM downstream. This allows us to
@@ -197,6 +200,7 @@ func NewCfg(dsn string, ifaceName, ifaceAddr string, log *zap.Logger, dataLog io
 	cfg.dns.failCount = NewFailCounter(DnsMaxFailures)
 
 	cfg.aitm.connMap = new(sync.Map)
+	cfg.aitm.spoofedMap = new(sync.Map)
 
 	//============================================
 	// APPLY OPTIONS AND START SUPPORTING ROUTINES
@@ -323,7 +327,7 @@ func (cfg *Cfg) StartTCPProxy(ctx context.Context, addr string) (net.Addr, error
 	a.Transport = misc.TCPTransport
 	cfg.aitm.SetTCPProxyAddr(a)
 	go func() {
-		pCfg := proxy.NewTCPCfg(cfg.aitm.connMap, cfg.GetProxyCertificateFunc, cfg.log, cfg.dataLog)
+		pCfg := proxy.NewTCPCfg(cfg.aitm.connMap, cfg.aitm.spoofedMap, cfg.GetProxyCertificateFunc, cfg.log, cfg.dataLog)
 		if e := gs.NewProxyServer(pCfg, l).Serve(ctx); e != nil {
 			cfg.log.Error("default tcp proxy server failed", zap.Error(e))
 			cfg.errC <- err
@@ -372,7 +376,7 @@ func (cfg *Cfg) initDb(dsn string) (db *sql.DB, err error) {
 	}
 	db.SetMaxOpenConns(1)
 	// TODO test the connection by pinging the database
-	_, err = db.ExecContext(context.Background(), SchemaSql)
+	_, err = db.ExecContext(context.Background(), db2.SchemaSql)
 	if err != nil {
 		cfg.log.Error("error while applying database schema", zap.Error(err))
 		return
@@ -436,22 +440,55 @@ func (cfg *Cfg) getInterface(name string, addr string) (err error) {
 // an X509 certificate for a downstream.
 //
 // If the handshake includes a server name value, the CN is that value. It's
-// otherwise the IP addressof the downstream.
-func (cfg *Cfg) GetProxyCertificateFunc(downstreamIP string) func(h *tls.ClientHelloInfo) (cert *tls.Certificate, error error) {
+// otherwise the IP address of the downstream.
+func (cfg *Cfg) GetProxyCertificateFunc(victimIP, downstreamIP string) func(h *tls.ClientHelloInfo) (cert *tls.Certificate, error error) {
 
 	return func(h *tls.ClientHelloInfo) (cert *tls.Certificate, err error) {
 
-		var ips, dnsNames []string
-		var cn string
+		// TODO look up spoofed IP from victim IP
+
+		// TODO h.ServerName could reveal an unknown hostname
+
+		var dnsNames []string
+		ips := []string{victimIP}
+		cn := victimIP
 		if h.ServerName != "" {
 			// common name is server name when set
 			cn = h.ServerName
-			ips = append(ips, downstreamIP)
-		} else {
-			cn = downstreamIP
+			ips = append(ips)
 		}
 
-		// TODO query dns names for target from database and add to dnsNames
+		//========================================
+		// QUERY DATABASE FOR DOWNSTREAM DNS NAMES
+		//========================================
+
+		var rows *sql.Rows
+		rows, err = cfg.db.Query(`
+SELECT dns_name.value FROM ip
+INNER JOIN dns_record ON dns_record.ip_id=ip.id
+INNER JOIN dns_name ON dns_name.id=dns_record.dns_name_id
+WHERE ip.value=? AND dns_record.kind="a"`, downstreamIP)
+
+		if err != nil {
+			cfg.log.Error("error querying dns names from database", zap.Error(err))
+			return
+		}
+		defer rows.Close()
+
+		// read rows
+		for rows.Next() {
+			var dn string
+			if err = rows.Scan(&dn); err != nil {
+				cfg.log.Error("error scanning dns names from database", zap.Error(err))
+				return
+			} else {
+				dnsNames = append(dnsNames, dn)
+			}
+		}
+
+		//===============================
+		// GET AND/OR CACHE A CERTIFICATE
+		//===============================
 
 		// create cache key
 		k, err := crt.NewCacheKey(cn, ips, dnsNames)
@@ -571,4 +608,19 @@ func (cfg *Cfg) emptyAddr(addr string) (string, error) {
 		addr = net.JoinHostPort(cfg.ipNet.IP.String(), "0")
 	}
 	return addr, nil
+}
+
+// optInt returns an integer weight assigned to known NewCfg options.
+func optInt(v any) (i int, err error) {
+	switch v.(type) {
+	case DefaultDownstreamOpt:
+		i = DefaultDownstreamOptWeight
+	case LocalTCPProxyServerAddrOpt:
+		i = TCPProxyServerOptWeight
+	case LocalUDPProxyServerAddrOpt:
+		i = UDPProxyServerOptWeight
+	default:
+		err = errors.New("unknown opt type")
+	}
+	return
 }

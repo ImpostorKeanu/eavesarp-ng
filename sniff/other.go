@@ -1,4 +1,4 @@
-package eavesarp_ng
+package sniff
 
 import (
 	"errors"
@@ -14,7 +14,6 @@ import (
 
 const (
 	ConversationKeyDelimiter = ":"
-	DnsKeyDelimiter          = ":"
 )
 
 var (
@@ -241,12 +240,6 @@ func SplitConvoKey(v string) (senderIp string, targetIp string, err error) {
 	return
 }
 
-// FmtDnsKey returns a string value that's properly formatted
-// for use various eavesarp_ng functions and methods.
-func FmtDnsKey(target string, kind DnsRecordKind) string {
-	return fmt.Sprintf("%s%s%s", target, DnsKeyDelimiter, kind)
-}
-
 // NewLogger instantiates a Zap logger for the eavesarp_ng module.
 //
 // level is one of:
@@ -296,19 +289,4 @@ func NewLogger(level string, outputPaths, errOutputPaths []string) (*zap.Logger,
 	}
 
 	return zapCfg.Build()
-}
-
-// optInt returns an integer weight assigned to known NewCfg options.
-func optInt(v any) (i int, err error) {
-	switch v.(type) {
-	case DefaultDownstreamOpt:
-		i = DefaultDownstreamOptWeight
-	case LocalTCPProxyServerAddrOpt:
-		i = TCPProxyServerOptWeight
-	case LocalUDPProxyServerAddrOpt:
-		i = UDPProxyServerOptWeight
-	default:
-		err = errors.New("unknown opt type")
-	}
-	return
 }

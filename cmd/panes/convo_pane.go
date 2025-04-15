@@ -6,8 +6,9 @@ import (
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	eavesarp_ng "github.com/impostorkeanu/eavesarp-ng"
 	"github.com/impostorkeanu/eavesarp-ng/cmd/misc"
+	"github.com/impostorkeanu/eavesarp-ng/db"
+	misc2 "github.com/impostorkeanu/eavesarp-ng/sniff"
 	zone "github.com/lrstanley/bubblezone"
 	"slices"
 	"strings"
@@ -80,7 +81,7 @@ type (
 		tbl                    table.Model
 		poisonCfgBtnId         string
 		activeAttacks          *misc.ActiveAttacks
-		poisonPaneLm           *eavesarp_ng.ConvoLockMap[PoisonPane]
+		poisonPaneLm           *misc2.ConvoLockMap[PoisonPane]
 		IsSnac                 bool
 		IsPoisoning            bool
 		IsConfiguringPoisoning bool
@@ -103,14 +104,14 @@ type (
 )
 
 func (c CurConvoRowDetails) ConvoKey() string {
-	return eavesarp_ng.FmtConvoKey(c.SenderIp, c.TargetIp)
+	return misc2.FmtConvoKey(c.SenderIp, c.TargetIp)
 }
 
 func (c CurConvoRowDetails) IsZero() bool {
 	return c.SenderIp == "" && c.TargetIp == "" && c.ArpCount == 0
 }
 
-func NewCurConvoPane(db *sql.DB, zone *zone.Manager, activeAttacks *misc.ActiveAttacks, poisonPaneLm *eavesarp_ng.ConvoLockMap[PoisonPane], poisonCfgBtnId string) CurConvoPane {
+func NewCurConvoPane(db *sql.DB, zone *zone.Manager, activeAttacks *misc.ActiveAttacks, poisonPaneLm *misc2.ConvoLockMap[PoisonPane], poisonCfgBtnId string) CurConvoPane {
 	return CurConvoPane{
 		db:             db,
 		zone:           zone,
@@ -239,7 +240,7 @@ func (c *CurConvoPane) getContent(curConvoRow CurConvoRowDetails) (err error) {
 	// RETRIEVE SENDER AND TARGET IP FIELDS
 	//=====================================
 
-	var sender, target *eavesarp_ng.Ip
+	var sender, target *db.Ip
 
 	for rows.Next() {
 
@@ -258,7 +259,7 @@ func (c *CurConvoPane) getContent(curConvoRow CurConvoRowDetails) (err error) {
 			continue
 		}
 
-		var ipObj *eavesarp_ng.Ip
+		var ipObj *db.Ip
 		if ip == curConvoRow.SenderIp {
 
 			if sender == nil {
@@ -267,15 +268,15 @@ func (c *CurConvoPane) getContent(curConvoRow CurConvoRowDetails) (err error) {
 				// INITIALIZE THE SENDER
 				//======================
 
-				ipObj = &eavesarp_ng.Ip{
+				ipObj = &db.Ip{
 					Id:    ipId,
 					Value: ip,
-					Mac: &eavesarp_ng.Mac{
+					Mac: &db.Mac{
 						Value:      mac,
-						DiscMethod: eavesarp_ng.DiscMethod(macDiscMeth),
+						DiscMethod: db.DiscMethod(macDiscMeth),
 					},
 					PtrResolved: ptrResolved,
-					DiscMethod:  eavesarp_ng.DiscMethod(ipDiscMeth),
+					DiscMethod:  db.DiscMethod(ipDiscMeth),
 				}
 				sender = ipObj
 
@@ -291,18 +292,18 @@ func (c *CurConvoPane) getContent(curConvoRow CurConvoRowDetails) (err error) {
 				// INITIALIZE THE TARGET
 				//======================
 
-				var m *eavesarp_ng.Mac
+				var m *db.Mac
 				if mac != "" {
-					m = &eavesarp_ng.Mac{
+					m = &db.Mac{
 						Value:      mac,
-						DiscMethod: eavesarp_ng.DiscMethod(macDiscMeth),
+						DiscMethod: db.DiscMethod(macDiscMeth),
 					}
 				}
-				ipObj = &eavesarp_ng.Ip{
+				ipObj = &db.Ip{
 					Id:          ipId,
 					Value:       ip,
 					Mac:         m,
-					DiscMethod:  eavesarp_ng.DiscMethod(ipDiscMeth),
+					DiscMethod:  db.DiscMethod(ipDiscMeth),
 					ArpResolved: arpResolved,
 					PtrResolved: ptrResolved,
 				}
@@ -317,15 +318,15 @@ func (c *CurConvoPane) getContent(curConvoRow CurConvoRowDetails) (err error) {
 		}
 
 		if dnsRecordKind != "" {
-			dnsFields := eavesarp_ng.DnsRecordFields{
+			dnsFields := db.DnsRecordFields{
 				Ip:   *ipObj,
-				Name: eavesarp_ng.DnsName{Id: 0, IsNew: false, Value: dnsName},
+				Name: db.DnsName{Id: 0, IsNew: false, Value: dnsName},
 			}
 			switch dnsRecordKind {
 			case "a":
-				ipObj.ARecords = append(ipObj.ARecords, eavesarp_ng.ARecord{DnsRecordFields: dnsFields})
+				ipObj.ARecords = append(ipObj.ARecords, db.ARecord{DnsRecordFields: dnsFields})
 			case "ptr":
-				ipObj.PtrRecords = append(ipObj.PtrRecords, eavesarp_ng.PtrRecord{DnsRecordFields: dnsFields})
+				ipObj.PtrRecords = append(ipObj.PtrRecords, db.PtrRecord{DnsRecordFields: dnsFields})
 			default:
 				err = fmt.Errorf("unsupported dns record kind: %s", dnsRecordKind)
 				return
@@ -433,7 +434,7 @@ func (c *CurConvoPane) getContent(curConvoRow CurConvoRowDetails) (err error) {
 		return
 	}
 
-	var dbPorts []eavesarp_ng.Port
+	var dbPorts []db.Port
 	for rows.Next() {
 		var number int
 		var proto string
@@ -441,7 +442,7 @@ func (c *CurConvoPane) getContent(curConvoRow CurConvoRowDetails) (err error) {
 			err = fmt.Errorf("failed to read database row: %w", err)
 			return
 		}
-		dbPorts = append(dbPorts, eavesarp_ng.Port{Number: number, Protocol: proto})
+		dbPorts = append(dbPorts, db.Port{Number: number, Protocol: proto})
 	}
 
 	if err = rows.Close(); err != nil {

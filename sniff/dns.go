@@ -1,19 +1,22 @@
-package eavesarp_ng
+package sniff
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
+	"github.com/impostorkeanu/eavesarp-ng/db"
 	"go.uber.org/zap"
 	"net"
 	"time"
 )
 
 const (
-	PtrDnsKind     DnsRecordKind = "ptr"
-	ADnsKind       DnsRecordKind = "a"
-	DnsMaxFailures               = 10
+	PtrDnsKind      DnsRecordKind = "ptr"
+	ADnsKind        DnsRecordKind = "a"
+	DnsMaxFailures                = 10
+	DnsKeyDelimiter               = ":"
 )
 
 var (
@@ -50,13 +53,19 @@ type (
 	// handlePtrNameArgs is a structure used to document args required
 	// for handling reverse resolved names.
 	handlePtrNameArgs[DT DoDnsCfg, AT ActiveArp] struct {
-		ip         *Ip          // ip that was reverse resolved
+		ip         *db.Ip       // ip that was reverse resolved
 		name       string       // name obtained through reverse resolution
 		srcIfaceIp []byte       // srcIfaceIp address used to send arp requests for new ips
 		srcIfaceHw []byte       // srcIfaceHw address used to send arp requests for new ips
 		handle     *pcap.Handle // pcap handle used to send arp requests
 	}
 )
+
+// FmtDnsKey returns a string value that's properly formatted
+// for use various eavesarp_ng functions and methods.
+func FmtDnsKey(target string, kind DnsRecordKind) string {
+	return fmt.Sprintf("%s%s%s", target, DnsKeyDelimiter, kind)
+}
 
 // ResolveDns performs name resolution based on details supplied vai
 // DoDnsCfg.
@@ -120,13 +129,13 @@ func ResolveDns(cfg Cfg, dA DoDnsCfg) error {
 // via reverse name resolution. It:
 func handlePtrName(cfg Cfg, depth int, args handlePtrNameArgs[DoDnsCfg, ActiveArp]) {
 
-	dnsName, err := GetOrCreateDnsName(cfg.db, args.name)
+	dnsName, err := db.GetOrCreateDnsName(cfg.db, args.name)
 	if err != nil {
 		cfg.log.Error("failed to create dns name", zap.Error(err))
 		return
 	}
 
-	if _, err = GetOrCreateDnsPtrRecord(cfg.db, *args.ip, dnsName); err != nil {
+	if _, err = db.GetOrCreateDnsPtrRecord(cfg.db, *args.ip, dnsName); err != nil {
 		cfg.log.Error("failed to create dns ptr record", zap.Error(err))
 		return
 	}
@@ -156,7 +165,7 @@ func handlePtrName(cfg Cfg, depth int, args handlePtrNameArgs[DoDnsCfg, ActiveAr
 				} else {
 					newIpS = i.To4().String()
 				}
-				newIp, err := GetOrCreateIp(cfg.db, newIpS, nil, ForwardDnsMeth,
+				newIp, err := db.GetOrCreateIp(cfg.db, newIpS, nil, db.ForwardDnsMeth,
 					false, false)
 
 				if newIp.IsNew || newIp.MacId == nil && cfg.arp.active.Get(newIp.Value) == nil {
@@ -185,7 +194,7 @@ func handlePtrName(cfg Cfg, depth int, args handlePtrNameArgs[DoDnsCfg, ActiveAr
 				if err != nil {
 					cfg.log.Error("failed to create new ip", zap.Error(err))
 					return
-				} else if _, err = GetOrCreateDnsARecord(cfg.db, newIp, dnsName); err != nil {
+				} else if _, err = db.GetOrCreateDnsARecord(cfg.db, newIp, dnsName); err != nil {
 					cfg.log.Error("failed to create dns a record", zap.Error(err))
 					return
 				}
@@ -201,7 +210,7 @@ func handlePtrName(cfg Cfg, depth int, args handlePtrNameArgs[DoDnsCfg, ActiveAr
 							"recursive name resolution revealed a pointer to an a record "+
 							  "that resolves to a new ip address, suggesting dhcp may have issued "+
 							  "the target a new ip address"))
-					if _, err = GetOrCreateAitmOpt(cfg.db, args.ip.Id, newIp.Id); err != nil {
+					if _, err = db.GetOrCreateAitmOpt(cfg.db, args.ip.Id, newIp.Id); err != nil {
 						cfg.log.Error("failed to create aitm_opt record", zap.Error(err))
 						return
 					}
@@ -218,13 +227,13 @@ func handlePtrName(cfg Cfg, depth int, args handlePtrNameArgs[DoDnsCfg, ActiveAr
 					Kind:   PtrDnsKind,
 					Target: newIp.Value,
 					FailureF: func(e error) {
-						if err := SetPtrResolved(cfg.db, *args.ip); err != nil {
+						if err := db.SetPtrResolved(cfg.db, *args.ip); err != nil {
 							cfg.log.Error("failed to set ptr to resolved: %v", zap.Error(err))
 						}
 						cfg.dns.active.Delete(FmtDnsKey(newIp.Value, PtrDnsKind))
 					},
 					AfterF: func(names []string) {
-						if err := SetPtrResolved(cfg.db, *args.ip); err != nil {
+						if err := db.SetPtrResolved(cfg.db, *args.ip); err != nil {
 							cfg.log.Error("failed to set ptr to resolved", zap.Error(err))
 							cfg.dns.active.Delete(FmtDnsKey(newIp.Value, PtrDnsKind))
 							return

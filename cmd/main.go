@@ -7,9 +7,9 @@ import (
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	eavesarp_ng "github.com/impostorkeanu/eavesarp-ng"
 	"github.com/impostorkeanu/eavesarp-ng/cmd/misc"
 	"github.com/impostorkeanu/eavesarp-ng/cmd/panes"
+	"github.com/impostorkeanu/eavesarp-ng/sniff"
 	zone "github.com/lrstanley/bubblezone"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
@@ -27,7 +27,7 @@ var (
 		Short: "ARP reconnaissance and SNAC exploitation tool",
 		Run:   start,
 	}
-	poisonPaneLm = eavesarp_ng.NewConvoLockMap(make(map[string]*panes.PoisonPane))
+	poisonPaneLm = sniff.NewConvoLockMap(make(map[string]*panes.PoisonPane))
 )
 
 func init() {
@@ -56,7 +56,7 @@ func main() {
 	}
 }
 
-func runUi(cfg eavesarp_ng.Cfg) (err error) {
+func runUi(cfg sniff.Cfg) (err error) {
 
 	zone.NewGlobal()
 	selectedArpStyles := convosTableStyle
@@ -80,7 +80,7 @@ func runUi(cfg eavesarp_ng.Cfg) (err error) {
 		logPane:            lPane,
 		senderPoisonedChar: senderPoisonedChar,
 		snacChar:           snacChar,
-		arpSpoofCh:         make(chan eavesarp_ng.AttackSnacCfg),
+		arpSpoofCh:         make(chan sniff.AttackSnacCfg),
 		keys:               keys,
 		help:               help.New(),
 	}
@@ -105,13 +105,13 @@ func start(cmd *cobra.Command, args []string) {
 
 	var logger *zap.Logger
 	var err error
-	logger, err = eavesarp_ng.NewLogger(logLevel, logOutputs, logOutputs)
+	logger, err = sniff.NewLogger(logLevel, logOutputs, logOutputs)
 	if err != nil {
 		panic(err)
 	}
 
-	var cfg eavesarp_ng.Cfg
-	cfg, err = eavesarp_ng.NewCfg(dbFile, ifaceName, "", logger)
+	var cfg sniff.Cfg
+	cfg, err = sniff.NewCfg(dbFile, ifaceName, "", logger)
 	if err != nil {
 		panic(err)
 	}

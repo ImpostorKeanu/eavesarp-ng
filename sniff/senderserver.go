@@ -1,4 +1,4 @@
-package eavesarp_ng
+package sniff
 
 import (
 	"context"

@@ -1,4 +1,4 @@
-package eavesarp_ng
+package sniff
 
 import (
 	"context"
@@ -8,6 +8,7 @@ import (
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
+	"github.com/impostorkeanu/eavesarp-ng/db"
 	"github.com/impostorkeanu/eavesarp-ng/misc"
 	"github.com/impostorkeanu/eavesarp-ng/nft"
 	"go.uber.org/zap"
@@ -19,7 +20,7 @@ var (
 	NoTransportLayerErr = errors.New("no transport layer found")
 )
 
-// MainSniff starts the ARP and DNS background routines and sniffs network traffic
+// Main starts the ARP and DNS background routines and sniffs network traffic
 // from the interface until ctx is done or an error occurs.
 //
 // - iName is the name of the network interface to sniff on.
@@ -27,7 +28,7 @@ var (
 //   on the interface to sniff for.
 // - When attackCh receives an AttackSnacCfg, a new background routine
 //   to perform an ARP spoofing attack is started.
-func MainSniff(ctx context.Context, cfg Cfg, attackCh chan AttackSnacCfg) (err error) {
+func Main(ctx context.Context, cfg Cfg, attackCh chan AttackSnacCfg) (err error) {
 	// SOURCE: https://github.com/google/gopacket/blob/master/examples/arpscan/arpscan.go
 
 	arpSleeper := NewSleeper(1, 5, 30)
@@ -190,14 +191,14 @@ func WatchArp(ctx context.Context, cfg Cfg) (err error) {
 	}
 }
 
-func (u arpStringAddrs) getOrCreateSenderDbValues(cfg Cfg, arpMethod DiscMethod) (senderMac *Mac, senderIp *Ip, err error) {
+func (u arpStringAddrs) getOrCreateSenderDbValues(cfg Cfg, arpMethod db.DiscMethod) (senderMac *db.Mac, senderIp *db.Ip, err error) {
 
 	//===========
 	// HANDLE SRC
 	//===========
 
 	// MAC
-	senderMacBuff, err := GetOrCreateMac(cfg.db, u.SenHw, arpMethod)
+	senderMacBuff, err := db.GetOrCreateMac(cfg.db, u.SenHw, arpMethod)
 	if err != nil {
 		cfg.log.Error("failed to create mac", zap.String("mac", u.SenHw), zap.Error(err))
 		return
@@ -205,7 +206,7 @@ func (u arpStringAddrs) getOrCreateSenderDbValues(cfg Cfg, arpMethod DiscMethod)
 	senderMac = &senderMacBuff
 
 	// IP
-	senderIpBuff, err := GetOrCreateIp(cfg.db, u.SenIp, &senderMacBuff.Id, arpMethod, true, false)
+	senderIpBuff, err := db.GetOrCreateIp(cfg.db, u.SenIp, &senderMacBuff.Id, arpMethod, true, false)
 	if err != nil {
 		cfg.log.Error("failed to create ip", zap.String("ip", u.SenIp), zap.Error(err))
 		return
@@ -222,15 +223,16 @@ func (u arpStringAddrs) getOrCreateSenderDbValues(cfg Cfg, arpMethod DiscMethod)
 			return
 		}
 		senderIpBuff.MacId = &senderMac.Id
-		cfg.log.Info("found new sender", zap.String("sender_mac", u.SenHw), zap.String("sender_ip", senderIpBuff.Value))
+		cfg.log.Info("found new sender", zap.String("sender_mac", u.SenHw),
+			zap.String("sender_ip", senderIpBuff.Value))
 	}
 	senderIp = &senderIpBuff
 
 	return
 }
 
-func (u arpStringAddrs) getOrCreateSnifferDbValues(cfg Cfg, arpMethod DiscMethod) (senMac *Mac, senIp *Ip,
-  tarIp *Ip, err error) {
+func (u arpStringAddrs) getOrCreateSnifferDbValues(cfg Cfg, arpMethod db.DiscMethod) (senMac *db.Mac, senIp *db.Ip,
+  tarIp *db.Ip, err error) {
 
 	if senMac, senIp, err = u.getOrCreateSenderDbValues(cfg, arpMethod); err != nil {
 		return
@@ -241,9 +243,9 @@ func (u arpStringAddrs) getOrCreateSnifferDbValues(cfg Cfg, arpMethod DiscMethod
 			zap.String("sender_mac", u.SenHw))
 	}
 
-	if arpMethod == PassiveArpMeth {
-		var tarIpBuff Ip
-		tarIpBuff, err = GetOrCreateIp(cfg.db, u.TarIp, nil, arpMethod, false, false)
+	if arpMethod == db.PassiveArpMeth {
+		var tarIpBuff db.Ip
+		tarIpBuff, err = db.GetOrCreateIp(cfg.db, u.TarIp, nil, arpMethod, false, false)
 		if err != nil {
 			cfg.log.Error("failed to create arp mac", zap.String("mac", u.TarHw), zap.Error(err))
 			return
@@ -309,6 +311,18 @@ func AttackSnac(ctx context.Context, cfg *Cfg, senIp net.IP, tarIp net.IP, downs
   handlers ...ArpSpoofHandler) (err error) {
 
 	logFields := []zap.Field{zap.String("sender_ip", senIp.String()), zap.String("target_ip", tarIp.String())}
+
+	//========================
+	// TRACK SPOOFED ADDRESSES
+	//========================
+
+	if v, ok := cfg.aitm.spoofedMap.Load(senIp.String()); ok && v.(string) == tarIp.String() {
+		cfg.log.Error("duplicate poisoning attack requested", logFields...)
+		return fmt.Errorf("duplicate poisoning attack requested: sender %v, target %v",
+			senIp.String(), tarIp.String())
+	}
+	cfg.aitm.spoofedMap.Store(senIp.String(), tarIp.String())
+	defer cfg.aitm.spoofedMap.Delete(senIp.String())
 
 	//=========================================
 	// CONFIGURE CONNECTION TRACKING FOR ATTACK

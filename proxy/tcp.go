@@ -18,9 +18,14 @@ type (
 		// net.IP instances, allowing the proxy to discover the
 		// downstream IP address that will receive proxied traffic.
 		//
-		// Note: mapping values are set by eavesarp_ng.AttackSnac
+		// Note: mapping values are set by sniff.AttackSnac
 		// during poisoning attacks.
-		connMap              *sync.Map
+		connMap *sync.Map
+		// spoofedMap is a mapping of victim addresses to spoofed addresses,
+		// allowing us to obtain IP values during TLS certificate generation.
+		//
+		// Note: values are set by sniff.AttackSnac
+		spoofedMap           *sync.Map
 		downstreamCertGetter DsCertGetter // function to get a TLS certificate for downstreams
 		log                  *zap.Logger  // logger for log events
 		dataW                io.Writer    // writer to receive JSON data
@@ -28,7 +33,7 @@ type (
 
 	// DsCertGetter is a function used to get the certificate for
 	// TLS connections to downstreams.
-	DsCertGetter func(downstreamIP string) func(*tls.ClientHelloInfo) (*tls.Certificate, error)
+	DsCertGetter func(proxyIP, downstreamIP string) func(*tls.ClientHelloInfo) (*tls.Certificate, error)
 )
 
 var (
@@ -41,10 +46,11 @@ var (
 
 // NewTCPCfg initializes and returns a pointer to a TCPCfg, which
 // implements all necessary GoSplit interfaces.
-func NewTCPCfg(connAddrs *sync.Map, downstreamCertGetter DsCertGetter, log *zap.Logger, dataLog io.Writer) *TCPCfg {
+func NewTCPCfg(connMap *sync.Map, spoofedMap *sync.Map, downstreamCertGetter DsCertGetter, log *zap.Logger, dataLog io.Writer) *TCPCfg {
 	return &TCPCfg{
 		log:                  log,
-		connMap:              connAddrs,
+		connMap:              connMap,
+		spoofedMap:           spoofedMap,
 		downstreamCertGetter: downstreamCertGetter,
 		dataW:                dataLog,
 	}
@@ -93,14 +99,25 @@ func (cfg *TCPCfg) RecvLog(r gs.LogRecord) {
 	cfg.log.Info("received log event from tcp proxy", zap.Any("record", r))
 }
 
-func (cfg *TCPCfg) GetProxyTLSConfig(_ gs.Addr, _ gs.Addr, dsA *gs.Addr) (*tls.Config, error) {
+// GetProxyTLSConfig returns the TLS config for each connection.
+//
+// Certificate values are dynamically generated based on
+func (cfg *TCPCfg) GetProxyTLSConfig(vA gs.Addr, _ gs.Addr, dsA *gs.Addr) (*tls.Config, error) {
+
+	sA := dsA.IP // spoofed address
+	if a, ok := cfg.spoofedMap.Load(vA.IP); !ok {
+		cfg.log.Warn("failed to find spoofed address while getting proxy tls config")
+	} else if sA, ok = a.(string); !ok {
+		cfg.log.Warn("non-string value returned from spoof map")
+	}
+
 	return &tls.Config{
 		InsecureSkipVerify: true,
-		GetCertificate:     cfg.downstreamCertGetter(dsA.IP),
+		GetCertificate:     cfg.downstreamCertGetter(sA, dsA.IP),
 	}, nil
 }
 
-func (cfg *TCPCfg) GetDownstreamAddr(_ gs.Addr, vicA gs.Addr) (ds *gs.Addr, err error) {
+func (cfg *TCPCfg) GetDownstreamAddr(vicA gs.Addr, _ gs.Addr) (ds *gs.Addr, err error) {
 	// try to retrieve downstream connection a few times
 	for i := 0; i < 3; i++ {
 		if d, ok := cfg.connMap.Load(misc.Addr{IP: vicA.IP, Port: vicA.Port, Transport: misc.TCPTransport}); ok {

@@ -77,6 +77,8 @@ github.com/impostorkeanu/gosplit v0.0.8 h1:Cp2nX9eSK5VEF4fOemeIDDP0IpqntwqZoVFi2
 github.com/impostorkeanu/gosplit v0.0.8/go.mod h1:HBM1GaK1dX9KGp8y/r8L3o5R0o7p8PVA2qE3/A6180Y=
 github.com/impostorkeanu/gosplit v0.0.9 h1:niSnyvkY3nOPWUxbeYs7anUmWeZVeKcNbTwOWxUUuYY=
 github.com/impostorkeanu/gosplit v0.0.9/go.mod h1:HBM1GaK1dX9KGp8y/r8L3o5R0o7p8PVA2qE3/A6180Y=
+github.com/impostorkeanu/gosplit v0.1.0 h1:1QYouPa59xHZWGN4DuaSdm/xfAzBVdyY1XAPB/kAfag=
+github.com/impostorkeanu/gosplit v0.1.0/go.mod h1:HBM1GaK1dX9KGp8y/r8L3o5R0o7p8PVA2qE3/A6180Y=
 github.com/inconshreveable/mousetrap v1.1.0 h1:wN+x4NVGpMsO7ErUn/mUI3vEoE6Jt13X2s0bqwp9tc8=
 github.com/inconshreveable/mousetrap v1.1.0/go.mod h1:vpF70FUmC8bwa3OWnCshd2FqLfsEA9PFc4w1p2J65bw=
 github.com/josharian/native v0.0.0-20200817173448-b6b71def0850 h1:uhL5Gw7BINiiPAo24A2sxkcDI0Jt/sqp1v5xQCniEFA=

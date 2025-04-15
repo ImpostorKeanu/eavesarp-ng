@@ -1,4 +1,4 @@
-package eavesarp_ng
+package sniff
 
 import (
 	"context"
@@ -7,6 +7,7 @@ import (
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcapgo"
+	db2 "github.com/impostorkeanu/eavesarp-ng/db"
 	"os"
 	"sync/atomic"
 )
@@ -115,10 +116,10 @@ func AttackPortHandler(ctx context.Context, db *sql.DB, attackId int, errF func(
 					return
 				} else {
 					// create and associate the observed port
-					if port, err := GetOrCreatePort(db, nil, dstPort, proto); err != nil {
+					if port, err := db2.GetOrCreatePort(db, nil, dstPort, proto); err != nil {
 						kill(err)
 						return
-					} else if _, err := GetOrCreateAttackPort(db, attackId, port.Id); err != nil {
+					} else if _, err := db2.GetOrCreateAttackPort(db, attackId, port.Id); err != nil {
 						kill(err)
 						return
 					}

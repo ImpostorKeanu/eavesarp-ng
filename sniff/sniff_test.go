@@ -1,4 +1,4 @@
-package eavesarp_ng
+package sniff
 
 import (
 	"context"
@@ -51,7 +51,7 @@ func TestAttackSnac(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			ch := make(chan AttackSnacCfg)
 			go func() {
-				if err := MainSniff(context.Background(), cfg, ch); err != nil {
+				if err := Main(context.Background(), cfg, ch); err != nil {
 					t.Fatal(err)
 				}
 			}()
