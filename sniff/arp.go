@@ -90,7 +90,7 @@ type (
 		TargetIp net.IP
 		// Handlers are functions that each packet is passed to.
 		Handlers   []ArpSpoofHandler
-		downstream net.IP
+		Downstream net.IP
 	}
 )
 

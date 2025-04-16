@@ -86,7 +86,7 @@ func Main(ctx context.Context, cfg Cfg, attackCh chan AttackSnacCfg) (err error)
 
 						ctx, cancel := context.WithCancel(args.Ctx)
 						go func() {
-							downstream := args.downstream
+							downstream := args.Downstream
 							if downstream == nil {
 								downstream = cfg.aitm.GetDefDownstreamIP()
 							}

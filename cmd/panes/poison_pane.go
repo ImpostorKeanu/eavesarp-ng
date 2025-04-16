@@ -39,13 +39,15 @@ var (
 	captureDurationHeading = underlineStyle.Render("Capture Duration")
 	packetLimitHeading     = underlineStyle.Render("Packet Limit")
 	outputFileHeading      = underlineStyle.Render("Output File")
-	validators             = []validator{validateDuration, validatePacketLimit, validateOutputFile}
+	downstreamHeading      = underlineStyle.Render("Downstream IPv4 Address")
+	validators             = []validator{validateDuration, validatePacketLimit, validateOutputFile, validateIPv4}
 )
 
 const (
 	captureDurationInputIndex = iota
 	packetLimitInputIndex
 	outputFileInputIndex
+	downstreamInputIndex
 )
 
 const (
@@ -164,6 +166,15 @@ func validateDuration(v string) (err error) {
 	return
 }
 
+func validateIPv4(v string) (err error) {
+	if v == "" {
+		return
+	} else if v := net.ParseIP(v).To4(); v == nil {
+		err = errors.New("invalid IPv4 address")
+	}
+	return
+}
+
 func validateOutputFile(v string) (err error) {
 	if v == "" {
 		return
@@ -200,23 +211,28 @@ func (p PoisonPane) TargetIp() string {
 }
 
 func newTextInputs() []textinput.Model {
-	cDur := textinput.New()
-	cDur.PromptStyle = focusedStyle
-	cDur.TextStyle = focusedStyle
-	cDur.Placeholder = "Blank to capture forever or 10m, 1h, etc."
-	cDur.Focus()
+	capDuration := textinput.New()
+	capDuration.PromptStyle = focusedStyle
+	capDuration.TextStyle = focusedStyle
+	capDuration.Placeholder = "Blank to capture forever or 10m, 1h, etc."
+	capDuration.Focus()
 
-	pLim := textinput.New()
-	pLim.Placeholder = "Integer or blank for no limit"
-	pLim.PromptStyle = blurredStyle
-	pLim.TextStyle = blurredStyle
+	packetLimit := textinput.New()
+	packetLimit.Placeholder = "Integer or blank for no limit"
 
-	oF := textinput.New()
-	oF.Placeholder = "Absolute path or blank to not save"
-	oF.PromptStyle = blurredStyle
-	oF.TextStyle = blurredStyle
+	outputFile := textinput.New()
+	outputFile.Placeholder = "Absolute path or blank to not save"
 
-	return []textinput.Model{cDur, pLim, oF}
+	downstream := textinput.New()
+	downstream.Placeholder = "Downstream IP to receive relayed traffic"
+
+	inputs := []textinput.Model{capDuration, packetLimit, outputFile, downstream}
+	for i := 1; i < len(inputs); i++ {
+		inputs[i].PromptStyle = blurredStyle
+		inputs[i].TextStyle = blurredStyle
+	}
+
+	return inputs
 }
 
 func (p PoisonPane) PacketLimitInput() textinput.Model {
@@ -229,6 +245,10 @@ func (p PoisonPane) CaptureDurationInput() textinput.Model {
 
 func (p PoisonPane) OutputFileInput() textinput.Model {
 	return p.inputs[outputFileInputIndex]
+}
+
+func (p PoisonPane) DownstreamInput() textinput.Model {
+	return p.inputs[downstreamInputIndex]
 }
 
 func (p PoisonPane) Init() tea.Cmd {
@@ -530,10 +550,11 @@ func (p *PoisonPane) startPoisoning(msg BtnPressMsg) tea.Cmd {
 		p.eWriter.WriteStringf("starting poisoning attack: %s -> %s", sIp.Value, tIp.Value)
 		// TODO update for ip address specification on interface
 		p.arpSoofCh <- sniff.AttackSnacCfg{
-			Ctx:      ctx,
-			SenderIp: senderIp,
-			TargetIp: targetIp,
-			Handlers: []sniff.ArpSpoofHandler{pktCntHandler, attackPortHandler, outputFileHandler, pktLimitHandler},
+			Ctx:        ctx,
+			SenderIp:   senderIp,
+			TargetIp:   targetIp,
+			Handlers:   []sniff.ArpSpoofHandler{pktCntHandler, attackPortHandler, outputFileHandler, pktLimitHandler},
+			Downstream: net.ParseIP(p.DownstreamInput().Value()).To4(),
 		}
 		return nil
 	}
@@ -589,6 +610,8 @@ func (p PoisonPane) View() string {
 			builder.WriteString(packetLimitHeading)
 		case outputFileInputIndex:
 			builder.WriteString(outputFileHeading)
+		case downstreamInputIndex:
+			builder.WriteString(downstreamHeading)
 		default:
 			// TODO
 			panic("heading offset exceeded")
@@ -605,10 +628,10 @@ func (p PoisonPane) View() string {
 		} else {
 			builder.WriteString(validationSuccessStyle.Render("✔"))
 		}
-		builder.WriteString("\n" + p.inputs[i].View())
-		if i < len(p.inputs)-1 {
-			builder.WriteString("\n\n")
-		}
+		builder.WriteString("\n" + p.inputs[i].View() + "\n")
+		//if i < len(p.inputs)-1 {
+		//	builder.WriteString("\n\n")
+		//}
 	}
 
 	var pO int

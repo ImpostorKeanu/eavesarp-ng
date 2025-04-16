@@ -79,11 +79,11 @@ type (
 
 	// aitmCfgFields defines configuration fields related to AITM.
 	aitmCfgFields struct {
-		// downstreams maps sender addresses to downstream addresses.
+		// downstreams maps sender addresses to Downstream addresses.
 		//
 		//
 		// This allows for traffic to be relayed by associating the pre-DNAT
-		// port with a downstream (destination) IP address.
+		// port with a Downstream (destination) IP address.
 		//
 		// The type for both the key and value is misc.Addr.
 		downstreams *sync.Map
@@ -99,7 +99,7 @@ type (
 		spoofed *sync.Map
 
 		// defDownstreamIP describes a TCP listener that will receive connections
-		// during an AITM attack _without_ an AITM downstream. This allows us to
+		// during an AITM attack _without_ an AITM Downstream. This allows us to
 		// always complete TCP connections and receive data.
 		//
 		// Type: *misc.Addr
@@ -145,7 +145,7 @@ type (
 	// on a randomly available port of cfg.iface.
 	LocalUDPProxyServerAddrOpt string
 
-	// DefaultDownstreamOpt sets the default downstream for AITM attacks.
+	// DefaultDownstreamOpt sets the default Downstream for AITM attacks.
 	//
 	// When not supplied or empty, the server specified by TCPOpts
 	// will become the default.
@@ -276,11 +276,11 @@ func NewCfg(ctx context.Context, dsn string, ifaceName, ifaceAddr string, log *z
 		case DefaultDownstreamOpt:
 			var ip net.IP
 			if ip = net.ParseIP(string(v)); ip == nil {
-				err = errors.New("failed to parse ip for default downstream")
+				err = errors.New("failed to parse ip for default Downstream")
 				return
 			}
 			if err != nil {
-				err = fmt.Errorf("failed to parse default downstream value: %w", err)
+				err = fmt.Errorf("failed to parse default Downstream value: %w", err)
 				return
 			} else {
 				cfg.aitm.SetDefDownstreamIP(ip)
@@ -463,10 +463,10 @@ func (cfg *Cfg) getInterface(name string, addr string) (err error) {
 }
 
 // GetProxyCertificateFunc returns a function that generates and/or serves
-// an X509 certificate for a downstream.
+// an X509 certificate for a Downstream.
 //
 // If the handshake includes a server name value, the CN is that value. It's
-// otherwise the IP address of the downstream.
+// otherwise the IP address of the Downstream.
 func (cfg *Cfg) GetProxyCertificateFunc(victimIP, downstreamIP string) func(h *tls.ClientHelloInfo) (cert *tls.Certificate, error error) {
 
 	return func(h *tls.ClientHelloInfo) (cert *tls.Certificate, err error) {
@@ -556,13 +556,13 @@ func (f *aitmCfgFields) SetTCPProxyAddr(a misc.Addr) {
 	f.tcpProxyAddr.Store(&a)
 }
 
-// GetDefDownstreamIP gets the default downstream.
+// GetDefDownstreamIP gets the default Downstream.
 func (f *aitmCfgFields) GetDefDownstreamIP() (a net.IP) {
 	a, _ = f.defDownstreamIP.Load().(net.IP)
 	return
 }
 
-// SetDefDownstreamIP sets the default downstream.
+// SetDefDownstreamIP sets the default Downstream.
 func (f *aitmCfgFields) SetDefDownstreamIP(a net.IP) {
 	f.defDownstreamIP.Store(a)
 }
@@ -639,7 +639,7 @@ func (cfg *Cfg) emptyAddr(addr string) (string, error) {
 //
 // No update is made if:
 //
-// - downstream is nil
+// - Downstream is nil
 // - the packet doesn't have an IPv4, TCP, or UDP layer.
 //
 // Spoofed IPs are stored only for TCP connections.
