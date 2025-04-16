@@ -247,6 +247,8 @@ func handleWatchArpPacket(cfg Cfg, handle *pcap.Handle, packet gopacket.Packet) 
 			// ignore arp requests from 0.0.0.0
 			// TODO make this configurable....it should be optional
 			return
+		} else if bytes.Equal(arpL.SourceProtAddress, arpL.DstProtAddress) { // ignore gratuitous arp requests
+			return
 		} else if cfg.ipNet.IP.Equal(arpL.DstProtAddress) {
 			// capture ARP requests for senders wanting our mac address
 			if _, srcIp, e := sAddrs.getOrCreateSenderDbValues(cfg, db.PassiveArpMeth); e != nil {
