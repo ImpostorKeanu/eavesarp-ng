@@ -378,6 +378,11 @@ func AttackSnac(ctx context.Context, cfg *Cfg, senIp net.IP, tarIp net.IP, downs
 	}
 	defer wHandle.Close()
 
+	if err = nft.AddSpoofedIP(cfg.aitm.nftConn, cfg.aitm.nftTbl, tarIp); err != nil {
+		cfg.log.Error("failed to add spoofed ip", zap.Error(err))
+		return
+	}
+
 	src := gopacket.NewPacketSource(rHandle, layers.LayerTypeEthernet)
 	in := src.Packets()
 

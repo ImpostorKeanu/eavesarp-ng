@@ -39,7 +39,7 @@ type (
 		ProxyAddr Addr `json:"proxy_address"`
 		// DownstreamAddr is the address that receives Raw
 		// from the VictimAddr via ProxyAddr.
-		DownstreamAddr *Addr `json:"downstream_address,omitempty"`
+		DownstreamAddr *Addr `json:"downstream_address"`
 		// Transport protocol used to send the Raw.
 		Transport Transport `json:"transport"`
 		// Data is the base64 encoded value of Raw.

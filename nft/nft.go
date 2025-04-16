@@ -291,6 +291,7 @@ func getSpoofedAddrSetElement(conn *nftables.Conn, set *nftables.Set, addr net.I
 }
 
 // AddSpoofedIP adds an IP to the @spoofed_ips nft set.
+
 func AddSpoofedIP(conn *nftables.Conn, tbl *nftables.Table, addr net.IP) error {
 	if set, err := conn.GetSetByName(tbl, SpoofedIPsSetName); err != nil {
 		return err

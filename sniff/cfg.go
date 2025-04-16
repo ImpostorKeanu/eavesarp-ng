@@ -196,7 +196,7 @@ func (cfg *Cfg) newRandID(l int) (err error) {
 // - LocalTCPProxyServerAddrOpt
 // - LocalUDPProxyServerAddrOpt
 // - DefaultDownstreamOpt
-func NewCfg(dsn string, ifaceName, ifaceAddr string, log *zap.Logger, dataLog io.Writer, opts ...any) (cfg Cfg, err error) {
+func NewCfg(ctx context.Context, dsn string, ifaceName, ifaceAddr string, log *zap.Logger, dataW io.Writer, opts ...any) (cfg Cfg, err error) {
 
 	// configure logging
 	if log == nil {
@@ -204,7 +204,7 @@ func NewCfg(dsn string, ifaceName, ifaceAddr string, log *zap.Logger, dataLog io
 		return
 	}
 	cfg.log = log
-	cfg.dataW = dataLog
+	cfg.dataW = dataW
 
 	//=============================
 	// INITIALIZE CHANNELS AND MAPS
@@ -231,8 +231,10 @@ func NewCfg(dsn string, ifaceName, ifaceAddr string, log *zap.Logger, dataLog io
 	// APPLY OPTIONS AND START SUPPORTING ROUTINES
 	//============================================
 
-	var ctx context.Context
-	ctx, cfg.cancel = context.WithCancel(context.Background())
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cfg.cancel = context.WithCancel(ctx)
 
 	// TLS private key generation and certificate caching
 	cfg.tls = tlsCfgFields{

@@ -126,6 +126,10 @@ func (s *UDPServer) Serve(ctx context.Context) (err error) {
 			// SEND TO DOWNSTREAM AND WAIT FOR A RESPONSE
 			//===========================================
 
+			if dsAddrInf == nil {
+				continue
+			}
+
 			// - dsUDPAddr is the downstream address that packets are being proxied to
 			// - vUDPAddr is the victim address that will receive datagrams from the downstream
 			//   after proxying

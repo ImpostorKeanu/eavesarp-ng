@@ -13,6 +13,7 @@ import (
 	zone "github.com/lrstanley/bubblezone"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
+	"io"
 	_ "modernc.org/sqlite"
 	"os"
 )
@@ -21,6 +22,7 @@ var (
 	dbFile    string
 	ifaceName string
 	logFile   string
+	dataFile  string
 	logLevel  string
 	rootCmd   = &cobra.Command{
 		Use:   "run",
@@ -31,18 +33,16 @@ var (
 )
 
 func init() {
-	rootCmd.PersistentFlags().StringVarP(&dbFile, "db-file", "d", "eavesarp.sqlite",
+	rootCmd.PersistentFlags().StringVarP(&dbFile, "db-file", "d", "eavesarp.db",
 		"Database file to use")
 	rootCmd.PersistentFlags().StringVarP(&ifaceName, "interface", "i", "",
 		"Name of the network interface to monitor")
-	rootCmd.PersistentFlags().StringVarP(&logFile, "log-file", "l", "eavesarp.log",
+	rootCmd.PersistentFlags().StringVarP(&logFile, "log-file", "l", "eavesarp-log.jsonl",
 		"Where to send logs")
 	rootCmd.PersistentFlags().StringVarP(&logLevel, "log-level", "v", "info",
-		"Logging level. Valid values: debug, info, warn, error, dpanic, panic, fatal")
-	if err := rootCmd.MarkPersistentFlagRequired("db-file"); err != nil {
-		fmt.Println("db-file is required")
-		os.Exit(1)
-	}
+		"Logging level. Valid values: debug, info, warn, error, panic, fatal")
+	rootCmd.PersistentFlags().StringVarP(&dataFile, "data-file", "y", "eavesarp-data.jsonl",
+		"Where to send intercepted data")
 	if err := rootCmd.MarkPersistentFlagRequired("interface"); err != nil {
 		fmt.Println("interface is required")
 		os.Exit(1)
@@ -107,25 +107,25 @@ func start(cmd *cobra.Command, args []string) {
 	var err error
 	logger, err = sniff.NewLogger(logLevel, logOutputs, logOutputs)
 	if err != nil {
+		fmt.Printf("error initializing logger: %v", err.Error())
+		panic(err)
+	}
+
+	var dataW io.Writer
+	if dataW, err = os.OpenFile(dataFile, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666); err != nil {
+		fmt.Printf("error opening data file for writing: %v", err.Error())
 		panic(err)
 	}
 
 	var cfg sniff.Cfg
-	cfg, err = sniff.NewCfg(dbFile, ifaceName, "", logger)
+	cfg, err = sniff.NewCfg(nil, dbFile, ifaceName, "", logger, dataW,
+		sniff.LocalUDPProxyServerAddrOpt(""),
+		sniff.LocalTCPProxyServerAddrOpt(""))
 	if err != nil {
+		fmt.Printf("error initializing eavesarp config: %v", err.Error())
 		panic(err)
 	}
-
-	// close the database connection upon exit
-	defer func() {
-		db := cfg.DB()
-		if db != nil {
-			if err := cfg.DB().Close(); err != nil {
-				fmt.Println("failed to close the database connection")
-				panic(err)
-			}
-		}
-	}()
+	defer cfg.Shutdown()
 
 	if err = runUi(cfg); err != nil {
 		fmt.Printf("error running the ui: %v", err.Error())
