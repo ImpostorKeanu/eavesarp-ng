@@ -8,7 +8,7 @@ require (
 	github.com/charmbracelet/lipgloss v1.0.0
 	github.com/enescakir/emoji v1.0.0
 	github.com/google/gopacket v1.1.19
-	github.com/impostorkeanu/gosplit v0.1.1
+	github.com/impostorkeanu/gosplit v0.1.2
 	github.com/lrstanley/bubblezone v0.0.0-20250110055121-b45205ce63e2
 	github.com/spf13/cobra v1.9.1
 	go.uber.org/zap v1.27.0
