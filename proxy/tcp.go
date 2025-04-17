@@ -61,7 +61,7 @@ func NewTCPCfg(connMap *sync.Map, spoofedMap *sync.Map, downstreamCertGetter DsC
 //==========================
 
 func (cfg *TCPCfg) RecvVictimData(cI gs.ConnInfo, b []byte) {
-	if cfg.dataW == nil {
+	if cfg.dataW == nil || len(b) == 0 {
 		return
 	}
 	data := cfg.connInfoToData(cI, b, misc.VictimDataSender)
@@ -71,7 +71,7 @@ func (cfg *TCPCfg) RecvVictimData(cI gs.ConnInfo, b []byte) {
 }
 
 func (cfg *TCPCfg) RecvDownstreamData(cI gs.ConnInfo, b []byte) {
-	if cfg.dataW == nil {
+	if cfg.dataW == nil || len(b) == 0 {
 		return
 	}
 	data := cfg.connInfoToData(cI, b, misc.DownstreamDataSender)
