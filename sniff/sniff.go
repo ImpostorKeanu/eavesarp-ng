@@ -417,9 +417,7 @@ func AttackSnac(ctx context.Context, cfg *Cfg, senIp net.IP, tarIp net.IP, downs
 
 			}
 
-			if downstream != nil {
-				cfg.mapConn(packet, downstream)
-			}
+			cfg.mapConn(packet, downstream)
 
 			// Run handlers
 			go func() {

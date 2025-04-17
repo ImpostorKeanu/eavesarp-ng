@@ -21,9 +21,10 @@ type (
 		//
 		// Records found here are set by eavesarp_ng.AttackSnac while
 		// poisoning victims.
-		connMap *sync.Map
-		log     *zap.Logger // for log events
-		dataW   io.Writer   // for writing misc.Data records
+		connMap    *sync.Map
+		spoofedMap *sync.Map
+		log        *zap.Logger // for log events
+		dataW      io.Writer   // for writing misc.Data records
 	}
 
 	// UDPServer is a UDP proxy capable of relaying UDP packets to downstreams
@@ -34,11 +35,12 @@ type (
 	}
 )
 
-func NewUDPCfg(conAddrs *sync.Map, log *zap.Logger, dataW io.Writer) UDPCfg {
+func NewUDPCfg(conAddrs, spoofedAddrs *sync.Map, log *zap.Logger, dataW io.Writer) UDPCfg {
 	return UDPCfg{
-		connMap: conAddrs,
-		log:     log,
-		dataW:   dataW,
+		spoofedMap: spoofedAddrs,
+		connMap:    conAddrs,
+		log:        log,
+		dataW:      dataW,
 	}
 }
 
@@ -110,14 +112,20 @@ func (s *UDPServer) Serve(ctx context.Context) (err error) {
 			// LOG VICTIM DATA
 			//================
 
+			var vA misc.VictimAddr
+			if vA, err = misc.NewVictimAddr(vAddrInf.IP, vAddrInf.Port, s.Cfg.spoofedMap, misc.UDPTransport); err != nil {
+				s.Cfg.log.Error("failed to parse victim address while handling udp packet", zap.Error(err))
+			}
+
 			lData := misc.Data{
 				Sender:         misc.VictimDataSender,
-				VictimAddr:     vAddrInf,
+				VictimAddr:     vA,
 				ProxyAddr:      pAddrInf,
 				DownstreamAddr: dsAddrInf,
 				Transport:      misc.UDPTransport,
 				Raw:            buf[:n],
 			}
+
 			if n > 0 {
 				s.writeData(lData)
 			}
@@ -135,11 +143,9 @@ func (s *UDPServer) Serve(ctx context.Context) (err error) {
 			//   after proxying
 			var dsUDPAddr, vUDPAddr *net.UDPAddr
 			if dsUDPAddr, e = net.ResolveUDPAddr("udp4", dsAddrInf.String()); e != nil {
-				// TODO
 				s.Cfg.log.Error("failed to resolve udp address for downstream", zap.Error(e))
 				continue
 			} else if vUDPAddr, e = net.ResolveUDPAddr("udp4", vAddrInf.String()); e != nil {
-				// TODO
 				s.Cfg.log.Error("failed to resolve udp address for victim", zap.Error(e))
 				continue
 			}

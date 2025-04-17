@@ -26,13 +26,6 @@ type (
 		Transport Transport `json:"transport,omitempty"`
 	}
 
-	VictimAddr struct {
-		IP        string    `json:"ip,omitempty"`
-		SrcPort   string    `json:"src_port,omitempty"`
-		DstPort   string    `json:"dst_port,omitempty"`
-		Transport Transport `json:"transport,omitempty"`
-	}
-
 	// Transport indicates the transport protocol of the
 	// connection. See TCPTransport and UDPTransport.
 	Transport string

@@ -64,7 +64,7 @@ func (cfg *TCPCfg) RecvVictimData(cI gs.ConnInfo, b []byte) {
 	if cfg.dataW == nil {
 		return
 	}
-	data := connInfoToData(cI, b, misc.VictimDataSender)
+	data := cfg.connInfoToData(cI, b, misc.VictimDataSender)
 	if err := data.Log(cfg.dataW); err != nil {
 		cfg.log.Error("failed to write victim data to log", zap.Error(err))
 	}
@@ -74,7 +74,7 @@ func (cfg *TCPCfg) RecvDownstreamData(cI gs.ConnInfo, b []byte) {
 	if cfg.dataW == nil {
 		return
 	}
-	data := connInfoToData(cI, b, misc.DownstreamDataSender)
+	data := cfg.connInfoToData(cI, b, misc.DownstreamDataSender)
 	if err := data.Log(cfg.dataW); err != nil {
 		cfg.log.Error("failed to write downstream data to log", zap.Error(err))
 	}
@@ -107,17 +107,17 @@ func (cfg *TCPCfg) GetProxyTLSConfig(vA gs.Addr, pA gs.Addr, dA *gs.Addr) (*tls.
 	if dA == nil {
 		dA = &pA
 	}
-	sA := dA.IP
+	sA := misc.Addr{IP: dA.IP}
 
 	if a, ok := cfg.spoofedMap.Load(vA.String()); !ok {
 		cfg.log.Warn("failed to find spoofed address while getting proxy tls config")
-	} else if sA, ok = a.(string); !ok { // use mapped value instead of downstream
+	} else if sA, ok = a.(misc.Addr); !ok { // use mapped value instead of downstream
 		cfg.log.Warn("non-string value returned from spoof map")
 	}
 
 	return &tls.Config{
 		InsecureSkipVerify: true,
-		GetCertificate:     cfg.downstreamCertGetter(sA, dA.IP),
+		GetCertificate:     cfg.downstreamCertGetter(sA.IP, dA.IP),
 	}, nil
 }
 
@@ -137,17 +137,24 @@ func (cfg *TCPCfg) GetDownstreamTLSConfig(_ gs.Addr, _ gs.Addr, _ gs.Addr) (*tls
 	return dsTLSCfg, nil
 }
 
-func connInfoToData(c gs.ConnInfo, data []byte, sender misc.DataSender) misc.Data {
+func (cfg *TCPCfg) connInfoToData(c gs.ConnInfo, data []byte, sender misc.DataSender) misc.Data {
+	vA, err := misc.NewVictimAddr(c.Victim.IP, c.Victim.Port, cfg.spoofedMap, misc.TCPTransport)
+	if err != nil {
+		cfg.log.Error("failed to create victim address for tcp data logging", zap.Error(err))
+	}
+
 	d := misc.Data{
 		Sender:         sender,
-		VictimAddr:     misc.Addr{IP: c.Victim.IP, Port: c.Victim.Port},
-		ProxyAddr:      misc.Addr{IP: c.Proxy.IP, Port: c.Proxy.Port},
+		VictimAddr:     vA,
+		ProxyAddr:      misc.Addr{IP: c.Proxy.IP, Port: c.Proxy.Port, Transport: misc.TCPTransport},
 		Transport:      misc.TCPTransport,
 		Raw:            data,
 		DownstreamAddr: nil,
 	}
+
 	if c.Downstream != nil {
-		d.DownstreamAddr = &misc.Addr{IP: c.Downstream.IP, Port: c.Downstream.Port}
+		d.DownstreamAddr = &misc.Addr{IP: c.Downstream.IP, Port: c.Downstream.Port, Transport: misc.TCPTransport}
 	}
+
 	return d
 }

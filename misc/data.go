@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"sync"
 	"time"
 )
 
@@ -33,7 +35,7 @@ type (
 		Sender DataSender `json:"sender"`
 		// VictimAddr is the address of the victim side of the
 		// conversation.
-		VictimAddr Addr `json:"victim_address"`
+		VictimAddr VictimAddr `json:"victim_address"`
 		// ProxyAddr is the address of the proxy used to forward
 		// traffic to DownstreamAddr during the conversation.
 		ProxyAddr Addr `json:"proxy_address"`
@@ -45,6 +47,19 @@ type (
 		// Data is the base64 encoded value of Raw.
 		Data string `json:"data"`
 		Raw  []byte `json:"-"`
+	}
+
+	// VictimAddr is the same as Addr, but has both the source
+	// and destination port values.
+	//
+	// This is critical when logging data that does not have
+	// a downstream that would normally reveal the destination
+	// port.
+	VictimAddr struct {
+		IP        string    `json:"ip,omitempty"`
+		SrcPort   string    `json:"src_port,omitempty"`
+		DstPort   string    `json:"dst_port,omitempty"`
+		Transport Transport `json:"transport,omitempty"`
 	}
 )
 
@@ -75,4 +90,20 @@ func (d *Data) Log(w io.Writer) (err error) {
 		err = fmt.Errorf("failed to write data to log: %w", err)
 	}
 	return
+}
+
+// NewVictimAddr initializes a VictimAddr type and obtains the
+// DstPort value from spoofed, which is a mapping of:
+//
+// map[VICTIM_IP:VICTIM_SRC_PORT]=SPOOFED_IP:DST_PORT
+func NewVictimAddr(vIP, vSrcPort string, spoofed *sync.Map, t Transport) (VictimAddr, error) {
+	vA := VictimAddr{IP: vIP, SrcPort: vSrcPort, Transport: t}
+	if v, ok := spoofed.Load(net.JoinHostPort(vA.IP, vA.SrcPort)); !ok {
+		return vA, errors.New("failed to recover dst port from spoofed addresses")
+	} else if spoofedA, ok := v.(Addr); !ok {
+		return vA, errors.New("unsupported type returned from spoofmap")
+	} else {
+		vA.DstPort = spoofedA.Port
+	}
+	return vA, nil
 }

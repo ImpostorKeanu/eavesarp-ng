@@ -92,10 +92,6 @@ type (
 		//
 		// This reveals the pre-DNAT destination address that
 		// spoofed via sniff.AttackSnac.
-		//
-		// The key type is a string formatted as SRC_IP:SRC_PORT
-		//
-		// map["SRC_IP:SRC_PORT"]=ORIG_DST_IP
 		spoofed *sync.Map
 
 		// defDownstreamIP describes a TCP listener that will receive connections
@@ -327,7 +323,7 @@ func (cfg *Cfg) StartUDPProxy(ctx context.Context, addr string) (net.Addr, error
 	a.Transport = misc.UDPTransport
 	cfg.aitm.SetUDPProxyAddr(a)
 	go func() {
-		pCfg := proxy.NewUDPCfg(cfg.aitm.downstreams, cfg.log, cfg.dataW)
+		pCfg := proxy.NewUDPCfg(cfg.aitm.downstreams, cfg.aitm.spoofed, cfg.log, cfg.dataW)
 		if e := proxy.NewUDPServer(pCfg, conn).Serve(ctx); e != nil {
 			cfg.log.Error("udp proxy server failed", zap.Error(e))
 			cfg.errC <- err
@@ -647,33 +643,39 @@ func (cfg *Cfg) mapConn(packet gopacket.Packet, downstream net.IP) {
 
 	if ipL, ok := packet.Layer(layers.LayerTypeIPv4).(*layers.IPv4); ok {
 
-		//==============================================
-		// HANDLE INCOMING TCP CONNECTIONS & UDP PACKETS
-		//==============================================
+		// key for the spoofed and downstream maps
+		key := misc.Addr{IP: ipL.SrcIP.To4().String()}
+		var dsVal misc.Addr
+		if downstream != nil {
+			dsVal.IP = downstream.To4().String()
+		}
 
-		k := misc.Addr{IP: ipL.SrcIP.To4().String()}
-		v := misc.Addr{IP: downstream.To4().String()}
-
+		// handle transport layer
 		if tcp, ok := packet.Layer(layers.LayerTypeTCP).(*layers.TCP); ok && tcp.SYN {
-			k.Port = fmt.Sprintf("%d", tcp.SrcPort)
-			k.Transport = misc.TCPTransport
-			v.Port = fmt.Sprintf("%d", tcp.DstPort)
-			v.Transport = misc.TCPTransport
-			cfg.aitm.spoofed.Store(k.String(), ipL.DstIP.To4().String())
+			// it's tcp
+			key.Transport, key.Port = misc.TCPTransport, fmt.Sprintf("%d", tcp.SrcPort)
+			dsVal.Transport, dsVal.Port = misc.TCPTransport, fmt.Sprintf("%d", tcp.DstPort)
 		} else if udp, ok := packet.Layer(layers.LayerTypeUDP).(*layers.UDP); ok {
 			// TODO should probably look into refining this
 			//  one of the benefits of conntrack is that it could infer the state
 			//  of a UDP "connection"....
-			k.Port = fmt.Sprintf("%d", udp.SrcPort)
-			k.Transport = misc.UDPTransport
-			v.Port = fmt.Sprintf("%d", udp.DstPort)
-			v.Transport = misc.UDPTransport
-		}
-
-		if k.Port == "" {
+			// it's udp
+			key.Transport, key.Port = misc.UDPTransport, fmt.Sprintf("%d", udp.SrcPort)
+			dsVal.Transport, dsVal.Port = misc.UDPTransport, fmt.Sprintf("%d", udp.DstPort)
+		} else {
+			// TODO may need to handle sctp in the future
 			return
 		}
-		cfg.aitm.downstreams.Store(k, v)
+
+		// map the spoofed address
+		spoofedVal := dsVal                      // copy
+		spoofedVal.IP = ipL.DstIP.To4().String() // get the spoofed ip from the packet
+		cfg.aitm.spoofed.Store(key.String(), spoofedVal)
+
+		if downstream != nil {
+			// map the downstream
+			cfg.aitm.downstreams.Store(key, dsVal)
+		}
 	}
 
 	return
