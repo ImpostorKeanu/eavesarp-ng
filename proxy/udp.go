@@ -205,10 +205,11 @@ func (s *UDPServer) Serve(ctx context.Context) (err error) {
 // writeData sends data to the data writer so long
 // as it's not nil.
 func (s *UDPServer) writeData(lData misc.Data) {
-	if s.Cfg.dataW != nil || len(lData.Data) == 0 {
-		// log data sent by victim
-		if e := lData.Log(s.Cfg.dataW); e != nil {
-			s.Cfg.log.Error("failed to write udp data", zap.Error(e))
-		}
+	if s.Cfg.dataW == nil || len(lData.Data) == 0 {
+		return
+	}
+	// log data sent by victim
+	if e := lData.Log(s.Cfg.dataW); e != nil {
+		s.Cfg.log.Error("failed to write udp data", zap.Error(e))
 	}
 }
