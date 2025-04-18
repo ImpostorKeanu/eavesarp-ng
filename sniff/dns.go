@@ -9,6 +9,7 @@ import (
 	"github.com/impostorkeanu/eavesarp-ng/db"
 	"go.uber.org/zap"
 	"net"
+	"strings"
 	"time"
 )
 
@@ -112,6 +113,12 @@ func ResolveDns(cfg Cfg, dA DoDnsCfg) error {
 	if err != nil {
 		cfg.log.Error("unhandled dns exception", zap.Error(err))
 		return err
+	}
+
+	// TODO make this configurable
+	// trim trailing dot from resolved records
+	for i, name := range resolved {
+		resolved[i] = strings.TrimSuffix(name, ".")
 	}
 
 	// Handle the output
