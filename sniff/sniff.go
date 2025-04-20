@@ -90,7 +90,7 @@ func Main(ctx context.Context, cfg Cfg, attackCh chan AttackSnacCfg) (err error)
 							if downstream == nil {
 								downstream = cfg.aitm.GetDefDownstreamIP()
 							}
-							err := AttackSnac(ctx, &cfg, args.SenderIp, args.TargetIp, downstream, args.Handlers...)
+							err := AttackSNAC(ctx, &cfg, args.SenderIp, args.TargetIp, downstream, args.Handlers...)
 							if err != nil { // error while performing attack
 								fields = append(fields, zap.Error(err))
 								cfg.log.Error("error while poisoning conversation", fields...)
@@ -298,14 +298,14 @@ func GetArpLayer(packet gopacket.Packet) *layers.ARP {
 	return nil
 }
 
-// AttackSnac poisons the sender's ARP table by sending our MAC address
+// AttackSNAC poisons the sender's ARP table by sending our MAC address
 // when a request for the target's IP is observed. After poisoning
 // occurs and non-ARP traffic is detected, each packet is passed to
 // a series of handler functions.
 //
 // NOTE: Before poisoning the sender's ARP table, this function passively
 // waits for the sender to broadcast an ARP request.
-func AttackSnac(ctx context.Context, cfg *Cfg, senIp net.IP, tarIp net.IP, downstream net.IP,
+func AttackSNAC(ctx context.Context, cfg *Cfg, senIp net.IP, tarIp net.IP, downstream net.IP,
   handlers ...ArpSpoofHandler) (err error) {
 
 	logFields := []zap.Field{zap.String("sender_ip", senIp.String()), zap.String("target_ip", tarIp.String())}

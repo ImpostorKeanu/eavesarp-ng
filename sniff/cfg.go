@@ -91,7 +91,7 @@ type (
 		// spoofed maps source addresses to ARP addresses that have been spoofed.
 		//
 		// This reveals the pre-DNAT destination address that
-		// spoofed via sniff.AttackSnac.
+		// spoofed via sniff.AttackSNAC.
 		spoofed *sync.Map
 
 		// defDownstreamIP describes a TCP listener that will receive connections

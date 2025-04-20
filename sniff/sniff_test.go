@@ -56,8 +56,8 @@ func TestAttackSnac(t *testing.T) {
 				}
 			}()
 
-			if err := AttackSnac(tt.args.ctx, &tt.args.cfg, tt.args.senIp, tt.args.tarIp, tt.args.tcpDownstream, tt.args.handlers...); (err != nil) != tt.wantErr {
-				t.Errorf("AttackSnac() error = %v, wantErr %v", err, tt.wantErr)
+			if err := AttackSNAC(tt.args.ctx, &tt.args.cfg, tt.args.senIp, tt.args.tarIp, tt.args.tcpDownstream, tt.args.handlers...); (err != nil) != tt.wantErr {
+				t.Errorf("AttackSNAC() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
 	}
