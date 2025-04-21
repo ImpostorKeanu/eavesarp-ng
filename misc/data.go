@@ -12,20 +12,20 @@ import (
 )
 
 const (
-	// VictimDataSender indicates that the Data was sent
+	// VictimDataSender indicates that the AttackData was sent
 	// by the victim side of a conversation.
 	VictimDataSender DataSender = "victim"
-	// DownstreamDataSender indicates that the Data was sent
+	// DownstreamDataSender indicates that the AttackData was sent
 	// by the victim side of a conversation.
 	DownstreamDataSender DataSender = "downstream"
 )
 
 type (
-	// DataSender indicates the address that sent Data.
+	// DataSender indicates the address that sent AttackData.
 	DataSender string
 
-	// Data is extracted from poisoned traffic for logging.
-	Data struct {
+	// AttackData is extracted from poisoned traffic for logging.
+	AttackData struct {
 		// Time when the Raw was logged.
 		Time time.Time `json:"time"`
 		// Sender of the Raw indicates which side of the conversation
@@ -33,9 +33,12 @@ type (
 		//
 		// See VictimDataSender and DownstreamDataSender.
 		Sender DataSender `json:"sender"`
-		// VictimAddr is the address of the victim side of the
-		// conversation.
+		// VictimAddr is the address of the victim in the poisoning
+		// attack.
 		VictimAddr VictimAddr `json:"victim_address"`
+		// SpoofedAddr is the address currently poisoned in the
+		// victim's ARP cache.
+		SpoofedAddr Addr `json:"spoofed_address"`
 		// ProxyAddr is the address of the proxy used to forward
 		// traffic to DownstreamAddr during the conversation.
 		ProxyAddr Addr `json:"proxy_address"`
@@ -63,14 +66,22 @@ type (
 	}
 )
 
-// Log JSON marshals the Data to log.
+func (v VictimAddr) SrcString() string {
+	return net.JoinHostPort(v.IP, v.SrcPort)
+}
+
+func (v VictimAddr) DstString() string {
+	return net.JoinHostPort(v.IP, v.DstPort)
+}
+
+// Log JSON marshals the AttackData to log.
 //
 // If Time is nil, the current time is set to the log record
 // before writing it.
 //
-// If Data is empty (""), Raw is base64 encoded and set to
-// Data before writing.
-func (d *Data) Log(w io.Writer) (err error) {
+// If AttackData is empty (""), Raw is base64 encoded and set to
+// AttackData before writing.
+func (d *AttackData) Log(w io.Writer) (err error) {
 	if w == nil {
 		err = errors.New("nil log")
 		return
@@ -96,14 +107,15 @@ func (d *Data) Log(w io.Writer) (err error) {
 // DstPort value from spoofed, which is a mapping of:
 //
 // map[VICTIM_IP:VICTIM_SRC_PORT]=SPOOFED_IP:DST_PORT
-func NewVictimAddr(vIP, vSrcPort string, spoofed *sync.Map, t Transport) (VictimAddr, error) {
-	vA := VictimAddr{IP: vIP, SrcPort: vSrcPort, Transport: t}
-	if v, ok := spoofed.Load(net.JoinHostPort(vA.IP, vA.SrcPort)); !ok {
-		return vA, errors.New("failed to recover dst port from spoofed addresses")
-	} else if spoofedA, ok := v.(Addr); !ok {
-		return vA, errors.New("unsupported type returned from spoofmap")
+func NewVictimAddr(vIP, vSrcPort string, spoofed *sync.Map, t Transport) (victimA VictimAddr, spoofedA *Addr, err error) {
+	victimA = VictimAddr{IP: vIP, SrcPort: vSrcPort, Transport: t}
+	if v, ok := spoofed.Load(victimA.SrcString()); !ok {
+		err = errors.New("failed to recover dst port from spoofed addresses")
+	} else if sA, ok := v.(Addr); !ok {
+		err = errors.New("unsupported type returned from spoofmap")
 	} else {
-		vA.DstPort = spoofedA.Port
+		spoofedA = &sA
+		victimA.DstPort = sA.Port
 	}
-	return vA, nil
+	return victimA, spoofedA, nil
 }

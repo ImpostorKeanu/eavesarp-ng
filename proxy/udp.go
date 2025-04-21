@@ -24,7 +24,7 @@ type (
 		connMap    *sync.Map
 		spoofedMap *sync.Map
 		log        *zap.Logger // for log events
-		dataW      io.Writer   // for writing misc.Data records
+		dataW      io.Writer   // for writing misc.AttackData records
 	}
 
 	// UDPServer is a UDP proxy capable of relaying UDP packets to downstreams
@@ -112,18 +112,24 @@ func (s *UDPServer) Serve(ctx context.Context) (err error) {
 			// LOG VICTIM DATA
 			//================
 
-			var vA misc.VictimAddr
-			if vA, err = misc.NewVictimAddr(vAddrInf.IP, vAddrInf.Port, s.Cfg.spoofedMap, misc.UDPTransport); err != nil {
+			var (
+				vA misc.VictimAddr
+				sA *misc.Addr
+			)
+			if vA, sA, err = misc.NewVictimAddr(vAddrInf.IP, vAddrInf.Port, s.Cfg.spoofedMap, misc.UDPTransport); err != nil {
 				s.Cfg.log.Error("failed to parse victim address while handling udp packet", zap.Error(err))
 			}
 
-			lData := misc.Data{
+			lData := misc.AttackData{
 				Sender:         misc.VictimDataSender,
 				VictimAddr:     vA,
 				ProxyAddr:      pAddrInf,
 				DownstreamAddr: dsAddrInf,
 				Transport:      misc.UDPTransport,
 				Raw:            buf[:n],
+			}
+			if sA != nil {
+				lData.SpoofedAddr = *sA
 			}
 
 			if n > 0 {
@@ -204,7 +210,7 @@ func (s *UDPServer) Serve(ctx context.Context) (err error) {
 
 // writeData sends data to the data writer so long
 // as it's not nil.
-func (s *UDPServer) writeData(lData misc.Data) {
+func (s *UDPServer) writeData(lData misc.AttackData) {
 	if s.Cfg.dataW == nil || len(lData.Data) == 0 {
 		return
 	}

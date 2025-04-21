@@ -178,7 +178,7 @@ func (cfg *Cfg) newRandID(l int) (err error) {
 
 // NewCfg creates a Cfg for various eavesarp_ng functions.
 //
-// dsn is the Data Source Name describing where to find the SQLite database. The
+// dsn is the AttackData Source Name describing where to find the SQLite database. The
 // database is initialized along with Cfg.
 //
 // ifaceName and ifaceAddr describe the network interface to monitor,

@@ -137,19 +137,22 @@ func (cfg *TCPCfg) GetDownstreamTLSConfig(_ gs.Addr, _ gs.Addr, _ gs.Addr) (*tls
 	return dsTLSCfg, nil
 }
 
-func (cfg *TCPCfg) connInfoToData(c gs.ConnInfo, data []byte, sender misc.DataSender) misc.Data {
-	vA, err := misc.NewVictimAddr(c.Victim.IP, c.Victim.Port, cfg.spoofedMap, misc.TCPTransport)
+func (cfg *TCPCfg) connInfoToData(c gs.ConnInfo, data []byte, sender misc.DataSender) misc.AttackData {
+	vA, sA, err := misc.NewVictimAddr(c.Victim.IP, c.Victim.Port, cfg.spoofedMap, misc.TCPTransport)
 	if err != nil {
 		cfg.log.Error("failed to create victim address for tcp data logging", zap.Error(err))
 	}
 
-	d := misc.Data{
+	d := misc.AttackData{
 		Sender:         sender,
 		VictimAddr:     vA,
 		ProxyAddr:      misc.Addr{IP: c.Proxy.IP, Port: c.Proxy.Port, Transport: misc.TCPTransport},
 		Transport:      misc.TCPTransport,
 		Raw:            data,
 		DownstreamAddr: nil,
+	}
+	if sA != nil {
+		d.SpoofedAddr = *sA
 	}
 
 	if c.Downstream != nil {
