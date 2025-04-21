@@ -211,7 +211,7 @@ func (s *UDPServer) Serve(ctx context.Context) (err error) {
 // writeData sends data to the data writer so long
 // as it's not nil.
 func (s *UDPServer) writeData(lData misc.AttackData) {
-	if s.Cfg.dataW == nil || len(lData.Data) == 0 {
+	if s.Cfg.dataW == nil || len(lData.Raw) == 0 {
 		return
 	}
 	// log data sent by victim

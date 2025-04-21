@@ -85,6 +85,8 @@ func (d *AttackData) Log(w io.Writer) (err error) {
 	if w == nil {
 		err = errors.New("nil log")
 		return
+	} else if len(d.Raw) == 0 {
+		return
 	}
 	if d.Time.IsZero() {
 		d.Time = time.Now()
