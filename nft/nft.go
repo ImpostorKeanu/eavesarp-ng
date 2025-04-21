@@ -282,7 +282,7 @@ func getSpoofedAddrSetElement(conn *nftables.Conn, set *nftables.Set, addr net.I
 		return nil, err
 	} else {
 		for _, e := range eles {
-			if bytes.Compare(e.Key, addr) == 0 {
+			if bytes.Compare(e.Key, addr.To4()) == 0 {
 				return &e, nil
 			}
 		}

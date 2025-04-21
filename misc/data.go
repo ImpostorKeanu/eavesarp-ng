@@ -36,8 +36,8 @@ type (
 		// VictimAddr is the address of the victim in the poisoning
 		// attack.
 		VictimAddr VictimAddr `json:"victim_address"`
-		// SpoofedAddr is the address currently poisoned in the
-		// victim's ARP cache.
+		// SpoofedAddr is the address set to our MAC address by poisoning
+		// the victim's ARP cache.
 		SpoofedAddr Addr `json:"spoofed_address"`
 		// ProxyAddr is the address of the proxy used to forward
 		// traffic to DownstreamAddr during the conversation.
