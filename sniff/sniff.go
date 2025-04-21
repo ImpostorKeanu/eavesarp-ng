@@ -13,6 +13,17 @@ import (
 	"go.uber.org/zap"
 	"net"
 	"sync"
+	"sync/atomic"
+)
+
+type (
+	// closerHandle wraps pcap.Handle and tracks when Close is
+	// called. Use Closed to check if the handle is already
+	// closed.
+	closerHandle struct {
+		*pcap.Handle
+		closed *atomic.Bool
+	}
 )
 
 var (
@@ -168,7 +179,8 @@ func WatchArp(ctx context.Context, cfg Cfg) (err error) {
 		cfg.log.Error("error opening packet capture", zap.Error(err))
 		return err
 	}
-	defer wHandle.Close()
+	cHandle := newCloserHandle(wHandle)
+	defer cHandle.Close()
 
 	if err = rHandle.SetBPFFilter("arp"); err != nil {
 		cfg.log.Error("failed to set bpf filter", zap.Error(err))
@@ -185,7 +197,7 @@ func WatchArp(ctx context.Context, cfg Cfg) (err error) {
 			cfg.log.Info("killing arp watch routine")
 			return
 		case packet = <-in:
-			go handleWatchArpPacket(cfg, wHandle, packet)
+			go handleWatchArpPacket(cfg, cHandle, packet)
 		}
 	}
 }
@@ -376,7 +388,8 @@ func AttackSNAC(ctx context.Context, cfg *Cfg, senIp net.IP, tarIp net.IP, downs
 		cfg.log.Error("failed to start packet capture while attacking snac", logFields...)
 		return
 	}
-	defer wHandle.Close()
+	cHandle := newCloserHandle(wHandle)
+	defer cHandle.Close()
 
 	if err = nft.AddSpoofedIP(cfg.aitm.nftConn, cfg.aitm.nftTbl, tarIp); err != nil {
 		cfg.log.Error("failed to add spoofed ip", zap.Error(err))
@@ -406,7 +419,7 @@ func AttackSNAC(ctx context.Context, cfg *Cfg, senIp net.IP, tarIp net.IP, downs
 				cfg.log.Debug("poisoning sender arp table", logFields...)
 				// Respond with our MAC
 				cfg.arp.ch <- SendArpCfg{
-					Handle:    wHandle,
+					Handle:    cHandle,
 					Operation: layers.ARPReply,
 					SenderHw:  cfg.iface.HardwareAddr,
 					SenderIp:  tarIp,
@@ -429,4 +442,25 @@ func AttackSNAC(ctx context.Context, cfg *Cfg, senIp net.IP, tarIp net.IP, downs
 			}()
 		}
 	}
+}
+
+// newCloserHandle initializes and returns a pointer to a closerHandle.
+func newCloserHandle(handle *pcap.Handle) *closerHandle {
+	return &closerHandle{
+		Handle: handle,
+		closed: &atomic.Bool{},
+	}
+}
+
+// Close calls Close on pcap.Handle while setting closed to true.
+//
+// Use Closed to retrieve the value of closed.
+func (h *closerHandle) Close() {
+	h.Handle.Close()
+	h.closed.Store(true)
+}
+
+// Closed determines if the handle has been closed.
+func (h *closerHandle) Closed() bool {
+	return h.closed.Load()
 }

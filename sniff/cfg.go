@@ -79,24 +79,24 @@ type (
 
 	// aitmCfgFields defines configuration fields related to AITM.
 	aitmCfgFields struct {
-		// downstreams maps sender addresses to Downstream addresses.
-		//
+		// downstreams maps sender addresses to downstream addresses.
 		//
 		// This allows for traffic to be relayed by associating the pre-DNAT
-		// port with a Downstream (destination) IP address.
+		// port with a downstream (destination) IP address.
 		//
 		// The type for both the key and value is misc.Addr.
 		downstreams *sync.Map
 
 		// spoofed maps source addresses to ARP addresses that have been spoofed.
 		//
-		// This reveals the pre-DNAT destination address that
-		// spoofed via sniff.AttackSNAC.
+		// This reveals the pre-DNAT destination address of the sender connection
+		// set by sniff.AttackSNAC.
+		//
+		// Both the key and value type is misc.Addr.
 		spoofed *sync.Map
 
 		// defDownstreamIP describes a TCP listener that will receive connections
-		// during an AITM attack _without_ an AITM Downstream. This allows us to
-		// always complete TCP connections and receive data.
+		// for all AITM attacks without a downstream set during configuration.
 		//
 		// Type: *misc.Addr
 		//

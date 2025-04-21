@@ -413,7 +413,7 @@ func (m model) Update(msg tea.Msg) (_ tea.Model, cmd tea.Cmd) {
 		}
 
 	case tea.WindowSizeMsg:
-		// Handle window resize events
+		// handle window resize events
 		//
 		// This type is supplied when:
 		//
@@ -642,7 +642,7 @@ func (m *model) handleBtnPressMsg(msg panes.BtnPressMsg) (cmd tea.Cmd) {
 }
 
 func (m *model) handleMouseMsg(msg tea.MouseMsg) (cmd tea.Cmd) {
-	// Handle mouse events, like button presses
+	// handle mouse events, like button presses
 
 	if msg.Action != tea.MouseActionRelease || msg.Button != tea.MouseButtonLeft {
 		// We only care about the left mouse button

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"github.com/google/gopacket/layers"
-	"github.com/google/gopacket/pcap"
 	"github.com/impostorkeanu/eavesarp-ng/db"
 	"go.uber.org/zap"
 	"net"
@@ -54,11 +53,11 @@ type (
 	// handlePtrNameArgs is a structure used to document args required
 	// for handling reverse resolved names.
 	handlePtrNameArgs[DT DoDnsCfg, AT ActiveArp] struct {
-		ip         *db.Ip       // ip that was reverse resolved
-		name       string       // name obtained through reverse resolution
-		srcIfaceIp []byte       // srcIfaceIp address used to send arp requests for new ips
-		srcIfaceHw []byte       // srcIfaceHw address used to send arp requests for new ips
-		handle     *pcap.Handle // pcap handle used to send arp requests
+		ip         *db.Ip        // ip that was reverse resolved
+		name       string        // name obtained through reverse resolution
+		srcIfaceIp []byte        // srcIfaceIp address used to send arp requests for new ips
+		srcIfaceHw []byte        // srcIfaceHw address used to send arp requests for new ips
+		handle     *closerHandle // pcap handle used to send arp requests
 	}
 )
 
@@ -121,7 +120,7 @@ func ResolveDns(cfg Cfg, dA DoDnsCfg) error {
 		resolved[i] = strings.TrimSuffix(name, ".")
 	}
 
-	// Handle the output
+	// closerHandle the output
 	if dA.AfterF != nil {
 		dA.AfterF(resolved)
 	}
@@ -192,7 +191,6 @@ func handlePtrName(cfg Cfg, depth int, args handlePtrNameArgs[DoDnsCfg, ActiveAr
 							SenderIp:      args.srcIfaceIp,
 							SenderHw:      args.srcIfaceHw,
 							TargetIp:      net.ParseIP(newIp.Value).To4(),
-							ReqCtx:        nil,
 							ReqMaxRetries: maxArpRetries,
 						}
 					}()

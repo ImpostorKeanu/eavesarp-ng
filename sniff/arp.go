@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
-	"github.com/google/gopacket/pcap"
 	"github.com/impostorkeanu/eavesarp-ng/db"
 	"go.uber.org/zap"
 	"net"
@@ -54,7 +53,7 @@ type (
 	// - ReqTimeout
 	SendArpCfg struct {
 		// Handle that will be used to send the ARP request/response.
-		Handle *pcap.Handle
+		Handle *closerHandle
 		// Operation indicating the type of packet, i.e., request or
 		// response. See layers.ARP for more information.
 		Operation uint64
@@ -63,8 +62,9 @@ type (
 		TargetHw  net.HardwareAddr
 		TargetIp  net.IP
 		// ReqCtx allows one to set a context for the request, enabling
-		// timeouts and cancellation. This field is relevant only for ARP
-		// requests.
+		// timeouts and cancellation.
+		//
+		// Important: this field is relevant only for ARP _requests_.
 		//
 		// ActiveArp records can retain the cancel function (ActiveArp.Cancel)
 		// for use upon receiving a response.
@@ -201,15 +201,17 @@ func SendArp(cfg Cfg, sA SendArpCfg) (err error) {
 	buff := gopacket.NewSerializeBuffer()
 	err = gopacket.SerializeLayers(buff, opts, &eth, &arp)
 
-	cfg.log.Debug("sent arp", logFields...)
 	if err != nil {
 		cfg.log.Error("error serializing packet", zap.Error(err))
 		return fmt.Errorf("failed to build arp packet: %w", err)
+	} else if sA.Handle.Closed() {
+		return
 	} else if err = sA.Handle.WritePacketData(buff.Bytes()); err != nil {
 		logFields = append(logFields, zap.Error(err))
 		cfg.log.Error("error writing packet data", logFields...)
 		return fmt.Errorf("failed to send arp packet: %w", err)
 	}
+	cfg.log.Debug("sent arp", logFields...)
 
 	return
 }
@@ -219,7 +221,7 @@ func SendArp(cfg Cfg, sA SendArpCfg) (err error) {
 // resolvedTargets tracks which target MAC addresses have been
 // actively resolved, allowing us to avoid duplicate resolution
 // attempts. This function has side effects on resolvedTargets.
-func handleWatchArpPacket(cfg Cfg, handle *pcap.Handle, packet gopacket.Packet) (err error) {
+func handleWatchArpPacket(cfg Cfg, handle *closerHandle, packet gopacket.Packet) (err error) {
 
 	arpL := GetArpLayer(packet)
 	if arpL == nil {
@@ -313,7 +315,6 @@ func handleWatchArpPacket(cfg Cfg, handle *pcap.Handle, packet gopacket.Packet) 
 					SenderHw:      cfg.iface.HardwareAddr,
 					SenderIp:      cfg.ipNet.IP.To4(),
 					TargetIp:      arpL.DstProtAddress,
-					ReqCtx:        nil,
 					ReqMaxRetries: maxArpRetries,
 				}
 			}()
