@@ -384,3 +384,12 @@ func GetRow(db *sql.DB, stmt string, queryArgs []any, scanDest ...any) error {
 	defer cancel()
 	return db.QueryRowContext(ctx, stmt, queryArgs...).Scan(scanDest...)
 }
+
+func OpenDB(dsn string) (db *sql.DB, err error) {
+	db, err = sql.Open("sqlite", dsn)
+	if err != nil {
+		return
+	}
+	db.SetMaxOpenConns(1)
+	return
+}
