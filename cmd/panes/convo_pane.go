@@ -8,7 +8,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/impostorkeanu/eavesarp-ng/cmd/misc"
 	"github.com/impostorkeanu/eavesarp-ng/db"
-	misc2 "github.com/impostorkeanu/eavesarp-ng/sniff"
+	sniffMisc "github.com/impostorkeanu/eavesarp-ng/sniff"
 	zone "github.com/lrstanley/bubblezone"
 	"slices"
 	"strings"
@@ -16,35 +16,51 @@ import (
 
 const (
 	convoTableSelectionQuery = `
-SELECT ip.value AS ip,
-       ip.id AS ip_id,
-       ip.disc_meth AS ip_disc_meth,
-	   ip.arp_resolved AS ip_arp_resolved,
-       ip.ptr_resolved AS ip_ptr_resolved,
-       COALESCE(mac.value, '') AS mac,
-       COALESCE(mac.disc_meth, '') AS mac_disc_meth,
-       COALESCE(dns_record.kind, '') AS dns_record_kind,
-       COALESCE(dns_name.value, '') AS dns_name
+SELECT
+  ip.value AS ip,
+  ip.id AS ip_id,
+  ip.disc_meth AS ip_disc_meth,
+  ip.arp_resolved AS ip_arp_resolved,
+  ip.ptr_resolved AS ip_ptr_resolved,
+  COALESCE(mac.value, '') AS mac,
+  COALESCE(mac.disc_meth, '') AS mac_disc_meth,
+  COALESCE(dns_record.kind, '') AS dns_record_kind,
+  COALESCE(dns_name.value, '') AS dns_name
 FROM ip
-LEFT JOIN mac ON mac.Id = ip.mac_id
-LEFT JOIN dns_record ON dns_record.ip_id = ip.Id
-LEFT JOIN dns_name ON dns_name.Id = dns_record.dns_name_id
+LEFT JOIN mac
+  ON mac.Id = ip.mac_id
+LEFT JOIN dns_record
+  ON dns_record.ip_id = ip.Id
+LEFT JOIN dns_name
+  ON dns_name.Id = dns_record.dns_name_id
 WHERE ip.value IN (?,?);
 `
 	attackPortsQuery = `
-SELECT DISTINCT port.proto AS protocol, port.number AS number FROM attack
-INNER JOIN attack_port ON attack_port.attack_id = attack.id
-INNER JOIN port ON port.id = attack_port.port_id
-WHERE attack.sender_ip_id = ? AND attack.target_ip_id = ?
+SELECT DISTINCT port.proto AS protocol,
+  port.number AS number FROM attack
+INNER JOIN attack_port
+  ON attack_port.attack_id = attack.id
+INNER JOIN port
+  ON port.id = attack_port.port_id
+WHERE attack.sender_ip_id = ?
+  AND attack.target_ip_id = ?
 ORDER BY port.number;
 `
 	snacAitmQuery = `
-SELECT snac_ip.value AS snac_ip, downstream_ip.value AS downstream_ip, dns_name.value AS forward_dns_name
+SELECT
+  snac_ip.value AS snac_ip,
+  downstream_ip.value AS downstream_ip,
+  dns_name.value AS forward_dns_name
 FROM aitm_opt
-INNER JOIN ip AS snac_ip ON snac_ip.Id = aitm_opt.snac_target_ip_id
-INNER JOIN ip AS downstream_ip ON downstream_ip.Id = aitm_opt.downstream_ip_id
-LEFT JOIN dns_record ON dns_record.ip_id = aitm_opt.downstream_ip_id AND dns_record.kind = 'a'
-LEFT JOIN dns_name ON dns_name.Id = dns_record.dns_name_id
+INNER JOIN ip AS snac_ip
+  ON snac_ip.Id = aitm_opt.snac_target_ip_id
+INNER JOIN ip AS downstream_ip
+  ON downstream_ip.Id = aitm_opt.downstream_ip_id
+LEFT JOIN dns_record ON
+  dns_record.ip_id = aitm_opt.downstream_ip_id
+  AND dns_record.kind = 'a'
+LEFT JOIN dns_name
+  ON dns_name.Id = dns_record.dns_name_id
 WHERE aitm_opt.snac_target_ip_id = ?;
 `
 )
@@ -81,7 +97,7 @@ type (
 		tbl                    table.Model
 		poisonCfgBtnId         string
 		activeAttacks          *misc.ActiveAttacks
-		poisonPaneLm           *misc2.ConvoLockMap[PoisonPane]
+		poisonPaneLm           *sniffMisc.ConvoLockMap[PoisonPane]
 		IsSnac                 bool
 		IsPoisoning            bool
 		IsConfiguringPoisoning bool
@@ -104,14 +120,14 @@ type (
 )
 
 func (c CurConvoRowDetails) ConvoKey() string {
-	return misc2.FmtConvoKey(c.SenderIp, c.TargetIp)
+	return sniffMisc.FmtConvoKey(c.SenderIp, c.TargetIp)
 }
 
 func (c CurConvoRowDetails) IsZero() bool {
 	return c.SenderIp == "" && c.TargetIp == "" && c.ArpCount == 0
 }
 
-func NewCurConvoPane(db *sql.DB, zone *zone.Manager, activeAttacks *misc.ActiveAttacks, poisonPaneLm *misc2.ConvoLockMap[PoisonPane], poisonCfgBtnId string) CurConvoPane {
+func NewCurConvoPane(db *sql.DB, zone *zone.Manager, activeAttacks *misc.ActiveAttacks, poisonPaneLm *sniffMisc.ConvoLockMap[PoisonPane], poisonCfgBtnId string) CurConvoPane {
 	return CurConvoPane{
 		db:             db,
 		zone:           zone,
