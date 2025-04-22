@@ -377,7 +377,8 @@ func AttackSNAC(ctx context.Context, cfg *Cfg, senIp net.IP, tarIp net.IP, downs
 	defer rHandle.Close()
 
 	// filter to capture both sides of the conversation
-	if err = rHandle.SetBPFFilter(fmt.Sprintf("src host %s || dst host %s", senIp.String(), tarIp.String())); err != nil {
+	if err = rHandle.SetBPFFilter(fmt.Sprintf("src host %s || dst host %s", senIp.String(),
+		tarIp.String())); err != nil {
 		logFields = append(logFields, zap.Error(err))
 		cfg.log.Error("failed to set bpf filter to attack snac", logFields...)
 		return

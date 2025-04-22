@@ -37,7 +37,8 @@ const (
 
 type (
 	// Cfg is the primary eavesarp configuration type that binds
-	// all connections and data sources together.
+	// data sources together. It's commonly passed to other types
+	// and functions to allow access to resources.
 	//
 	// NewCfg initializes this type while starting all supporting
 	// routines.
@@ -68,7 +69,7 @@ type (
 	// dnsCfgFields defines configuration fields related to DNS.
 	dnsCfgFields struct {
 		ch        chan DoDnsCfg      // channel used to initiate dns queries
-		active    *LockMap[DoDnsCfg] // active dns queries
+		active    *LockMap[DoDnsCfg] // track active dns queries
 		failCount *FailCounter       // count of failed dns queries
 	}
 
@@ -77,7 +78,7 @@ type (
 		cache *crt.Cache
 	}
 
-	// aitmCfgFields defines configuration fields related to AITM.
+	// aitmCfgFields defines configuration fields related to AITM attacks.
 	aitmCfgFields struct {
 		// downstreams maps sender addresses to downstream addresses.
 		//
@@ -92,7 +93,8 @@ type (
 		// This reveals the pre-DNAT destination address of the sender connection
 		// set by sniff.AttackSNAC.
 		//
-		// Both the key and value type is misc.Addr.
+		// Both the key is of type string and the value type is misc.Addr. The
+		// key is SOURCE_ADDR:SOURCE_PORT.
 		spoofed *sync.Map
 
 		// defDownstreamIP describes a TCP listener that will receive connections
@@ -567,6 +569,7 @@ func (f *aitmCfgFields) SetDefDownstreamIP(a net.IP) {
 // to the routines that proxy traffic to downstreams.
 func (cfg *Cfg) InitNetfilter(ctx context.Context, tcpProxyAddr, udpProxyAddr *misc.Addr) error {
 
+	// no reason to use nft if no proxies are configured
 	if tcpProxyAddr == nil && udpProxyAddr == nil {
 		return errors.New("no tcp proxy or udp proxy configured; skipping nft table initialization")
 	}
