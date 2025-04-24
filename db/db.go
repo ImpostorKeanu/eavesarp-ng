@@ -6,15 +6,18 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
+	"net/url"
+	"os"
 	"strings"
 	"time"
 )
 
 var (
 	//go:embed schema.sql
-	SchemaSql string
+	SchemaSQL string
 )
 
+// ARP and DNS resolution methods.
 const (
 	// PassiveArpMeth indicates that an Ip _or_ Mac was discovered passively
 	// by monitoring ARP requests. This occurs when a host broadcasts
@@ -385,11 +388,76 @@ func GetRow(db *sql.DB, stmt string, queryArgs []any, scanDest ...any) error {
 	return db.QueryRowContext(ctx, stmt, queryArgs...).Scan(scanDest...)
 }
 
-func OpenDB(dsn string) (db *sql.DB, err error) {
+// Open the database specified by dsn with read-write access.
+func Open(dsn string) (db *sql.DB, created bool, err error) {
+	if dsn, err = parseDSN(dsn, false); err != nil {
+		return
+	}
+	return open(dsn)
+}
+
+// open opens a database with dsn.
+func open(dsn string) (db *sql.DB, created bool, err error) {
+	if _, err := os.Stat(strings.Split(dsn, "?")[0]); errors.Is(err, os.ErrNotExist) {
+		created = true
+	}
 	db, err = sql.Open("sqlite", dsn)
 	if err != nil {
 		return
 	}
 	db.SetMaxOpenConns(1)
 	return
+}
+
+// OpenRO opens the database specified by dsn with read-only
+// access.
+func OpenRO(dsn string) (db *sql.DB, created bool, err error) {
+	if dsn, err = parseDSN(dsn, true); err != nil {
+		return
+	}
+	return open(dsn)
+}
+
+// parseDSN parses and sets missing connection string values,
+// which are supplied via URL-style query string.
+//
+// - If the query string is omitted, relevant values will be set.
+// - Relevant query values already set in the DSN are preserved.
+//
+// Relevant connection string keys:
+//
+// - `_foreign_keys`, `_fk` should be `true`.
+// - `_journal_mode`, `_journal` should be `WAL`
+// - `mode`, which is set to `ro` when readOnly is true AND no
+//    value is already set.
+//
+// See go [go-sqlite readme] for more information.
+//
+// [go-sqlite readme]: https://github.com/mattn/go-sqlite3?tab=readme-ov-file#connection-string
+func parseDSN(dsn string, readOnly bool) (string, error) {
+
+	qSplit := strings.Split(dsn, "?")
+	var q url.Values
+	var err error
+	if len(qSplit) == 1 {
+		q = make(url.Values)
+	} else {
+		q, err = url.ParseQuery(qSplit[1])
+		if err != nil {
+			return "", fmt.Errorf("failed to parse dsn query string: %s", dsn)
+		}
+	}
+
+	if !q.Has("_foreign_keys") && !q.Has("_fk") {
+		q.Set("_fk", "true")
+	}
+
+	if !q.Has("_journal_mode") && !q.Has("_journal") {
+		q.Set("_journal", "WAL")
+	}
+
+	if readOnly && !q.Has("mode") {
+		q.Set("mode", "ro")
+	}
+	return fmt.Sprintf("%s?%s", dsn, q.Encode()), nil
 }

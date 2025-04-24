@@ -20,7 +20,11 @@ var (
 
 func main() {
 	if err := rootCMD.Execute(); err != nil {
-		fmt.Printf("failure due to error: %s\n", err.Error())
-		os.Exit(1)
+		errExit("unhandled error", err, 1)
 	}
+}
+
+func errExit(msg string, err error, code int) {
+	fmt.Fprintf(os.Stderr, "%s: %s\n\nexiting\n", msg, err.Error())
+	os.Exit(code)
 }

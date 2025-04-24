@@ -393,14 +393,13 @@ func (cfg *Cfg) Shutdown() {
 
 // initDb initializes a SQLite database for eavesarp-ng.
 func (cfg *Cfg) initDb(dsn string) (conn *sql.DB, err error) {
-	conn, err = sql.Open("sqlite", dsn)
+	conn, _, err = db.Open(dsn)
 	if err != nil {
 		cfg.log.Error("error opening db", zap.Error(err))
 		return
 	}
-	conn.SetMaxOpenConns(1)
-	// TODO test the connection by pinging the database
-	_, err = conn.ExecContext(context.Background(), db.SchemaSql)
+	// TODO test the connection
+	_, err = conn.ExecContext(context.Background(), db.SchemaSQL)
 	if err != nil {
 		cfg.log.Error("error while applying database schema", zap.Error(err))
 		return

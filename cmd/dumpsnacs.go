@@ -1,8 +1,7 @@
 package main
 
 import (
-	"encoding/csv"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/impostorkeanu/eavesarp-ng/db"
 	"github.com/spf13/cobra"
@@ -11,9 +10,9 @@ import (
 )
 
 var (
-	dumpOutputFormats = []string{"csv", "json"}
-	dumpOutputFmt     string
-	dumpCMD           = &cobra.Command{
+	dumpSNACSOutputFormats = []string{"csv", "json", "jsonl"}
+	dumpSNACSOutputFmt     string
+	dumpSNACSCMD           = &cobra.Command{
 		Use:     "dump-snacs",
 		Short:   "Dump SNAC records from a database file",
 		Long:    "Dump SNAC records from a database file",
@@ -23,54 +22,33 @@ var (
 )
 
 func init() {
-	dumpCMD.Flags().StringVarP(&dbFile, "db-file", "d", "eavesarp.db", "Database file")
-	dumpCMD.Flags().StringVarP(&dumpOutputFmt, "fmt", "f", "csv", "Output format. One of: [csv, json]")
-	if err := dumpCMD.MarkFlagRequired("db-file"); err != nil {
+	dumpSNACSCMD.Flags().StringVarP(&dbFile, "db-file", "d", "eavesarp.db", "Database file")
+	dumpSNACSCMD.Flags().StringVarP(&dumpSNACSOutputFmt, "fmt", "f", "jsonl",
+		"Output format. One of: [csv, json, jsonl]")
+	if err := dumpSNACSCMD.MarkFlagRequired("db-file"); err != nil {
 		panic(err)
-	} else if slices.Index(dumpOutputFormats, dumpOutputFmt) == -1 {
+	} else if slices.Index(dumpSNACSOutputFormats, dumpSNACSOutputFmt) == -1 {
 		panic("invalid format; supported formats are: csv, json")
 	}
-	rootCMD.AddCommand(dumpCMD)
+	rootCMD.AddCommand(dumpSNACSCMD)
 }
 
 func dumpSNACs(cmd *cobra.Command, args []string) {
+	if _, err := os.Stat(dbFile); errors.Is(err, os.ErrNotExist) {
+		errExit("database file does not exist", err, 1)
+	}
 	// open the database
-	dbO, err := db.OpenDB(dbFile)
+	fmt.Fprintf(os.Stderr, "opening database: %s\n", dbFile)
+	dbO, _, err := db.OpenRO(dbFile)
 	if err != nil {
-		panic(err)
+		errExit("failed to open database", err, 1)
 	}
-
-	// query for the snacs
-	var snacs []db.SNACDumpRecord
-	if snacs, err = db.DumpSNACs(dbO); err != nil {
-		panic(err)
-	} else if len(snacs) == 0 {
-		os.Stderr.WriteString("no snacs found\n")
-		os.Exit(0)
+	// dump the snacs
+	os.Stderr.WriteString("dumping snacs to stdout\n\n")
+	var n int
+	n, err = db.DumpSNACs(dbO, os.Stdout, dumpSNACSOutputFmt)
+	if err != nil {
+		errExit("failed to dump snacs", err, 1)
 	}
-
-	switch dumpOutputFmt {
-	case "csv":
-		// write csv to file
-		w := csv.NewWriter(os.Stdout)
-		if err = w.Write(db.SNACDumpCSVHeader); err != nil {
-			panic(err)
-		}
-		for _, snac := range snacs {
-			if err = w.Write(snac.CSVRow()); err != nil {
-				panic(err)
-			}
-		}
-		w.Flush()
-	case "json":
-		// json marshal and dump output
-		var output []byte
-		output, err = json.Marshal(snacs)
-		if err != nil {
-			panic(err)
-		}
-		fmt.Println(string(output))
-	default:
-		panic("invalid format; supported formats are: csv, json")
-	}
+	fmt.Fprintf(os.Stderr, "\ndumped %d snacs\n", n)
 }

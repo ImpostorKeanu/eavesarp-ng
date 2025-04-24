@@ -2,13 +2,17 @@ package db
 
 import (
 	"database/sql"
+	"encoding/csv"
+	"encoding/json"
 	"fmt"
+	"io"
+	"strings"
 )
 
 var (
-	// SNACDumpCSVHeader is the header row for CSV files containing
+	// snacDumpCSVHeader is the header row for CSV files containing
 	// SNACDumpRecord values.
-	SNACDumpCSVHeader = []string{"sender_ip", "target_ip", "arp_count", "attack_count", "port_count"}
+	snacDumpCSVHeader = []string{"sender_ip", "target_ip", "arp_count", "attack_count", "port_count"}
 	// SNACDumpQuery is the query used to get all SNAC records
 	// from a database.
 	SNACDumpQuery = `
@@ -46,6 +50,7 @@ type SNACDumpRecord struct {
 	PortCount   int    `json:"port_count"`   // count of ports seen across the attacks
 }
 
+// CSVRow returns the record as a CSV row.
 func (r SNACDumpRecord) CSVRow() []string {
 	return []string{r.SenderIP, r.TargetIP,
 		fmt.Sprintf("%d", r.ArpCount),
@@ -53,10 +58,38 @@ func (r SNACDumpRecord) CSVRow() []string {
 		fmt.Sprintf("%d", r.PortCount)}
 }
 
-// DumpSNACs queries db and extracts all SNAC records.
+// SNACDumpCSVHeaderS returns the header row for values returned by
+// SNACDumpRecord.CSVRow.
+func SNACDumpCSVHeaderS() string {
+	return strings.Join(snacDumpCSVHeader, ",")
+}
+
+// SNACDumpCSVHeader is the same as SNACDumpCSVHeaderS, but returns
+// a slice value.
+func SNACDumpCSVHeader() []string {
+	cp := make([]string, len(snacDumpCSVHeader))
+	copy(cp, snacDumpCSVHeader)
+	return cp
+}
+
+// DumpSNACs queries all SNACs from db and writest them to dst
+// in the specified format.
+func DumpSNACs(db *sql.DB, dst io.Writer, format string) (int, error) {
+	snacs, err := QuerySNACs(db)
+	if err != nil {
+		return 0, fmt.Errorf("error while querying the database: %w", err)
+	}
+	snacLen := len(snacs)
+	if snacLen == 0 {
+		return 0, nil
+	}
+	return snacLen, WriteSNACs(snacs, dst, format)
+}
+
+// QuerySNACs queries db and extracts all SNAC records.
 //
 // See SNACDumpQuery for the SQL.
-func DumpSNACs(db *sql.DB) ([]SNACDumpRecord, error) {
+func QuerySNACs(db *sql.DB) ([]SNACDumpRecord, error) {
 	var snacs []SNACDumpRecord
 	rows, err := db.Query(SNACDumpQuery)
 	if err != nil {
@@ -72,4 +105,57 @@ func DumpSNACs(db *sql.DB) ([]SNACDumpRecord, error) {
 		snacs = append(snacs, snac)
 	}
 	return snacs, err
+}
+
+// WriteSNACs writes the snacs to dst in the format specified
+// by f.
+func WriteSNACs(snacs []SNACDumpRecord, dst io.Writer, f string) error {
+	switch strings.ToLower(f) {
+	case "csv":
+		return WriteCSVSnacs(snacs, dst)
+	case "jsonl":
+		return WriteJSONLSnacs(snacs, dst)
+	case "json":
+		return WriteJSONSnacs(snacs, dst)
+	default:
+		return fmt.Errorf("unsupported output format (%s); supported formats: csv, json, jsonl", f)
+	}
+}
+
+// WriteCSVSnacs writes snacs to dst in CSV format.
+func WriteCSVSnacs(snacs []SNACDumpRecord, dst io.Writer) (err error) {
+	w := csv.NewWriter(dst)
+	if err = w.Write(SNACDumpCSVHeader()); err != nil {
+		return
+	}
+	for _, snac := range snacs {
+		if err = w.Write(snac.CSVRow()); err != nil {
+			return
+		}
+	}
+	w.Flush()
+	return
+}
+
+// WriteJSONSnacs writes snacs to dst in JSON format.
+func WriteJSONSnacs(snacs []SNACDumpRecord, dst io.Writer) error {
+	output, err := json.Marshal(snacs)
+	if err != nil {
+		return err
+	}
+	_, err = dst.Write(output)
+	return err
+}
+
+// WriteJSONLSnacs writes snacs to dst in JSONL format.
+func WriteJSONLSnacs(snacs []SNACDumpRecord, dst io.Writer) error {
+	for _, snac := range snacs {
+		output, err := json.Marshal(snac)
+		if err != nil {
+			return err
+		} else if _, err = fmt.Fprint(dst, string(output)+"\n"); err != nil {
+			return err
+		}
+	}
+	return nil
 }
