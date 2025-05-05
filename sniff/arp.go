@@ -79,7 +79,7 @@ type (
 
 	// ArpSpoofHandler defines the signature for functions that handle
 	// packets that are received after poisoning a sender's ARP table.
-	ArpSpoofHandler func(packet gopacket.Packet)
+	ArpSpoofHandler func(packet gopacket.Packet, isDownstream bool)
 
 	// AttackSnacCfg is used to configure an ARP spoofing attack.
 	AttackSnacCfg struct {

@@ -40,8 +40,9 @@ func PacketCounterHandler(ctx context.Context, limit int) (chan int, ArpSpoofHan
 			}
 		}
 	}()
-	return cntCh, func(pkt gopacket.Packet) {
-		if dead.Load() {
+	return cntCh, func(pkt gopacket.Packet, isDownstream bool) {
+
+		if dead.Load() || isDownstream {
 			return
 		}
 		select {
@@ -81,7 +82,7 @@ func OutputFileHandler(ctx context.Context, f *os.File, errF func(error)) (ArpSp
 			}
 		}
 	}()
-	return func(pkt gopacket.Packet) {
+	return func(pkt gopacket.Packet, _ bool) {
 		if dead.Load() {
 			return
 		}
@@ -127,8 +128,8 @@ func AttackPortHandler(ctx context.Context, db *sql.DB, attackId int, errF func(
 			}
 		}
 	}()
-	return func(pkt gopacket.Packet) {
-		if dead.Load() {
+	return func(pkt gopacket.Packet, isDownstream bool) {
+		if dead.Load() || isDownstream {
 			return
 		}
 		select {
@@ -161,8 +162,8 @@ func PacketLimitHandler(ctx context.Context, limit int, onLimitF func()) ArpSpoo
 			}
 		}
 	}()
-	return func(pkt gopacket.Packet) {
-		if dead.Load() {
+	return func(pkt gopacket.Packet, isDownstream bool) {
+		if dead.Load() || isDownstream {
 			return
 		}
 		select {

@@ -38,7 +38,7 @@ var (
 	validationSuccessStyle = lipgloss.NewStyle().Foreground(misc.SuccessValidationColor)
 	captureDurationHeading = underlineStyle.Render("Capture Duration")
 	packetLimitHeading     = underlineStyle.Render("Packet Limit")
-	outputFileHeading      = underlineStyle.Render("Output File")
+	pcapFileHeading        = underlineStyle.Render("Output PCAP File")
 	downstreamHeading      = underlineStyle.Render("Downstream IPv4 Address")
 	validators             = []validator{validateDuration, validatePacketLimit, validateOutputFile, validateIPv4}
 )
@@ -609,7 +609,7 @@ func (p PoisonPane) View() string {
 		case packetLimitInputIndex:
 			builder.WriteString(packetLimitHeading)
 		case outputFileInputIndex:
-			builder.WriteString(outputFileHeading)
+			builder.WriteString(pcapFileHeading)
 		case downstreamInputIndex:
 			builder.WriteString(downstreamHeading)
 		default:
