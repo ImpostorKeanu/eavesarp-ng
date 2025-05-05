@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	startExample = "eavesarp-ng -v debug -i eth0"
+	startExample = "eavesarp-ng start -v debug -i eth0"
 )
 
 var (
