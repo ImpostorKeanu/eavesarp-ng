@@ -2,13 +2,21 @@ Eavesarp-NG is a Go-based tool to detect and exploit Stale Network Address
 Configurations (SNACs) via network traffic analysis and ARP poisoning
 techniques, designed for security researchers and network administrators.
 
+# Dependencies
+
+Eavesarp uses `nft` and `conntrack` to proxy traffic from poisoned senders.
+
+```bash
+apt update && apt install -y nft conntrack
+```
+
 # Usage
 
 ```bash
-./eavesarp --db-file eavesarp.db -i eth0
+./eavesarp start -v debug -i eth0
 ```
 
-![demo](docs/demo.png)
+![demo](eavesarp-docs/demo.png)
 
 # Automated Builds
 
