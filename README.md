@@ -2,6 +2,18 @@ Eavesarp-NG is a Go-based tool to detect and exploit Stale Network Address
 Configurations (SNACs) via network traffic analysis and ARP poisoning
 techniques, designed for security researchers and network administrators.
 
+# Current Features
+
+- Charm TUI
+- ARP conversation discovery
+- Active SNAC verification
+- ARP Cache poisoning for SNAC conversations
+- Per-attack PCAPs
+- Logging of application data to disk in JSONL format
+- Automated DNAT-driven TCP/UDP proxies
+- TLS splitting
+- Dynamic TLS certificate generation
+
 # Dependencies
 
 Eavesarp uses `nft` and `conntrack` to proxy traffic from poisoned senders.
