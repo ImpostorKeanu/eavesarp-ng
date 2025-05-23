@@ -3,9 +3,10 @@ tags:
 - term
 ---
 
-A **stale conversation** is a [[notes/Conversation|conversation]] with a target protocol (IP) address for which ARP resolution failed, indicating that:
+A **stale conversation** is a [[notes/Conversation|conversation]] with a [[notes/ARP Target|target]] address for which [[notes/Address Resolution Protocol|ARP]] resolution failed, indicating that:
 
-- the target is *likely* offline
-- the sender has a [[notes/Stale Network Address Configuration|SNAC]] for the target
+- the sender has a [[notes/Stale Network Address Configuration|SNAC]] for the target.
+- the target is *likely* offline.
 
-Stale conversations are marked with the [[notes/Greek Alphabet Legend#Sigma|sigma]] symbol in the SNAC column of the UI.
+>[!TIP]
+>Stale conversations are marked with the [[notes/Greek Alphabet Legend#Sigma|sigma]] symbol in the SNAC column of the Eavesarp UI.
