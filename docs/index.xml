@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<rss version="2.0">
+    <channel>
+      <title>Eavesarp-NG Documentation</title>
+      <link>https://impostorkeanu.github.io/eavesarp-ng</link>
+      <description>Last 10 notes on Eavesarp-NG Documentation</description>
+      <generator>Quartz -- quartz.jzhao.xyz</generator>
+      <item>
+    <title>General Usage</title>
+    <link>https://impostorkeanu.github.io/eavesarp-ng/notes/General-Usage</link>
+    <guid>https://impostorkeanu.github.io/eavesarp-ng/notes/General-Usage</guid>
+    <description> WARNING Examples here are currently prone to rot. If something’s off, please submit a PR with updated content or an issue to notify me.</description>
+    <pubDate>Fri, 23 May 2025 17:21:45 GMT</pubDate>
+  </item><item>
+    <title>index</title>
+    <link>https://impostorkeanu.github.io/eavesarp-ng/</link>
+    <guid>https://impostorkeanu.github.io/eavesarp-ng/</guid>
+    <description>Welcome to the Eavesarp-NG (Eavesarp) documentation.</description>
+    <pubDate>Fri, 23 May 2025 15:00:07 GMT</pubDate>
+  </item><item>
+    <title>ARP Cache Poisoning</title>
+    <link>https://impostorkeanu.github.io/eavesarp-ng/notes/ARP-Cache-Poisoning</link>
+    <guid>https://impostorkeanu.github.io/eavesarp-ng/notes/ARP-Cache-Poisoning</guid>
+    <description>ARP Cache poisoning is a method for an attacker to establish an AITM position between an ARP sender and target.</description>
+    <pubDate>Fri, 23 May 2025 15:00:07 GMT</pubDate>
+  </item><item>
+    <title>ARP Cache</title>
+    <link>https://impostorkeanu.github.io/eavesarp-ng/notes/ARP-Cache</link>
+    <guid>https://impostorkeanu.github.io/eavesarp-ng/notes/ARP-Cache</guid>
+    <description>To minimize broadcast traffic, operating systems (OS) maintain a mapping of IPs to MACs in what’s known as an ARP cache.</description>
+    <pubDate>Fri, 23 May 2025 15:00:07 GMT</pubDate>
+  </item><item>
+    <title>ARP Payload</title>
+    <link>https://impostorkeanu.github.io/eavesarp-ng/notes/ARP-Payload</link>
+    <guid>https://impostorkeanu.github.io/eavesarp-ng/notes/ARP-Payload</guid>
+    <description>In ARP, Ethernet frames encapsulate the ARP payload containing the IP and MAC addresses of the sender and target.</description>
+    <pubDate>Fri, 23 May 2025 15:00:07 GMT</pubDate>
+  </item><item>
+    <title>ARP Reply</title>
+    <link>https://impostorkeanu.github.io/eavesarp-ng/notes/ARP-Reply</link>
+    <guid>https://impostorkeanu.github.io/eavesarp-ng/notes/ARP-Reply</guid>
+    <description>An ARP reply is sent in response to an ARP request. It replies to the sender with its MAC address.</description>
+    <pubDate>Fri, 23 May 2025 15:00:07 GMT</pubDate>
+  </item><item>
+    <title>ARP Request</title>
+    <link>https://impostorkeanu.github.io/eavesarp-ng/notes/ARP-Request</link>
+    <guid>https://impostorkeanu.github.io/eavesarp-ng/notes/ARP-Request</guid>
+    <description>An ARP request is sent by a sender when it needs to obtain the MAC address associated with an IP address.</description>
+    <pubDate>Fri, 23 May 2025 15:00:07 GMT</pubDate>
+  </item><item>
+    <title>ARP Sender</title>
+    <link>https://impostorkeanu.github.io/eavesarp-ng/notes/ARP-Sender</link>
+    <guid>https://impostorkeanu.github.io/eavesarp-ng/notes/ARP-Sender</guid>
+    <description>In ARP, the sender is the host that sent a given Ethernet frame containing an ARP payload, which always includes its IP and MAC addresses so that targets can manage caches and reply as needed.</description>
+    <pubDate>Fri, 23 May 2025 15:00:07 GMT</pubDate>
+  </item><item>
+    <title>ARP TLDR</title>
+    <link>https://impostorkeanu.github.io/eavesarp-ng/notes/ARP-TLDR</link>
+    <guid>https://impostorkeanu.github.io/eavesarp-ng/notes/ARP-TLDR</guid>
+    <description> Address Resolution Protocol (ARP) is a data link layer (OSI L2) protocol. ARP enables network communication by resolving IPs (L3) to MACs (L2).</description>
+    <pubDate>Fri, 23 May 2025 15:00:07 GMT</pubDate>
+  </item><item>
+    <title>ARP Target</title>
+    <link>https://impostorkeanu.github.io/eavesarp-ng/notes/ARP-Target</link>
+    <guid>https://impostorkeanu.github.io/eavesarp-ng/notes/ARP-Target</guid>
+    <description>In ARP, the target is the intended recipient of an Ethernet frame sent by a sender.</description>
+    <pubDate>Fri, 23 May 2025 15:00:07 GMT</pubDate>
+  </item>
+    </channel>
+  </rss>

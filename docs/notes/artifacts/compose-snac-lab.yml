@@ -1,0 +1,159 @@
+name: eavesarp-snac-lab
+services:
+  server2:
+    # Runs a samba server that cron has
+    # credentials for
+    build:
+      context: .
+      dockerfile_inline: |
+        FROM debian:bookworm-20250428
+        # prepare the environment
+        RUN adduser --disabled-login --no-create-home --comment ",,,,," admin && \
+          # create samba share directory
+          mkdir -p /var/sambashare && \
+          # create flag file
+          echo "945893c53e803724cbefcfff7300d8c2" > /var/sambashare/flag.txt
+        # install samba
+        RUN apt update && apt install -y samba
+        # configure samba
+        # https://ubuntu.com/tutorials/install-and-configure-samba
+        # (an actual pia tbh)
+        RUN cat <<EOF >> /etc/samba/smb.conf
+        [sambashare]
+          comment = Samba Share
+          path = /var/sambashare
+          read only = no
+          browsable = yes
+        EOF
+        # create samba user
+        RUN cat <<EOF | smbpasswd -s -a admin
+        password1
+        password1
+        EOF
+        # configure ping cron job, using supervisor to
+        # run multiple processes: one for samba, another
+        # for cron
+        RUN apt install -y arping supervisor
+        RUN echo "* * * * * /usr/sbin/arping -c 3 172.28.0.3  >> /var/log/ping.log 2>&1" > /etc/cron.d/pingjob && \
+          chmod 0644 /etc/cron.d/pingjob && \
+          crontab /etc/cron.d/pingjob && \
+          mkdir -p /var/log/supervisor
+        RUN cat <<EOF > /supervisord.conf
+        [supervisord]
+        nodaemon=true
+        [program:cron]
+        command=/usr/sbin/cron -f
+        [program:samba]
+        command=/usr/sbin/smbd -s /etc/samba/smb.conf --debug-stdout -F --no-process-group
+        EOF
+    entrypoint: supervisord -c /supervisord.conf
+    hostname: server
+    networks:
+      eavesarp:
+        ipv4_address: 172.28.0.2
+  cron:
+    # Job that simulates SNACs by periodically
+    # trying to authenticate to 172.28.0.1, an
+    # unallocated address.
+    build:
+      context: .
+      dockerfile_inline: |
+        FROM debian:bookworm-20250428
+        # create smbclient script that loops forever and simulates
+        # traffic to 172.28.0.1
+        RUN cat <<EOF > /root/entrypoint.sh
+        #!/usr/bin/bash
+        set +e # don't exit upon error
+        while true; do
+          # simulate smb
+          smbclient -U workgroup/admin%password1 -L 172.28.0.1
+          smbclient -U workgroup/admin%password1 //172.28.0.2/sambashare -c "get flag.txt /tmp/flag.txt"
+          rm -f /tmp/flag.txt
+          # simulate syslog over udp
+          logger --server 172.28.0.1 --port 514 "flag: c73facd983aea504fb5bb46c574aefa1"
+          # simulate https
+          curl --insecure -H 'authorization: flag 9c6b060cdbf3afd146143a3afe8bd5e7' https://172.28.0.1/flag
+          sleep 5
+        done
+        EOF
+        RUN chmod 777 /root/entrypoint.sh && apt update && apt install -y smbclient ncat curl
+    entrypoint: /root/entrypoint.sh
+    hostname: cron
+    networks:
+      eavesarp:
+        ipv4_address: 172.28.0.3
+#  bettercap:
+#    image: bettercap/bettercap:latest
+#    hostname: bettercap
+#    cap_add:
+#      - NET_ADMIN
+#      - SYS_ADMIN
+#    networks:
+#      eavesarp:
+#        ipv4_address: 172.28.0.87
+  attacker:
+    # Accessed by user to run eavesarp-ng
+    #
+    # Docker's pty breaks the terminal UI, so an SSH server
+    # runs in the foreground, which is accessible from the
+    # Docker host that's running the stack on 172.28.0.86:22
+    #
+    # PCredz is also installed to simplify extraction of the
+    # NTLMv2 password hash from the pcap.
+    #
+    # NOTE:
+    # - this container requires privileged capabilities (see cap_add)
+    # - ssh is not exposed for remote authentication
+    build:
+      context: .
+      dockerfile_inline: |
+        FROM debian:bookworm-20250428
+        SHELL ["/bin/bash", "-c"]
+        # install base dependencies
+        RUN apt update && apt install -y \
+          # install system tools and eavesarp dependencies
+          curl wget smbclient openssh-server tmux screen jq less git nano vim file \
+          libpcap0.8 libnetfilter-conntrack3 iproute2 nftables net-tools inetutils-ping && \
+          # install eavesarp
+          wget -O /sbin/eavesarp-ng https://github.com/ImpostorKeanu/eavesarp-ng/releases/download/alpha-v0.1.4-release/eavesarp && \
+          chmod 777 /sbin/eavesarp-ng
+        # install PCredz
+        RUN \
+          # install dependencies
+          apt install -y \
+            tshark bash-doc bash-completion \
+            python3-pip libpcap-dev file iproute2 python3-venv && \
+          # get the repository and link
+          git clone https://github.com/lgandx/PCredz /opt/PCredz && ln -s /opt/PCredz/Pcredz /sbin/Pcredz && \
+          # initialize virtual environment
+          python3 -m venv /root/pyenv && \
+          source /root/pyenv/bin/activate && \
+          # install more dependencies
+          python3 -m pip install Cython python-libpcap && \
+          # always source environment upon login
+          echo "source ~/pyenv/bin/activate" >> /root/.bashrc
+        # set blank root password and configure ssh
+        RUN \
+          passwd -d root && \
+          mkdir -p /run/sshd && \
+          echo "PermitRootLogin yes" >> /etc/ssh/sshd_config && \
+          echo "PermitEmptyPasswords yes" >> /etc/ssh/sshd_config && \
+          echo "PasswordAuthentication yes" >> /etc/ssh/sshd_config && \
+          echo "ChallengeResponseAuthentication no" >> /etc/ssh/sshd_config
+    entrypoint: /usr/sbin/sshd -f /etc/ssh/sshd_config -D
+    hostname: attacker
+    volumes:
+      - /home/archangel/git/eavesarp-ng/cmd/eavesarp-ng:/sbin/eavesarp-ng
+    cap_add:
+      - NET_ADMIN
+    networks:
+      eavesarp:
+        ipv4_address: 172.28.0.86
+networks:
+  eavesarp:
+    enable_ipv4: true
+    ipam:
+      driver: default
+      config:
+        - subnet: "172.28.0.0/24"
+          gateway: "172.28.0.254"
