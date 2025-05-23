@@ -22,6 +22,8 @@ eavesarp-ng start -v debug -i eth0
 
 # TLS Splitting
 
+TLS splitting is automatically enabled and managed by Eavesarp.
+
 This capability allows us to intercept TLS tunnels and extract clear text application data relayed between the [[notes/Conversation|conversation]] [[notes/ARP Sender|sender]] and the [[notes/ARP Target|target]]. Intercepted data is written to the [[#Data JSONL File]].
 
 ## How it Works

@@ -4,3 +4,4 @@
 *.json
 *.jsonl
 cmd/eavesarp-ng
+eavesarp-docs/.obsidian/
