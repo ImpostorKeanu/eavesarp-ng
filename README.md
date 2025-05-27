@@ -19,7 +19,7 @@ techniques, designed for security researchers and network administrators.
 Eavesarp uses `nft` and `conntrack` to proxy traffic from poisoned senders.
 
 ```bash
-apt update && apt install -y nft conntrack
+apt update && apt install -y nft nftables conntrack
 ```
 
 # Usage
