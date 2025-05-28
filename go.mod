@@ -8,7 +8,7 @@ require (
 	github.com/charmbracelet/lipgloss v1.0.0
 	github.com/enescakir/emoji v1.0.0
 	github.com/google/gopacket v1.1.19
-	github.com/impostorkeanu/gosplit v0.1.2
+	github.com/impostorkeanu/gosplit v0.1.3-0.20250527105655-7f78114a3004
 	github.com/lrstanley/bubblezone v0.0.0-20250110055121-b45205ce63e2
 	github.com/spf13/cobra v1.9.1
 	go.uber.org/zap v1.27.0
@@ -17,6 +17,7 @@ require (
 
 require (
 	github.com/BurntSushi/toml v0.4.1 // indirect
+	github.com/KatelynHaworth/go-tproxy v0.0.0-20190726054950-ef7efd7f24ed // indirect
 	github.com/atotto/clipboard v0.1.4 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/aymanbagabas/go-udiff v0.2.0 // indirect

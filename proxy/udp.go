@@ -3,11 +3,11 @@ package proxy
 import (
 	"context"
 	"errors"
+	"fmt"
 	"github.com/impostorkeanu/eavesarp-ng/misc"
 	"go.uber.org/zap"
 	"io"
 	"net"
-	"sync"
 	"time"
 )
 
@@ -16,15 +16,14 @@ import (
 
 type (
 	UDPCfg struct {
-		// connMap is a mapping of source misc.Addr to downstream net.IP
+		// downstreams is a mapping of source misc.Addr to downstream net.IP
 		// instances.
 		//
 		// Records found here are set by eavesarp_ng.AttackSnac while
 		// poisoning victims.
-		connMap    *sync.Map
-		spoofedMap *sync.Map
-		log        *zap.Logger // for log events
-		dataW      io.Writer   // for writing misc.AttackData records
+		downstreams misc.Downstreams
+		log         *zap.Logger // for log events
+		dataW       io.Writer   // for writing misc.AttackData records
 	}
 
 	// UDPServer is a UDP proxy capable of relaying UDP packets to downstreams
@@ -35,12 +34,11 @@ type (
 	}
 )
 
-func NewUDPCfg(conAddrs, spoofedAddrs *sync.Map, log *zap.Logger, dataW io.Writer) UDPCfg {
+func NewUDPCfg(downstreams misc.Downstreams, log *zap.Logger, dataW io.Writer) UDPCfg {
 	return UDPCfg{
-		spoofedMap: spoofedAddrs,
-		connMap:    conAddrs,
-		log:        log,
-		dataW:      dataW,
+		downstreams: downstreams,
+		log:         log,
+		dataW:       dataW,
 	}
 }
 
@@ -82,6 +80,8 @@ func (s *UDPServer) Serve(ctx context.Context) (err error) {
 
 			// proxy
 			var pAddrInf misc.Addr
+			// TODO tproxy update will break this....localaddr is now the real address
+			//   being requested
 			if pAddrInf, e = misc.NewAddr(s.conn.LocalAddr(), "udp"); e != nil {
 				s.Cfg.log.Error("unhandled error while getting proxy address for udp packet", zap.Error(e))
 				continue
@@ -94,15 +94,26 @@ func (s *UDPServer) Serve(ctx context.Context) (err error) {
 				continue
 			}
 
+			var origDestA misc.Addr
+			if i, p, e := net.SplitHostPort(s.conn.LocalAddr().String()); e != nil {
+				s.Cfg.log.Error("failed to parse local address while handling udp packet", zap.Error(e))
+				continue
+			} else {
+				origDestA = misc.Addr{
+					IP:        i,
+					Port:      p,
+					Transport: misc.UDPTransport,
+				}
+			}
+
 			// TODO this is jank af and probably needs to be redesigned
 			//   seems to be a race condition where af_packet doesn't receive
 			//   update the address map in time
 			// downstream
 			var dsAddrInf *misc.Addr
 			for i := 0; i < 5 && dsAddrInf == nil; i++ {
-				if v, ok := s.Cfg.connMap.Load(vAddrInf); ok {
-					x := v.(misc.Addr)
-					dsAddrInf = &x
+				if v := s.Cfg.downstreams.Load(vAddrInf.IP, origDestA.IP); v != nil {
+					dsAddrInf = v
 					break
 				}
 				time.Sleep(5 * time.Millisecond)
@@ -112,24 +123,20 @@ func (s *UDPServer) Serve(ctx context.Context) (err error) {
 			// LOG VICTIM DATA
 			//================
 
-			var (
-				vA misc.VictimAddr
-				sA *misc.Addr
-			)
-			if vA, sA, err = misc.NewVictimAddr(vAddrInf.IP, vAddrInf.Port, s.Cfg.spoofedMap, misc.UDPTransport); err != nil {
-				s.Cfg.log.Error("failed to parse victim address while handling udp packet", zap.Error(err))
-			}
-
 			lData := misc.AttackData{
 				Sender:         misc.VictimDataSender,
-				VictimAddr:     vA,
 				ProxyAddr:      pAddrInf,
 				DownstreamAddr: dsAddrInf,
 				Transport:      misc.UDPTransport,
 				Raw:            buf[:n],
 			}
-			if sA != nil {
-				lData.SpoofedAddr = *sA
+
+			if a, p, err := net.SplitHostPort(s.conn.LocalAddr().String()); err != nil {
+				err = fmt.Errorf("failed to parse local address while handling udp packet: %w", err)
+				s.Cfg.log.Error(err.Error(), zap.Error(err))
+				return err
+			} else {
+				lData.VictimAddr, lData.SpoofedAddr = misc.NewVicSpoofedAddr(vAddrInf.IP, vAddrInf.Port, a, p, misc.UDPTransport)
 			}
 
 			if n > 0 {

@@ -6,9 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"github.com/florianl/go-conntrack"
-	"github.com/google/gopacket"
-	"github.com/google/gopacket/layers"
+	"github.com/KatelynHaworth/go-tproxy"
 	"github.com/google/nftables"
 	"github.com/impostorkeanu/eavesarp-ng/crt"
 	"github.com/impostorkeanu/eavesarp-ng/db"
@@ -21,6 +19,7 @@ import (
 	"io"
 	_ "modernc.org/sqlite"
 	"net"
+	"net/netip"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -86,16 +85,7 @@ type (
 		// port with a downstream (destination) IP address.
 		//
 		// The type for both the key and value is misc.Addr.
-		downstreams *sync.Map
-
-		// spoofed maps source addresses to ARP addresses that have been spoofed.
-		//
-		// This reveals the pre-DNAT destination address of the sender connection
-		// set by sniff.AttackSNAC.
-		//
-		// Both the key is of type string and the value type is misc.Addr. The
-		// key is SOURCE_ADDR:SOURCE_PORT.
-		spoofed *sync.Map
+		downstreams misc.Downstreams
 
 		// defDownstreamIP describes a TCP listener that will receive connections
 		// for all AITM attacks without a downstream set during configuration.
@@ -222,8 +212,7 @@ func NewCfg(ctx context.Context, dsn string, ifaceName, ifaceAddr string, log *z
 	cfg.db, err = cfg.initDb(dsn)
 	cfg.dns.failCount = NewFailCounter(DnsMaxFailures)
 
-	cfg.aitm.downstreams = new(sync.Map)
-	cfg.aitm.spoofed = new(sync.Map)
+	cfg.aitm.downstreams = misc.Downstreams{Map: new(sync.Map)}
 
 	//============================================
 	// APPLY OPTIONS AND START SUPPORTING ROUTINES
@@ -325,7 +314,7 @@ func (cfg *Cfg) StartUDPProxy(ctx context.Context, addr string) (net.Addr, error
 	a.Transport = misc.UDPTransport
 	cfg.aitm.SetUDPProxyAddr(a)
 	go func() {
-		pCfg := proxy.NewUDPCfg(cfg.aitm.downstreams, cfg.aitm.spoofed, cfg.log, cfg.dataW)
+		pCfg := proxy.NewUDPCfg(cfg.aitm.downstreams, cfg.log, cfg.dataW)
 		if e := proxy.NewUDPServer(pCfg, conn).Serve(ctx); e != nil {
 			cfg.log.Error("udp proxy server failed", zap.Error(e))
 			cfg.errC <- err
@@ -333,6 +322,16 @@ func (cfg *Cfg) StartUDPProxy(ctx context.Context, addr string) (net.Addr, error
 	}()
 
 	return conn.LocalAddr(), nil
+}
+
+type (
+	tpListener struct {
+		net.Listener
+	}
+)
+
+func (l tpListener) Accept() (net.Conn, error) {
+	return l.Listener.(*tproxy.Listener).AcceptTProxy()
 }
 
 // StartTCPProxy runs a proxy server in a distinct routine that will receive
@@ -343,21 +342,29 @@ func (cfg *Cfg) StartTCPProxy(ctx context.Context, addr string) (net.Addr, error
 		return nil, fmt.Errorf("invalid address value: %w", err)
 	}
 
-	var l net.Listener
-	if l, err = net.Listen("tcp4", addr); err != nil {
+	var (
+		a  netip.AddrPort // addrPort for tproxy listener
+		l  net.Listener   // tproxy listener
+		mA misc.Addr      // misc address
+	)
+
+	// create the tproxy listener
+	a, err = netip.ParseAddrPort(addr)
+	tcpAddr := net.TCPAddrFromAddrPort(a)
+	if l, err = tproxy.ListenTCP("tcp4", tcpAddr); err != nil {
 		return nil, fmt.Errorf("failed to listen on tcp tcp: %w", err)
 	}
 
-	var a misc.Addr
-	if a.IP, a.Port, err = net.SplitHostPort(l.Addr().String()); err != nil {
+	// initialize the misc addr
+	if mA.IP, mA.Port, err = net.SplitHostPort(l.Addr().String()); err != nil {
 		return nil, fmt.Errorf("failed to get tcp listener address: %w", err)
 	}
 
-	a.Transport = misc.TCPTransport
-	cfg.aitm.SetTCPProxyAddr(a)
+	mA.Transport = misc.TCPTransport
+	cfg.aitm.SetTCPProxyAddr(mA)
 	go func() {
-		pCfg := proxy.NewTCPCfg(cfg.aitm.downstreams, cfg.aitm.spoofed, cfg.GetProxyCertificateFunc, cfg.log, cfg.dataW)
-		if e := gs.NewProxyServer(pCfg, l).Serve(ctx); e != nil {
+		pCfg := proxy.NewTCPCfg(cfg.aitm.downstreams, cfg.GetProxyCertificateFunc, cfg.log, cfg.dataW)
+		if e := gs.NewProxyServer(pCfg, tpListener{l}).Serve(ctx); e != nil {
 			cfg.log.Error("default tcp proxy server failed", zap.Error(e))
 			cfg.errC <- err
 		}
@@ -641,72 +648,83 @@ func (cfg *Cfg) emptyAddr(addr string) (string, error) {
 // - the packet doesn't have an IPv4, TCP, or UDP layer.
 //
 // Spoofed IPs are stored only for TCP connections.
-func (cfg *Cfg) mapConn(packet gopacket.Packet, downstream net.IP) {
-
-	if ipL, ok := packet.Layer(layers.LayerTypeIPv4).(*layers.IPv4); ok {
-
-		// key for the spoofed and downstream maps
-		key := misc.Addr{IP: ipL.SrcIP.To4().String()}
-		var dsVal misc.Addr
-		if downstream != nil {
-			dsVal.IP = downstream.To4().String()
-		}
-
-		// handle transport layer
-		if tcp, ok := packet.Layer(layers.LayerTypeTCP).(*layers.TCP); ok && tcp.SYN {
-			// it's tcp
-			key.Transport, key.Port = misc.TCPTransport, fmt.Sprintf("%d", tcp.SrcPort)
-			dsVal.Transport, dsVal.Port = misc.TCPTransport, fmt.Sprintf("%d", tcp.DstPort)
-		} else if udp, ok := packet.Layer(layers.LayerTypeUDP).(*layers.UDP); ok {
-			// TODO should probably look into refining this
-			//  one of the benefits of conntrack is that it could infer the state
-			//  of a UDP "connection"....
-			// it's udp
-			key.Transport, key.Port = misc.UDPTransport, fmt.Sprintf("%d", udp.SrcPort)
-			dsVal.Transport, dsVal.Port = misc.UDPTransport, fmt.Sprintf("%d", udp.DstPort)
-		} else {
-			// TODO may need to handle sctp in the future
-			return
-		}
-
-		// map the spoofed address
-		spoofedVal := dsVal                      // copy
-		spoofedVal.IP = ipL.DstIP.To4().String() // get the spoofed ip from the packet
-		cfg.aitm.spoofed.Store(key.String(), spoofedVal)
-
-		if downstream != nil {
-			// map the downstream
-			cfg.aitm.downstreams.Store(key, dsVal)
-		}
-	}
-
-	return
-}
+//func (cfg *Cfg) mapConn(packet gopacket.Packet, downstream net.IP) {
+//
+//	if ipL, ok := packet.Layer(layers.LayerTypeIPv4).(*layers.IPv4); ok {
+//
+//		// key for the spoofed and downstream maps
+//		key := misc.Addr{IP: ipL.SrcIP.To4().String()}
+//		var dsVal misc.Addr
+//		if downstream != nil {
+//			dsVal.IP = downstream.To4().String()
+//		}
+//
+//		// handle transport layer
+//		if tcp, ok := packet.Layer(layers.LayerTypeTCP).(*layers.TCP); ok && tcp.SYN {
+//			// it's tcp
+//			key.Transport, key.Port = misc.TCPTransport, fmt.Sprintf("%d", tcp.SrcPort)
+//			dsVal.Transport, dsVal.Port = misc.TCPTransport, fmt.Sprintf("%d", tcp.DstPort)
+//		} else if udp, ok := packet.Layer(layers.LayerTypeUDP).(*layers.UDP); ok {
+//			// TODO should probably look into refining this
+//			//  one of the benefits of conntrack is that it could infer the state
+//			//  of a UDP "connection"....
+//			// it's udp
+//			key.Transport, key.Port = misc.UDPTransport, fmt.Sprintf("%d", udp.SrcPort)
+//			dsVal.Transport, dsVal.Port = misc.UDPTransport, fmt.Sprintf("%d", udp.DstPort)
+//		} else {
+//			// TODO may need to handle sctp in the future
+//			return
+//		}
+//
+//		// map the spoofed address
+//		spoofedVal := dsVal                      // copy
+//		spoofedVal.IP = ipL.DstIP.To4().String() // get the spoofed ip from the packet
+//		cfg.aitm.spoofed.Store(key.String(), spoofedVal)
+//
+//		if downstream != nil {
+//			// map the downstream
+//			cfg.aitm.downstreams.Store(key, dsVal)
+//		}
+//	}
+//
+//	return
+//}
 
 // destroyConnFilterFunc returns a hook for cleaning up destroyed
 // UDP and TCP connections.
-func (cfg *Cfg) destroyConnFilterFunc() conntrack.HookFunc {
-	return func(con conntrack.Con) int {
-		// dereferencing this pointer may seem reckless, but it's fine
-		// because the filter only accepts tcp/udp traffic
-		t := misc.ConntrackTransportFromProtoNum(*con.Origin.Proto.Number)
-		if t == "" {
-			return 0
-		}
-		k := misc.Addr{
-			IP:        con.Origin.Src.To4().String(),
-			Port:      fmt.Sprintf("%d", *con.Origin.Proto.SrcPort),
-			Transport: t}
-		cfg.aitm.downstreams.Delete(k)
-		if k.Transport == misc.TCPTransport {
-			cfg.aitm.spoofed.Delete(k.String())
-		}
-		cfg.log.Debug("cleaning destroyed connection",
-			zap.Any("source", k),
-			zap.String("transport", string(t)))
-		return 0
-	}
-}
+//func (cfg *Cfg) destroyConnFilterFunc() conntrack.HookFunc {
+//	return func(con conntrack.Con) int {
+//		// dereferencing this pointer may seem reckless, but it's fine
+//		// because the filter only accepts tcp/udp traffic
+//		t := misc.ConntrackTransportFromProtoNum(*con.Origin.Proto.Number)
+//		if t == "" {
+//			return 0
+//		}
+//		k := misc.DownstreamKey{
+//			VictimIP: misc.Addr{
+//				IP:        con.Origin.Src.To4().String(),
+//				Port:      fmt.Sprintf("%d", *con.Origin.Proto.SrcPort),
+//				Transport: t},
+//			OrigDestIP: misc.Addr{
+//				IP:        con.Origin.Dst.To4().String(),
+//				Port:      fmt.Sprintf("%d", *con.Origin.Proto.DstPort),
+//				Transport: t,
+//			},
+//		}
+//		cfg.aitm.downstreams.Delete(k)
+//		k := misc.Addr{
+//			IP:        con.Origin.Src.To4().String(),
+//			Port:      fmt.Sprintf("%d", *con.Origin.Proto.SrcPort),
+//			Transport: t}
+//		if t == misc.TCPTransport {
+//			cfg.aitm.spoofed.Delete(k.String())
+//		}
+//		cfg.log.Debug("cleaning destroyed connection",
+//			zap.Any("key", k),
+//			zap.String("transport", string(t)))
+//		return 0
+//	}
+//}
 
 // optInt returns an integer weight assigned to known NewCfg options.
 func optInt(v any) (i int, err error) {

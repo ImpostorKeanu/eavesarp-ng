@@ -1,6 +1,8 @@
 github.com/BurntSushi/toml v0.3.1/go.mod h1:xHWCNGjB5oqiDr8zfno3MHue2Ht5sIBksp03qcyfWMU=
 github.com/BurntSushi/toml v0.4.1 h1:GaI7EiDXDRfa8VshkTj7Fym7ha+y8/XxIgD2okUIjLw=
 github.com/BurntSushi/toml v0.4.1/go.mod h1:CxXYINrC8qIiEnFrOxCa7Jy5BFHlXnUU2pbicEuybxQ=
+github.com/KatelynHaworth/go-tproxy v0.0.0-20190726054950-ef7efd7f24ed h1:sETavjcDf+2zMY20FVSpT9IPsYa5jYCUOynJ6i5Ticc=
+github.com/KatelynHaworth/go-tproxy v0.0.0-20190726054950-ef7efd7f24ed/go.mod h1:CLBA/eK9p2xm22fGi8HniofETrcq71R1/8LJ8ql4Y0I=
 github.com/atotto/clipboard v0.1.4 h1:EH0zSVneZPSuFR11BlR9YppQTVDbh5+16AmcJi4g1z4=
 github.com/atotto/clipboard v0.1.4/go.mod h1:ZY9tmq7sm5xIbd9bOK4onWV4S6X0u6GY7Vn0Yu86PYI=
 github.com/aymanbagabas/go-osc52/v2 v2.0.1 h1:HwpRHbFMcZLEVr42D4p7XBqjyuxQH5SMiErDT4WkJ2k=
@@ -83,6 +85,8 @@ github.com/impostorkeanu/gosplit v0.1.1 h1:G0YnJlZBkvdl9657yITkAzsmI6pJ96To3sxrK
 github.com/impostorkeanu/gosplit v0.1.1/go.mod h1:HBM1GaK1dX9KGp8y/r8L3o5R0o7p8PVA2qE3/A6180Y=
 github.com/impostorkeanu/gosplit v0.1.2 h1:UjEcHqbqbZk6hKGOVs5Zq3W5Fq26zeThZeXCYgyLLyc=
 github.com/impostorkeanu/gosplit v0.1.2/go.mod h1:HBM1GaK1dX9KGp8y/r8L3o5R0o7p8PVA2qE3/A6180Y=
+github.com/impostorkeanu/gosplit v0.1.3-0.20250527105655-7f78114a3004 h1:g1QpAFWW2/vdisF/cPmINSqxc0PSOOTlqU6nSm97sg4=
+github.com/impostorkeanu/gosplit v0.1.3-0.20250527105655-7f78114a3004/go.mod h1:DauVkBEmfdsdvVWPEVwujuxSkY2UhxhoogXIKO4prKU=
 github.com/inconshreveable/mousetrap v1.1.0 h1:wN+x4NVGpMsO7ErUn/mUI3vEoE6Jt13X2s0bqwp9tc8=
 github.com/inconshreveable/mousetrap v1.1.0/go.mod h1:vpF70FUmC8bwa3OWnCshd2FqLfsEA9PFc4w1p2J65bw=
 github.com/josharian/native v0.0.0-20200817173448-b6b71def0850 h1:uhL5Gw7BINiiPAo24A2sxkcDI0Jt/sqp1v5xQCniEFA=

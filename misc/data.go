@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"sync"
 	"time"
 )
 
@@ -105,19 +104,16 @@ func (d *AttackData) Log(w io.Writer) (err error) {
 	return
 }
 
-// NewVictimAddr initializes a VictimAddr type and obtains the
+// NewVicSpoofedAddr initializes a VictimAddr type and obtains the
 // DstPort value from spoofed, which is a mapping of:
 //
 // map[VICTIM_IP:VICTIM_SRC_PORT]=SPOOFED_IP:DST_PORT
-func NewVictimAddr(vIP, vSrcPort string, spoofed *sync.Map, t Transport) (victimA VictimAddr, spoofedA *Addr, err error) {
+func NewVicSpoofedAddr(vIP, vSrcPort, spoofedIP, spoofedPort string, t Transport) (victimA VictimAddr, spoofedA Addr) {
 	victimA = VictimAddr{IP: vIP, SrcPort: vSrcPort, Transport: t}
-	if v, ok := spoofed.Load(victimA.SrcString()); !ok {
-		err = errors.New("failed to recover dst port from spoofed addresses")
-	} else if sA, ok := v.(Addr); !ok {
-		err = errors.New("unsupported type returned from spoofmap")
-	} else {
-		spoofedA = &sA
-		victimA.DstPort = sA.Port
+	spoofedA = Addr{
+		IP:        spoofedIP,
+		Port:      spoofedPort,
+		Transport: t,
 	}
-	return victimA, spoofedA, nil
+	return
 }

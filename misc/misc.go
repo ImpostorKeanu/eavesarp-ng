@@ -3,6 +3,8 @@ package misc
 import (
 	"errors"
 	"net"
+	"strings"
+	"sync"
 )
 
 // Connection filtering requires protocol numbers.
@@ -29,7 +31,38 @@ type (
 	// Transport indicates the transport protocol of the
 	// connection. See TCPTransport and UDPTransport.
 	Transport string
+
+	Downstreams struct {
+		*sync.Map
+	}
 )
+
+func downstreamKey(victimIP, origDestIP string) string {
+	return strings.Join([]string{victimIP, origDestIP}, ":")
+}
+
+func (d *Downstreams) Store(victimIP, origDestIP string, v Addr) bool {
+	k := downstreamKey(victimIP, origDestIP)
+	if _, b := d.Map.Load(k); b {
+		return false
+	}
+	d.Map.Store(k, v)
+	return true
+}
+
+func (d *Downstreams) Load(victimIP, origDestIP string) *Addr {
+	k := downstreamKey(victimIP, origDestIP)
+	if v, b := d.Map.Load(k); b {
+		a := v.(Addr)
+		return &a
+	}
+	return nil
+}
+
+func (d *Downstreams) Delete(victimIP, origDestIP string) {
+	k := downstreamKey(victimIP, origDestIP)
+	d.Map.Delete(k)
+}
 
 func ConntrackTransportFromProtoNum(i uint8) (t Transport) {
 	// determine the protocol of the connection

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/florianl/go-conntrack"
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
@@ -331,38 +330,38 @@ func AttackSNAC(ctx context.Context, cfg *Cfg, senIp net.IP, tarIp net.IP, downs
 	//   the target address on the Cfg
 	// - makes information available for connection handling later
 
-	var nfct *conntrack.Nfct
-	nfct, err = conntrack.Open(&conntrack.Config{})
-	if err != nil {
-		logFields = append(logFields, zap.Error(err))
-		cfg.log.Error("failed to open connection to netfilter", logFields...)
-		return
-	}
-	defer nfct.Close()
-
-	// trigger connection tracking cleanup when conntrack signals destruction
-	if downstream != nil {
-		err = nfct.RegisterFiltered(ctx, conntrack.Conntrack, conntrack.NetlinkCtDestroy,
-			[]conntrack.ConnAttr{
-				// Source IP address (sender)
-				{
-					Type: conntrack.AttrOrigIPv4Src,
-					Data: senIp.To4(),
-					Mask: []byte{0xff, 0xff, 0xff, 0xff},
-				},
-				// Destination IP address (target -- poisoned cache record btw)
-				{
-					Type: conntrack.AttrOrigIPv4Dst,
-					Data: tarIp.To4(),
-					Mask: []byte{0xff, 0xff, 0xff, 0xff},
-				},
-			},
-			cfg.destroyConnFilterFunc())
-		if err != nil {
-			err = fmt.Errorf("failed to register nfct destroyed connection filter: %w", err)
-			return
-		}
-	}
+	//var nfct *conntrack.Nfct
+	//nfct, err = conntrack.Open(&conntrack.Config{})
+	//if err != nil {
+	//	logFields = append(logFields, zap.Error(err))
+	//	cfg.log.Error("failed to open connection to netfilter", logFields...)
+	//	return
+	//}
+	//defer nfct.Close()
+	//
+	//// trigger connection tracking cleanup when conntrack signals destruction
+	//if downstream != nil {
+	//	err = nfct.RegisterFiltered(ctx, conntrack.Conntrack, conntrack.NetlinkCtDestroy,
+	//		[]conntrack.ConnAttr{
+	//			// Source IP address (sender)
+	//			{
+	//				Type: conntrack.AttrOrigIPv4Src,
+	//				Data: senIp.To4(),
+	//				Mask: []byte{0xff, 0xff, 0xff, 0xff},
+	//			},
+	//			// Destination IP address (target -- poisoned cache record btw)
+	//			{
+	//				Type: conntrack.AttrOrigIPv4Dst,
+	//				Data: tarIp.To4(),
+	//				Mask: []byte{0xff, 0xff, 0xff, 0xff},
+	//			},
+	//		},
+	//		cfg.destroyConnFilterFunc())
+	//	if err != nil {
+	//		err = fmt.Errorf("failed to register nfct destroyed connection filter: %w", err)
+	//		return
+	//	}
+	//}
 
 	//========================
 	// POISON VICTIM ARP CACHE
@@ -415,6 +414,8 @@ func AttackSNAC(ctx context.Context, cfg *Cfg, senIp net.IP, tarIp net.IP, downs
 				cfg.log.Error("failed to remove spoofed ip from nft set",
 					zap.Error(err), zap.String("ip", senIp.String()))
 			}
+			// TODO update cfg.aitm.spoofed here, too
+			cfg.aitm.downstreams.Delete(senIp.To4().String(), downstream.To4().String())
 			return
 		case packet := <-in:
 
@@ -446,9 +447,9 @@ func AttackSNAC(ctx context.Context, cfg *Cfg, senIp net.IP, tarIp net.IP, downs
 				continue
 			}
 
-			if !isDownstream {
-				cfg.mapConn(packet, downstream)
-			}
+			//if !isDownstream {
+			//	cfg.mapConn(packet, downstream)
+			//}
 
 			// Run handlers
 			go func() {
