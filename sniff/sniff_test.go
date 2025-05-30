@@ -11,11 +11,11 @@ import (
 
 func newCfg() (cfg Cfg, err error) {
 	logger := zap.NewExample()
-	return NewCfg("/tmp/eatest.db", "enp13s0", "", logger,
+	return NewCfg(context.TODO(), "/tmp/eatest.db", "enp13s0", "", logger,
 		os.Stdout,
-		LocalTCPProxyServerAddrOpt(""),
-		LocalUDPProxyServerAddrOpt(""),
-		//DefaultDownstreamOpt(""),
+		LocalTCPProxyServerAddrOpt("0.0.0.0:50080"),
+		LocalUDPProxyServerAddrOpt("0.0.0.0:50080"),
+		DefaultDownstreamOpt("192.168.86.174"),
 	)
 }
 

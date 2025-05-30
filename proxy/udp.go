@@ -21,9 +21,10 @@ type (
 		//
 		// Records found here are set by eavesarp_ng.AttackSnac while
 		// poisoning victims.
-		downstreams misc.Downstreams
-		log         *zap.Logger // for log events
-		dataW       io.Writer   // for writing misc.AttackData records
+		downstreams   misc.Downstreams
+		defDownstream *string
+		log           *zap.Logger // for log events
+		dataW         io.Writer   // for writing misc.AttackData records
 	}
 
 	// UDPServer is a UDP proxy capable of relaying UDP packets to downstreams
@@ -34,11 +35,12 @@ type (
 	}
 )
 
-func NewUDPCfg(downstreams misc.Downstreams, log *zap.Logger, dataW io.Writer) UDPCfg {
+func NewUDPCfg(downstreams misc.Downstreams, defDownstream *string, log *zap.Logger, dataW io.Writer) UDPCfg {
 	return UDPCfg{
-		downstreams: downstreams,
-		log:         log,
-		dataW:       dataW,
+		downstreams:   downstreams,
+		defDownstream: defDownstream,
+		log:           log,
+		dataW:         dataW,
 	}
 }
 
@@ -78,8 +80,13 @@ func (s *UDPServer) Serve(ctx context.Context) (err error) {
 			// GET ADDRESS INFORMATION FOR LOGGING
 			//====================================
 
+			var (
+				pAddrInf misc.Addr // proxy address info
+				vAddrInf misc.Addr // victim address info
+				tAddrInf misc.Addr // target address info
+			)
+
 			// proxy
-			var pAddrInf misc.Addr
 			// TODO tproxy update will break this....localaddr is now the real address
 			//   being requested
 			if pAddrInf, e = misc.NewAddr(s.conn.LocalAddr(), "udp"); e != nil {
@@ -87,36 +94,41 @@ func (s *UDPServer) Serve(ctx context.Context) (err error) {
 				continue
 			}
 
-			// victim
-			var vAddrInf misc.Addr
 			if vAddrInf, e = misc.NewAddr(addr, "udp"); e != nil {
 				s.Cfg.log.Error("failed to parse udp address while handling udp packet", zap.Error(e))
 				continue
 			}
 
-			var origDestA misc.Addr
+			// NOTE: since we're using TPROXY, the connection's local address
+			// is the ARP target
 			if i, p, e := net.SplitHostPort(s.conn.LocalAddr().String()); e != nil {
 				s.Cfg.log.Error("failed to parse local address while handling udp packet", zap.Error(e))
 				continue
 			} else {
-				origDestA = misc.Addr{
+				tAddrInf = misc.Addr{
 					IP:        i,
 					Port:      p,
 					Transport: misc.UDPTransport,
 				}
 			}
 
-			// TODO this is jank af and probably needs to be redesigned
-			//   seems to be a race condition where af_packet doesn't receive
-			//   update the address map in time
-			// downstream
-			var dsAddrInf *misc.Addr
-			for i := 0; i < 5 && dsAddrInf == nil; i++ {
-				if v := s.Cfg.downstreams.Load(vAddrInf.IP, origDestA.IP); v != nil {
-					dsAddrInf = v
-					break
+			//=======================
+			// GET DOWNSTREAM ADDRESS
+			//=======================
+
+			var dsAddrInf *misc.Addr // downstream address
+			if v := s.Cfg.downstreams.Load(vAddrInf.IP, tAddrInf.IP); v != nil {
+				// got the downstream based on the victim and original destination
+				dsAddrInf = v
+				v.Transport = misc.UDPTransport
+				v.Port = tAddrInf.Port
+			} else if s.Cfg.defDownstream != nil {
+				// using default downstream
+				dsAddrInf = &misc.Addr{
+					IP:        *s.Cfg.defDownstream,
+					Port:      tAddrInf.Port,
+					Transport: misc.UDPTransport,
 				}
-				time.Sleep(5 * time.Millisecond)
 			}
 
 			//================

@@ -19,6 +19,7 @@ type (
 		// Note: mapping values are set by sniff.AttackSnac
 		// during poisoning attacks.
 		downstreams          misc.Downstreams
+		defDownstream        *string
 		downstreamCertGetter DsCertGetter // function to get a TLS certificate for downstreams
 		log                  *zap.Logger  // logger for log events
 		dataW                io.Writer    // writer to receive JSON data
@@ -38,10 +39,11 @@ var (
 
 // NewTCPCfg initializes and returns a pointer to a TCPCfg, which
 // implements all necessary GoSplit interfaces.
-func NewTCPCfg(downstreams misc.Downstreams, downstreamCertGetter DsCertGetter, log *zap.Logger, dataLog io.Writer) *TCPCfg {
+func NewTCPCfg(downstreams misc.Downstreams, defDownstream *string, downstreamCertGetter DsCertGetter, log *zap.Logger, dataLog io.Writer) *TCPCfg {
 	return &TCPCfg{
 		log:                  log,
 		downstreams:          downstreams,
+		defDownstream:        defDownstream,
 		downstreamCertGetter: downstreamCertGetter,
 		dataW:                dataLog,
 	}
@@ -100,7 +102,12 @@ func (cfg *TCPCfg) GetDownstreamAddr(vicA gs.Addr, _ gs.Addr, origDestA gs.Addr)
 	if d := cfg.downstreams.Load(vicA.IP, origDestA.IP); d != nil {
 		ds = &gs.Addr{
 			IP:   d.IP,
-			Port: d.Port,
+			Port: origDestA.Port,
+		}
+	} else if cfg.defDownstream != nil {
+		ds = &gs.Addr{
+			IP:   *cfg.defDownstream,
+			Port: origDestA.Port,
 		}
 	}
 	return

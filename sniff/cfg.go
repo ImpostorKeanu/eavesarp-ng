@@ -313,8 +313,15 @@ func (cfg *Cfg) StartUDPProxy(ctx context.Context, addr string) (net.Addr, error
 
 	a.Transport = misc.UDPTransport
 	cfg.aitm.SetUDPProxyAddr(a)
+
+	var defDs *string
+	if v := cfg.aitm.GetDefDownstreamIP(); v != nil {
+		x := v.To4().String()
+		defDs = &x
+	}
+
 	go func() {
-		pCfg := proxy.NewUDPCfg(cfg.aitm.downstreams, cfg.log, cfg.dataW)
+		pCfg := proxy.NewUDPCfg(cfg.aitm.downstreams, defDs, cfg.log, cfg.dataW)
 		if e := proxy.NewUDPServer(pCfg, conn).Serve(ctx); e != nil {
 			cfg.log.Error("udp proxy server failed", zap.Error(e))
 			cfg.errC <- err
@@ -362,8 +369,15 @@ func (cfg *Cfg) StartTCPProxy(ctx context.Context, addr string) (net.Addr, error
 
 	mA.Transport = misc.TCPTransport
 	cfg.aitm.SetTCPProxyAddr(mA)
+
+	var def *string
+	if a := cfg.aitm.GetDefDownstreamIP(); a != nil {
+		x := a.To4().String()
+		def = &x
+	}
+
 	go func() {
-		pCfg := proxy.NewTCPCfg(cfg.aitm.downstreams, cfg.GetProxyCertificateFunc, cfg.log, cfg.dataW)
+		pCfg := proxy.NewTCPCfg(cfg.aitm.downstreams, def, cfg.GetProxyCertificateFunc, cfg.log, cfg.dataW)
 		if e := gs.NewProxyServer(pCfg, tpListener{l}).Serve(ctx); e != nil {
 			cfg.log.Error("default tcp proxy server failed", zap.Error(e))
 			cfg.errC <- err
