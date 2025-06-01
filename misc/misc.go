@@ -64,18 +64,6 @@ func (d *Downstreams) Delete(victimIP, origDestIP string) {
 	d.Map.Delete(k)
 }
 
-func ConntrackTransportFromProtoNum(i uint8) (t Transport) {
-	// determine the protocol of the connection
-	// note: only tcp and udp are currently supported
-	switch i {
-	case TCPProtoNumber:
-		t = TCPTransport
-	case UDPProtoNumber:
-		t = UDPTransport
-	}
-	return
-}
-
 func (a Addr) String() string {
 	return net.JoinHostPort(a.IP, a.Port)
 }

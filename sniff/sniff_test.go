@@ -13,8 +13,8 @@ func newCfg() (cfg Cfg, err error) {
 	logger := zap.NewExample()
 	return NewCfg(context.TODO(), "/tmp/eatest.db", "enp13s0", "", logger,
 		os.Stdout,
-		LocalTCPProxyServerAddrOpt("0.0.0.0:50080"),
-		LocalUDPProxyServerAddrOpt("0.0.0.0:50080"),
+		LocalTCPProxyServerAddrOpt("127.0.0.1:50080"),
+		LocalUDPProxyServerAddrOpt("127.0.0.1:50080"),
 		DefaultDownstreamOpt("192.168.86.174"),
 	)
 }

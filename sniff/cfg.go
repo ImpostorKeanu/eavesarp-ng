@@ -302,7 +302,7 @@ func (cfg *Cfg) StartUDPProxy(ctx context.Context, addr string) (net.Addr, error
 	}
 
 	var conn *net.UDPConn
-	if conn, err = net.ListenUDP("udp4", x); err != nil {
+	if conn, err = tproxy.ListenUDP("udp4", x); err != nil {
 		return nil, fmt.Errorf("failed to listen udp: %w", err)
 	}
 
@@ -652,93 +652,6 @@ func (cfg *Cfg) emptyAddr(addr string) (string, error) {
 	}
 	return addr, nil
 }
-
-// mapConn updates the connection and spoofed IP maps with information
-// to enable post-DNAT connectivity and TLS certificate generation.
-//
-// No update is made if:
-//
-// - Downstream is nil
-// - the packet doesn't have an IPv4, TCP, or UDP layer.
-//
-// Spoofed IPs are stored only for TCP connections.
-//func (cfg *Cfg) mapConn(packet gopacket.Packet, downstream net.IP) {
-//
-//	if ipL, ok := packet.Layer(layers.LayerTypeIPv4).(*layers.IPv4); ok {
-//
-//		// key for the spoofed and downstream maps
-//		key := misc.Addr{IP: ipL.SrcIP.To4().String()}
-//		var dsVal misc.Addr
-//		if downstream != nil {
-//			dsVal.IP = downstream.To4().String()
-//		}
-//
-//		// handle transport layer
-//		if tcp, ok := packet.Layer(layers.LayerTypeTCP).(*layers.TCP); ok && tcp.SYN {
-//			// it's tcp
-//			key.Transport, key.Port = misc.TCPTransport, fmt.Sprintf("%d", tcp.SrcPort)
-//			dsVal.Transport, dsVal.Port = misc.TCPTransport, fmt.Sprintf("%d", tcp.DstPort)
-//		} else if udp, ok := packet.Layer(layers.LayerTypeUDP).(*layers.UDP); ok {
-//			// TODO should probably look into refining this
-//			//  one of the benefits of conntrack is that it could infer the state
-//			//  of a UDP "connection"....
-//			// it's udp
-//			key.Transport, key.Port = misc.UDPTransport, fmt.Sprintf("%d", udp.SrcPort)
-//			dsVal.Transport, dsVal.Port = misc.UDPTransport, fmt.Sprintf("%d", udp.DstPort)
-//		} else {
-//			// TODO may need to handle sctp in the future
-//			return
-//		}
-//
-//		// map the spoofed address
-//		spoofedVal := dsVal                      // copy
-//		spoofedVal.IP = ipL.DstIP.To4().String() // get the spoofed ip from the packet
-//		cfg.aitm.spoofed.Store(key.String(), spoofedVal)
-//
-//		if downstream != nil {
-//			// map the downstream
-//			cfg.aitm.downstreams.Store(key, dsVal)
-//		}
-//	}
-//
-//	return
-//}
-
-// destroyConnFilterFunc returns a hook for cleaning up destroyed
-// UDP and TCP connections.
-//func (cfg *Cfg) destroyConnFilterFunc() conntrack.HookFunc {
-//	return func(con conntrack.Con) int {
-//		// dereferencing this pointer may seem reckless, but it's fine
-//		// because the filter only accepts tcp/udp traffic
-//		t := misc.ConntrackTransportFromProtoNum(*con.Origin.Proto.Number)
-//		if t == "" {
-//			return 0
-//		}
-//		k := misc.DownstreamKey{
-//			VictimIP: misc.Addr{
-//				IP:        con.Origin.Src.To4().String(),
-//				Port:      fmt.Sprintf("%d", *con.Origin.Proto.SrcPort),
-//				Transport: t},
-//			OrigDestIP: misc.Addr{
-//				IP:        con.Origin.Dst.To4().String(),
-//				Port:      fmt.Sprintf("%d", *con.Origin.Proto.DstPort),
-//				Transport: t,
-//			},
-//		}
-//		cfg.aitm.downstreams.Delete(k)
-//		k := misc.Addr{
-//			IP:        con.Origin.Src.To4().String(),
-//			Port:      fmt.Sprintf("%d", *con.Origin.Proto.SrcPort),
-//			Transport: t}
-//		if t == misc.TCPTransport {
-//			cfg.aitm.spoofed.Delete(k.String())
-//		}
-//		cfg.log.Debug("cleaning destroyed connection",
-//			zap.Any("key", k),
-//			zap.String("transport", string(t)))
-//		return 0
-//	}
-//}
 
 // optInt returns an integer weight assigned to known NewCfg options.
 func optInt(v any) (i int, err error) {

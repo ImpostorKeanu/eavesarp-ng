@@ -34,7 +34,7 @@ type (
 		Sender DataSender `json:"sender"`
 		// VictimAddr is the address of the victim in the poisoning
 		// attack.
-		VictimAddr VictimAddr `json:"victim_address"`
+		VictimAddr Addr `json:"victim_address"`
 		// SpoofedAddr is the address set to our MAC address by poisoning
 		// the victim's ARP cache.
 		SpoofedAddr Addr `json:"spoofed_address"`
@@ -100,20 +100,6 @@ func (d *AttackData) Log(w io.Writer) (err error) {
 	b = append(b, '\n')
 	if _, err = w.Write(b); err != nil {
 		err = fmt.Errorf("failed to write data to log: %w", err)
-	}
-	return
-}
-
-// NewVicSpoofedAddr initializes a VictimAddr type and obtains the
-// DstPort value from spoofed, which is a mapping of:
-//
-// map[VICTIM_IP:VICTIM_SRC_PORT]=SPOOFED_IP:DST_PORT
-func NewVicSpoofedAddr(vIP, vSrcPort, spoofedIP, spoofedPort string, t Transport) (victimA VictimAddr, spoofedA Addr) {
-	victimA = VictimAddr{IP: vIP, SrcPort: vSrcPort, Transport: t}
-	spoofedA = Addr{
-		IP:        spoofedIP,
-		Port:      spoofedPort,
-		Transport: t,
 	}
 	return
 }

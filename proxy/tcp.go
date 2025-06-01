@@ -121,11 +121,12 @@ func (cfg *TCPCfg) connInfoToData(c gs.ConnInfo, data []byte, sender misc.DataSe
 	d := misc.AttackData{
 		Sender:         sender,
 		ProxyAddr:      misc.Addr{IP: c.Proxy.IP, Port: c.Proxy.Port, Transport: misc.TCPTransport},
+		VictimAddr:     misc.Addr{IP: c.Victim.IP, Port: c.Victim.Port, Transport: misc.TCPTransport},
+		SpoofedAddr:    misc.Addr{IP: c.Local.IP, Port: c.Local.Port, Transport: misc.TCPTransport},
 		Transport:      misc.TCPTransport,
 		Raw:            data,
 		DownstreamAddr: nil,
 	}
-	d.VictimAddr, d.SpoofedAddr = misc.NewVicSpoofedAddr(c.Victim.IP, c.Victim.Port, c.Local.IP, c.Local.Port, misc.TCPTransport)
 	if c.Downstream != nil {
 		d.DownstreamAddr = &misc.Addr{IP: c.Downstream.IP, Port: c.Downstream.Port, Transport: misc.TCPTransport}
 	}

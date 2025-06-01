@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/KatelynHaworth/go-tproxy"
 	"github.com/impostorkeanu/eavesarp-ng/misc"
 	"go.uber.org/zap"
 	"io"
@@ -63,16 +64,17 @@ func (s *UDPServer) Serve(ctx context.Context) (err error) {
 
 			var e error
 			var n int
-			var addr *net.UDPAddr
+			var vAddr, tAddr *net.UDPAddr
 
 			// read value larger than the average mtu
 			buf := make([]byte, 2048)
-			n, addr, e = s.conn.ReadFromUDP(buf)
+			n, vAddr, tAddr, e = tproxy.ReadFromUDP(s.conn, buf)
+			//n, tAddr, e = s.conn.ReadFromUDP(buf)
 			if e != nil && errors.Is(e, net.ErrClosed) {
 				// listener should be closed only when the context is done
 				continue
 			} else if e != nil {
-				s.Cfg.log.Error("unhandled error while handling udp packet", zap.Error(e))
+				s.Cfg.log.Error("unhandled error while reading udp packet", zap.Error(e))
 				continue
 			}
 
@@ -86,30 +88,16 @@ func (s *UDPServer) Serve(ctx context.Context) (err error) {
 				tAddrInf misc.Addr // target address info
 			)
 
-			// proxy
-			// TODO tproxy update will break this....localaddr is now the real address
-			//   being requested
+			t := "unhandled error while parsing %s udp address"
 			if pAddrInf, e = misc.NewAddr(s.conn.LocalAddr(), "udp"); e != nil {
-				s.Cfg.log.Error("unhandled error while getting proxy address for udp packet", zap.Error(e))
+				s.Cfg.log.Error(fmt.Sprintf(t, "proxy"), zap.Error(e))
 				continue
-			}
-
-			if vAddrInf, e = misc.NewAddr(addr, "udp"); e != nil {
-				s.Cfg.log.Error("failed to parse udp address while handling udp packet", zap.Error(e))
+			} else if vAddrInf, e = misc.NewAddr(vAddr.String(), "udp"); e != nil {
+				s.Cfg.log.Error(fmt.Sprintf(t, "victim"), zap.Error(e))
 				continue
-			}
-
-			// NOTE: since we're using TPROXY, the connection's local address
-			// is the ARP target
-			if i, p, e := net.SplitHostPort(s.conn.LocalAddr().String()); e != nil {
-				s.Cfg.log.Error("failed to parse local address while handling udp packet", zap.Error(e))
+			} else if tAddrInf, e = misc.NewAddr(tAddr.String(), "udp"); e != nil {
+				s.Cfg.log.Error(fmt.Sprintf(t, "target"), zap.Error(e))
 				continue
-			} else {
-				tAddrInf = misc.Addr{
-					IP:        i,
-					Port:      p,
-					Transport: misc.UDPTransport,
-				}
 			}
 
 			//=======================
@@ -137,18 +125,12 @@ func (s *UDPServer) Serve(ctx context.Context) (err error) {
 
 			lData := misc.AttackData{
 				Sender:         misc.VictimDataSender,
+				VictimAddr:     vAddrInf,
 				ProxyAddr:      pAddrInf,
+				SpoofedAddr:    tAddrInf,
 				DownstreamAddr: dsAddrInf,
 				Transport:      misc.UDPTransport,
 				Raw:            buf[:n],
-			}
-
-			if a, p, err := net.SplitHostPort(s.conn.LocalAddr().String()); err != nil {
-				err = fmt.Errorf("failed to parse local address while handling udp packet: %w", err)
-				s.Cfg.log.Error(err.Error(), zap.Error(err))
-				return err
-			} else {
-				lData.VictimAddr, lData.SpoofedAddr = misc.NewVicSpoofedAddr(vAddrInf.IP, vAddrInf.Port, a, p, misc.UDPTransport)
 			}
 
 			if n > 0 {
